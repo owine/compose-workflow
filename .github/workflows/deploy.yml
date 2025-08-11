@@ -28,6 +28,11 @@ on:
         required: false
         type: boolean
         default: false
+      force-deploy:
+        description: "Force deployment even if repository is already at target commit"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   deploy:
@@ -36,10 +41,17 @@ jobs:
     timeout-minutes: 40
     outputs:
       previous_sha: ${{ steps.backup.outputs.previous_sha }}
+      deployment_needed: ${{ steps.backup.outputs.deployment_needed }}
       deploy_status: ${{ steps.deploy.outcome }}
       health_status: ${{ steps.health.outcome }}
       cleanup_status: ${{ steps.cleanup.outcome }}
       rollback_status: ${{ steps.rollback.outcome }}
+      healthy_stacks: ${{ steps.health.outputs.healthy_stacks }}
+      degraded_stacks: ${{ steps.health.outputs.degraded_stacks }}
+      failed_stacks: ${{ steps.health.outputs.failed_stacks }}
+      total_containers: ${{ steps.health.outputs.total_containers }}
+      running_containers: ${{ steps.health.outputs.running_containers }}
+      success_rate: ${{ steps.health.outputs.success_rate }}
     steps:
       - name: Configure 1Password Service Account
         uses: 1password/load-secrets-action/configure@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
@@ -74,233 +86,444 @@ jobs:
         id: backup
         run: |
           echo "::group::Preparing deployment backup"
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
-            cd /opt/compose
-            CURRENT_SHA=\$(git rev-parse HEAD)
-            echo \"Current deployed SHA: \$CURRENT_SHA\"
-            echo \"New deployment SHA: ${{ inputs.target-ref }}\"
-          "
-          echo "previous_sha=$(ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD')" >> $GITHUB_OUTPUT
+          CURRENT_SHA=$(ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD')
+          TARGET_SHA="${{ inputs.target-ref }}"
+
+          echo "Current deployed SHA: $CURRENT_SHA"
+          echo "New deployment SHA: $TARGET_SHA"
+          echo "previous_sha=$CURRENT_SHA" >> $GITHUB_OUTPUT
+
+          if [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "${{ inputs.force-deploy }}" != "true" ]; then
+            echo "⚠️ Repository is already at target commit - no deployment needed"
+            echo "deployment_needed=false" >> $GITHUB_OUTPUT
+          elif [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "${{ inputs.force-deploy }}" = "true" ]; then
+            echo "🔄 Force deployment requested - proceeding despite same commit"
+            echo "deployment_needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Deployment needed - proceeding with update"
+            echo "deployment_needed=true" >> $GITHUB_OUTPUT
+          fi
           echo "::endgroup::"
 
       - name: Deploy All Stacks
         id: deploy
+        if: steps.backup.outputs.deployment_needed == 'true'
         continue-on-error: true
         run: |
           echo "::group::Deploying all stacks"
 
-          # Parse stacks from JSON input
+          # Parse inputs outside SSH context
           STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
+          OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+          HAS_DOCKGE="${{ inputs.has-dockge }}"
+          TARGET_REF="${{ inputs.target-ref }}"
+          COMPOSE_ARGS="${{ inputs.args || '' }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$HAS_DOCKGE" "$TARGET_REF" "$COMPOSE_ARGS" << 'EOF'
             set -e
-            export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
-            ${{ inputs.has-dockge == true && '
-            echo \"🚀 Deploying Dockge...\"
-            cd /opt/dockge
-            op run --env-file=/opt/compose/compose.env -- docker compose pull
-            op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans ${{ inputs.args }}
-            echo \"✅ Dockge deployed successfully\"
-            ' || '' }}
+            # Get arguments passed to script (excluding sensitive OP_TOKEN)
+            # Arguments: stack1 stack2 stack3 ... HAS_DOCKGE TARGET_REF [COMPOSE_ARGS]
+            # COMPOSE_ARGS might be empty, so we need to handle variable arg count
 
-            echo \"Updating repository to ${{ inputs.target-ref }}...\"
+            TOTAL_ARGS=$#
+
+            # Find HAS_DOCKGE by looking for 'true' or 'false' in the args
+            HAS_DOCKGE=""
+            TARGET_REF=""
+            COMPOSE_ARGS=""
+
+            # The last few args should be: HAS_DOCKGE TARGET_REF [COMPOSE_ARGS]
+            # HAS_DOCKGE is always 'true' or 'false'
+            # TARGET_REF is a commit SHA (starts with letter/number)
+            # COMPOSE_ARGS is optional and could be empty
+
+            for i in $(seq 1 $TOTAL_ARGS); do
+              ARG="${!i}"
+              if [ "$ARG" = "true" ] || [ "$ARG" = "false" ]; then
+                HAS_DOCKGE="$ARG"
+                TARGET_REF="${@:$((i+1)):1}"
+                if [ $((i+2)) -le $TOTAL_ARGS ]; then
+                  COMPOSE_ARGS="${@:$((i+2)):1}"
+                fi
+                # All args before this position are stack names
+                STACKS="${@:1:$((i-1))}"
+                break
+              fi
+            done
+
+
+            # Set OP_TOKEN via environment (passed separately)
+            export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+
+            if [ "$HAS_DOCKGE" = "true" ]; then
+              echo "🚀 Deploying Dockge..."
+              cd /opt/dockge
+              op run --env-file=/opt/compose/compose.env -- docker compose pull
+              op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS
+              echo "✅ Dockge deployed successfully"
+            fi
+
+            echo "Updating repository to $TARGET_REF..."
             git -C /opt/compose/ fetch
-            git -C /opt/compose/ checkout ${{ inputs.target-ref }}
+            git -C /opt/compose/ checkout $TARGET_REF
 
             # Function to deploy a single stack
             deploy_stack() {
-              local STACK=\$1
-              local LOGFILE=\"/tmp/deploy_\${STACK}.log\"
+              local STACK=$1
+              local LOGFILE="/tmp/deploy_${STACK}.log"
               {
-                echo \"🚀 Deploying \$STACK...\"
-                cd /opt/compose/\$STACK
+                echo "🚀 Deploying $STACK..."
+                cd /opt/compose/$STACK
 
-                echo \"  Pulling images for \$STACK...\"
+                echo "  Pulling images for $STACK..."
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-                  echo \"❌ Failed to pull images for \$STACK\"
+                  echo "❌ Failed to pull images for $STACK"
                   return 1
                 fi
 
-                echo \"  Starting services for \$STACK...\"
-                if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans ${{ inputs.args }}; then
-                  echo \"❌ Failed to start services for \$STACK\"
+                echo "  Starting services for $STACK..."
+                if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                  echo "❌ Failed to start services for $STACK"
                   return 1
                 fi
 
-                echo \"✅ \$STACK deployed successfully\"
+                echo "✅ $STACK deployed successfully"
                 return 0
-              } > \"\$LOGFILE\" 2>&1
+              } > "$LOGFILE" 2>&1
 
-              return \$?
+              return $?
             }
 
-            # Start all deployments in parallel
-            echo \"🚀 Starting parallel deployment of all stacks...\"
-            PIDS=\"\"
+            # Cleanup function for deploy logs
+            cleanup_deploy_logs() {
+              for STACK in $STACKS; do
+                rm -f "/tmp/deploy_${STACK}.log" 2>/dev/null
+              done
+            }
 
-            # Deploy each stack in parallel
-            for STACK in \$STACKS; do
-              deploy_stack \"\$STACK\" &
-              PIDS=\"\$PIDS \$!\"
-              echo \"Started deployment of \$STACK (PID: \$!)\"
+            # Set trap for cleanup on exit
+            trap cleanup_deploy_logs EXIT
+
+            # Start all deployments in parallel
+            echo "🚀 Starting parallel deployment of all stacks..."
+            PIDS=""
+
+            # Simple approach - use for loop directly with unquoted variable
+            for STACK in $STACKS; do
+              echo "🚀 Deploying $STACK..."
+              deploy_stack "$STACK" &
+              PIDS="$PIDS $!"
+              echo "Started deployment of $STACK (PID: $!)"
             done
 
             # Wait for all deployments and collect results
-            echo \"⏳ Waiting for all deployments to complete...\"
-            FAILED_STACKS=\"\"
+            echo "⏳ Waiting for all deployments to complete..."
+            FAILED_STACKS=""
 
             # Wait for all background jobs
             wait
 
             # Check deployment results from log files
-            for STACK in \$STACKS; do
-              if [ -f \"/tmp/deploy_\${STACK}.log\" ]; then
-                if grep -q \"❌.*\$STACK\" \"/tmp/deploy_\${STACK}.log\"; then
-                  FAILED_STACKS=\"\$FAILED_STACKS \$STACK\"
+            DEPLOYED_STACKS=""
+            for STACK in $STACKS; do
+              if [ -f "/tmp/deploy_${STACK}.log" ]; then
+                DEPLOYED_STACKS="$DEPLOYED_STACKS $STACK"
+                if grep -q "❌.*$STACK" "/tmp/deploy_${STACK}.log"; then
+                  FAILED_STACKS="$FAILED_STACKS $STACK"
                 fi
               fi
             done
 
             # Display all deployment logs
-            echo \"📋 Deployment Results:\"
-            for STACK in \$STACKS; do
-              if [ -f \"/tmp/deploy_\${STACK}.log\" ]; then
-                echo \"--- \$STACK ---\"
-                cat \"/tmp/deploy_\${STACK}.log\"
-                rm -f \"/tmp/deploy_\${STACK}.log\"
+            echo ""
+            echo "📋 Deployment Results:"
+            echo "════════════════════════════════════════════════════════════════"
+            for STACK in $STACKS; do
+              if [ -f "/tmp/deploy_${STACK}.log" ]; then
+                echo ""
+                echo "🔸 STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+                cat "/tmp/deploy_${STACK}.log"
+                echo "────────────────────────────────────────────────────────────────"
+              else
+                echo ""
+                echo "🔸 STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+                echo "⚠️  No deployment log found for $STACK"
+                echo "────────────────────────────────────────────────────────────────"
               fi
             done
+            echo "════════════════════════════════════════════════════════════════"
 
             # Check if any deployments failed
-            if [ -n \"\$FAILED_STACKS\" ]; then
-              echo \"💥 Deployments failed for:\$FAILED_STACKS\"
+            if [ -z "$STACKS" ]; then
+              echo "💥 No stacks to deploy - STACKS variable is empty!"
+              exit 1
+            elif [ -z "$DEPLOYED_STACKS" ]; then
+              echo "💥 No stacks were actually deployed - check stack discovery!"
+              exit 1
+            elif [ -n "$FAILED_STACKS" ]; then
+              echo "💥 Deployments failed for:$FAILED_STACKS"
               exit 1
             fi
 
-            echo \"🎉 All stacks deployed successfully in parallel!\"
-          "
+            echo "🎉 All stacks deployed successfully in parallel!"
+          EOF
           echo "::endgroup::"
 
       - name: Health Check All Services
         id: health
-        if: steps.deploy.outcome == 'success'
-        continue-on-error: true
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
         run: |
           echo "::group::Health checking all services"
 
-          # Parse stacks from JSON input
-          STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
+          # Parse inputs outside SSH context
+          STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
+          OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+          HAS_DOCKGE="${{ inputs.has-dockge }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+          # Execute health check and capture structured output
+          HEALTH_RESULT=$(ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$HAS_DOCKGE" << 'EOF'
             set -e
-            export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
-            echo \"Waiting for services to stabilize...\"
-            sleep 15
+            # Get arguments passed to script (excluding sensitive OP_TOKEN)
+            TOTAL_ARGS=$#
 
-            FAILED_STACKS=\"\"
+            # Find HAS_DOCKGE by looking for 'true' or 'false' in the args
+            HAS_DOCKGE=""
 
-            ${{ inputs.has-dockge == true && '
-            echo \"🔍 Health checking Dockge...\"
-            cd /opt/dockge
-            DOCKGE_RUNNING=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" | wc -l | tr -d \" \")
-            if [ \"\$DOCKGE_RUNNING\" -eq 0 ]; then
-              echo \"❌ Dockge not running\"
-              FAILED_STACKS=\"\$FAILED_STACKS dockge\"
-            else
-              echo \"✅ Dockge is running\"
-            fi
-            ' || '' }}
-
-            # Function to health check a single stack
-            health_check_stack() {
-              local STACK=\$1
-              local LOGFILE=\"/tmp/health_\${STACK}.log\"
-              {
-                echo \"🔍 Health checking \$STACK...\"
-                cd /opt/compose/\$STACK
-
-                # Check if containers are running
-                RUNNING_SERVICES=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" | wc -l | tr -d \" \")
-                TOTAL_SERVICES=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d \" \")
-
-                if [ \"\$RUNNING_SERVICES\" -eq 0 ]; then
-                  echo \"❌ No services running for \$STACK\"
-                  return 1
-                elif [ \"\$RUNNING_SERVICES\" -lt \"\$TOTAL_SERVICES\" ]; then
-                  echo \"⚠️  \$RUNNING_SERVICES/\$TOTAL_SERVICES services running for \$STACK\"
-                  return 0
-                else
-                  echo \"✅ All \$RUNNING_SERVICES services running for \$STACK\"
-                  return 0
-                fi
-              } > \"\$LOGFILE\" 2>&1
-
-              return \$?
-            }
-
-            # Start all health checks in parallel
-            echo \"🔍 Starting parallel health checks...\"
-            HEALTH_PIDS=\"\"
-
-            # Health check each stack in parallel
-            for STACK in \$STACKS; do
-              health_check_stack \"\$STACK\" &
-              HEALTH_PIDS=\"\$HEALTH_PIDS \$!\"
-              echo \"Started health check for \$STACK (PID: \$!)\"
+            for i in $(seq 1 $TOTAL_ARGS); do
+              ARG="${!i}"
+              if [ "$ARG" = "true" ] || [ "$ARG" = "false" ]; then
+                HAS_DOCKGE="$ARG"
+                # All args before this position are stack names
+                STACKS="${@:1:$((i-1))}"
+                break
+              fi
             done
 
-            # Wait for all health checks and collect results
-            echo \"⏳ Waiting for all health checks to complete...\"
+            # Set OP_TOKEN via environment (passed separately)
+            export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
-            # Wait for all background jobs
+            echo "⏳ Waiting for services to stabilize..."
+            sleep 15
+
+            FAILED_STACKS=""
+            DEGRADED_STACKS=""
+            HEALTHY_STACKS=""
+            TOTAL_CONTAINERS=0
+            RUNNING_CONTAINERS=0
+
+            if [ "$HAS_DOCKGE" = "true" ]; then
+              echo "🔍 Health checking Dockge..."
+              cd /opt/dockge
+              DOCKGE_RUNNING=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" | wc -l | tr -d " ")
+              DOCKGE_TOTAL=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d " ")
+              TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + DOCKGE_TOTAL))
+              RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + DOCKGE_RUNNING))
+
+              if [ "$DOCKGE_RUNNING" -eq 0 ]; then
+                echo "❌ Dockge: 0/$DOCKGE_TOTAL services running"
+                FAILED_STACKS="$FAILED_STACKS dockge"
+              elif [ "$DOCKGE_RUNNING" -lt "$DOCKGE_TOTAL" ]; then
+                echo "⚠️ Dockge: $DOCKGE_RUNNING/$DOCKGE_TOTAL services running (degraded)"
+                DEGRADED_STACKS="$DEGRADED_STACKS dockge"
+              else
+                echo "✅ Dockge: All $DOCKGE_RUNNING services healthy"
+                HEALTHY_STACKS="$HEALTHY_STACKS dockge"
+              fi
+            fi
+
+            # Function to perform comprehensive health check on a stack
+            health_check_stack() {
+              local STACK=$1
+              local LOGFILE="/tmp/health_${STACK}.log"
+              {
+                echo "🔍 Health checking $STACK..."
+                cd /opt/compose/$STACK
+
+                # Get container status information using simpler approach
+                RUNNING_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
+                TOTAL_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+                EXITED_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=exited" 2>/dev/null | wc -l | tr -d " " || echo "0")
+
+                # Set HEALTHY_COUNT to same as RUNNING_COUNT for simplicity
+                HEALTHY_COUNT=$RUNNING_COUNT
+
+                # For simplicity, assume no restart issues or resource monitoring for now
+                RESTART_ISSUES=0
+                RESOURCE_INFO=""
+
+                # Determine stack health status
+                if [ "$HEALTHY_COUNT" -eq 0 ]; then
+                  echo "❌ $STACK: No services running ($EXITED_COUNT exited)"
+                  [ -n "$RESOURCE_INFO" ] && echo "   Resources: $RESOURCE_INFO"
+                  return 1
+                elif [ "$HEALTHY_COUNT" -lt "$TOTAL_COUNT" ]; then
+                  echo "⚠️  $STACK: $HEALTHY_COUNT/$TOTAL_COUNT services running"
+                  [ "$EXITED_COUNT" -gt 0 ] && echo "   $EXITED_COUNT services exited"
+                  [ "$RESTART_ISSUES" -gt 0 ] && echo "   ⚠️ $RESTART_ISSUES services restarting"
+                  [ -n "$RESOURCE_INFO" ] && echo "   Resources: $RESOURCE_INFO"
+                  return 2  # Degraded state
+                else
+                  echo "✅ $STACK: All $HEALTHY_COUNT services healthy"
+                  [ "$RESTART_ISSUES" -gt 0 ] && echo "   ⚠️ $RESTART_ISSUES services had recent restarts"
+                  [ -n "$RESOURCE_INFO" ] && echo "   Resources: $RESOURCE_INFO"
+                  return 0
+                fi
+              } > "$LOGFILE" 2>&1
+
+              return $?
+            }
+
+            # Cleanup function for health logs
+            cleanup_health_logs() {
+              for STACK in $STACKS; do
+                rm -f "/tmp/health_${STACK}.log" 2>/dev/null
+              done
+            }
+
+            # Set trap for cleanup on exit
+            trap cleanup_health_logs EXIT
+
+            # Health check each stack in parallel for speed
+            echo "🔍 Starting parallel health checks..."
+            HEALTH_PIDS=""
+
+            # Start all health checks in parallel
+            for STACK in $STACKS; do
+              echo "Starting health check for $STACK..."
+              health_check_stack "$STACK" &
+              HEALTH_PIDS="$HEALTH_PIDS $!"
+              echo "Started health check of $STACK (PID: $!)"
+            done
+
+            # Wait for all health checks to complete
+            echo "⏳ Waiting for all health checks to complete..."
             wait
 
             # Check health check results from log files
-            for STACK in \$STACKS; do
-              if [ -f \"/tmp/health_\${STACK}.log\" ]; then
-                if grep -q \"❌.*\$STACK\" \"/tmp/health_\${STACK}.log\"; then
-                  FAILED_STACKS=\"\$FAILED_STACKS \$STACK\"
+            for STACK in $STACKS; do
+              if [ -f "/tmp/health_${STACK}.log" ]; then
+                # Check the exit code stored in the log file
+                if grep -q "✅.*$STACK.*healthy" "/tmp/health_${STACK}.log"; then
+                  HEALTHY_STACKS="$HEALTHY_STACKS $STACK"
+                elif grep -q "⚠️.*$STACK.*degraded\|running" "/tmp/health_${STACK}.log"; then
+                  DEGRADED_STACKS="$DEGRADED_STACKS $STACK"
+                else
+                  FAILED_STACKS="$FAILED_STACKS $STACK"
                 fi
+              else
+                # No log file means the health check failed completely
+                FAILED_STACKS="$FAILED_STACKS $STACK"
               fi
             done
 
-            # Display all health check results
-            echo \"📋 Health Check Results:\"
-            for STACK in \$STACKS; do
-              if [ -f \"/tmp/health_\${STACK}.log\" ]; then
-                echo \"--- \$STACK ---\"
-                cat \"/tmp/health_\${STACK}.log\"
-                rm -f \"/tmp/health_\${STACK}.log\"
-              fi
+            # Calculate container statistics from all stacks
+            for STACK in $STACKS; do
+              STACK_CONTAINERS=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+              STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
+              TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_CONTAINERS))
+              RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
             done
 
-            if [ -n \"\$FAILED_STACKS\" ]; then
-              echo \"❌ Health check failed for stacks:\$FAILED_STACKS\"
+            # Display comprehensive health check results
+            echo ""
+            echo "📊 Health Check Summary:"
+            echo "════════════════════════"
+            echo "Total Services: $TOTAL_CONTAINERS"
+            echo "Running Services: $RUNNING_CONTAINERS"
+            echo "Success Rate: $(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))%"
+            echo ""
+
+            # Display results by category
+            [ -n "$HEALTHY_STACKS" ] && echo "✅ Healthy Stacks: $(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            [ -n "$DEGRADED_STACKS" ] && echo "⚠️ Degraded Stacks: $(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            [ -n "$FAILED_STACKS" ] && echo "❌ Failed Stacks: $(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+
+            echo ""
+            echo "📋 Detailed Health Check Results:"
+            echo "════════════════════════════════════════════════════════════════"
+            for STACK in $STACKS; do
+              if [ -f "/tmp/health_${STACK}.log" ]; then
+                echo ""
+                echo "🔸 STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+                cat "/tmp/health_${STACK}.log"
+                echo "────────────────────────────────────────────────────────────────"
+              else
+                echo ""
+                echo "🔸 STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+                echo "⚠️  No health check log found for $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+              fi
+            done
+            echo "════════════════════════════════════════════════════════════════"
+
+            # Output structured results for GitHub Actions
+            echo "GITHUB_OUTPUT_START"
+            echo "healthy_stacks=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "degraded_stacks=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "failed_stacks=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "total_containers=$TOTAL_CONTAINERS"
+            echo "running_containers=$RUNNING_CONTAINERS"
+            echo "success_rate=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))"
+            echo "GITHUB_OUTPUT_END"
+
+            # Determine final health status
+            if [ -n "$FAILED_STACKS" ]; then
+              echo ""
+              echo "💥 Health check failed - some stacks are not running"
               exit 1
+            elif [ -n "$DEGRADED_STACKS" ]; then
+              echo ""
+              echo "⚠️ Health check passed with warnings - some services degraded"
+              exit 0
+            else
+              echo ""
+              echo "🎉 All services are fully healthy!"
+              exit 0
             fi
+          EOF
+          )
 
-            echo \"🎉 All services are healthy!\"
-          "
+          # Extract health outputs from structured result
+          echo "$HEALTH_RESULT"
+
+          # Parse outputs without temporary files
+          if echo "$HEALTH_RESULT" | grep -q "GITHUB_OUTPUT_START"; then
+            echo "$HEALTH_RESULT" | sed -n '/GITHUB_OUTPUT_START/,/GITHUB_OUTPUT_END/p' | grep -E "^(healthy_stacks|degraded_stacks|failed_stacks|total_containers|running_containers|success_rate)=" >> $GITHUB_OUTPUT
+          else
+            # Fallback outputs if parsing fails
+            echo "healthy_stacks=" >> $GITHUB_OUTPUT
+            echo "degraded_stacks=" >> $GITHUB_OUTPUT
+            echo "failed_stacks=" >> $GITHUB_OUTPUT
+            echo "total_containers=0" >> $GITHUB_OUTPUT
+            echo "running_containers=0" >> $GITHUB_OUTPUT
+            echo "success_rate=0" >> $GITHUB_OUTPUT
+          fi
+
           echo "::endgroup::"
 
       - name: Cleanup unused images
         id: cleanup
-        if: steps.deploy.outcome == 'success' && steps.health.outcome == 'success'
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success' && steps.health.outcome == 'success'
         continue-on-error: true
         run: |
           echo "::group::Cleaning up unused Docker images"
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
-            echo \"🧹 Cleaning up unused Docker images...\"
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
+            echo "🧹 Cleaning up unused Docker images..."
             docker image prune -af
-            echo \"✅ Cleanup completed\"
-          "
+            echo "✅ Cleanup completed"
+          EOF
           echo "::endgroup::"
 
       - name: Rollback to Previous Version
         id: rollback
-        if: steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure'
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure')
         continue-on-error: true
         run: |
           echo "::group::Rolling back to previous deployment"
@@ -308,29 +531,155 @@ jobs:
           echo "Previous SHA: ${{ steps.backup.outputs.previous_sha }}"
           echo "Failed SHA: ${{ inputs.target-ref }}"
 
-          # Parse stacks from JSON input
-          STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
+          # Parse inputs outside SSH context
+          HAS_DOCKGE="${{ inputs.has-dockge }}"
+          PREVIOUS_SHA="${{ steps.backup.outputs.previous_sha }}"
+          COMPOSE_ARGS="${{ inputs.args || '' }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s "$HAS_DOCKGE" "$PREVIOUS_SHA" "$COMPOSE_ARGS" << 'EOF'
             set -e
-            export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
-            echo \"🔄 Rolling back to ${{ steps.backup.outputs.previous_sha }}...\"
-            git -C /opt/compose/ checkout ${{ steps.backup.outputs.previous_sha }}
+            # Get arguments passed to script (excluding sensitive OP_TOKEN)
+            HAS_DOCKGE="$1"
+            PREVIOUS_SHA="$2"
+            COMPOSE_ARGS="$3"
 
-            for STACK in \$STACKS; do
-              echo \"🔄 Rolling back \$STACK...\"
-              cd /opt/compose/\$STACK
+            # Set OP_TOKEN via environment (passed separately)
+            export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
-              if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans; then
-                echo \"❌ Failed to rollback \$STACK\"
-              else
-                echo \"✅ \$STACK rolled back successfully\"
+            echo "🔄 Rolling back to $PREVIOUS_SHA..."
+            git -C /opt/compose/ fetch
+            git -C /opt/compose/ checkout $PREVIOUS_SHA
+
+            # Dynamically discover stacks based on the previous commit's structure
+            echo "🔍 Discovering stacks in previous commit..."
+            ROLLBACK_STACKS=""
+            cd /opt/compose
+            for dir in */; do
+              if [[ -d "$dir" && (-f "$dir/compose.yml" || -f "$dir/compose.yaml") ]]; then
+                STACK_NAME=$(basename "$dir")
+                ROLLBACK_STACKS="$ROLLBACK_STACKS $STACK_NAME"
+                echo "  Found stack: $STACK_NAME"
               fi
             done
 
-            echo \"✅ Rollback completed\"
-          "
+            if [ -z "$ROLLBACK_STACKS" ]; then
+              echo "⚠️ No stacks found in previous commit - rollback cannot proceed"
+              exit 1
+            fi
+
+            echo "📋 Stacks to rollback:$ROLLBACK_STACKS"
+
+            # Deploy Dockge first if needed
+            if [ "$HAS_DOCKGE" = "true" ]; then
+              echo "🔄 Rolling back Dockge..."
+              cd /opt/dockge
+              op run --env-file=/opt/compose/compose.env -- docker compose pull
+              op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS
+              echo "✅ Dockge rolled back successfully"
+            fi
+
+            # Function to rollback a single stack (same pattern as deploy)
+            rollback_stack() {
+              local STACK=$1
+              local LOGFILE="/tmp/rollback_${STACK}.log"
+              {
+                echo "🔄 Rolling back $STACK..."
+                cd /opt/compose/$STACK
+
+                echo "  Pulling images for $STACK..."
+                if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                  echo "❌ Failed to pull images for $STACK during rollback"
+                  return 1
+                fi
+
+                echo "  Starting services for $STACK..."
+                if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                  echo "❌ Failed to start services for $STACK during rollback"
+                  return 1
+                fi
+
+                echo "✅ $STACK rolled back successfully"
+                return 0
+              } > "$LOGFILE" 2>&1
+
+              return $?
+            }
+
+            # Cleanup function for rollback logs
+            cleanup_rollback_logs() {
+              for STACK in $ROLLBACK_STACKS; do
+                rm -f "/tmp/rollback_${STACK}.log" 2>/dev/null
+              done
+            }
+
+            # Set trap for cleanup on exit
+            trap cleanup_rollback_logs EXIT
+
+            # Start all rollback deployments in parallel
+            echo "🔄 Starting parallel rollback of all stacks..."
+            ROLLBACK_PIDS=""
+
+            for STACK in $ROLLBACK_STACKS; do
+              echo "🔄 Rolling back $STACK..."
+              rollback_stack "$STACK" &
+              ROLLBACK_PIDS="$ROLLBACK_PIDS $!"
+              echo "Started rollback of $STACK (PID: $!)"
+            done
+
+            # Wait for all rollback deployments and collect results
+            echo "⏳ Waiting for all rollbacks to complete..."
+            FAILED_ROLLBACKS=""
+
+            # Wait for all background jobs
+            wait
+
+            # Check rollback results from log files
+            ROLLED_BACK_STACKS=""
+            for STACK in $ROLLBACK_STACKS; do
+              if [ -f "/tmp/rollback_${STACK}.log" ]; then
+                ROLLED_BACK_STACKS="$ROLLED_BACK_STACKS $STACK"
+                if grep -q "❌.*$STACK.*rollback" "/tmp/rollback_${STACK}.log"; then
+                  FAILED_ROLLBACKS="$FAILED_ROLLBACKS $STACK"
+                fi
+              fi
+            done
+
+            # Display all rollback logs
+            echo ""
+            echo "📋 Rollback Results:"
+            echo "════════════════════════════════════════════════════════════════"
+            for STACK in $ROLLBACK_STACKS; do
+              if [ -f "/tmp/rollback_${STACK}.log" ]; then
+                echo ""
+                echo "🔸 ROLLBACK STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+                cat "/tmp/rollback_${STACK}.log"
+                echo "────────────────────────────────────────────────────────────────"
+              else
+                echo ""
+                echo "🔸 ROLLBACK STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+                echo "⚠️  No rollback log found for $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+              fi
+            done
+            echo "════════════════════════════════════════════════════════════════"
+
+            # Check if any rollbacks failed
+            if [ -z "$ROLLBACK_STACKS" ]; then
+              echo "💥 No stacks to rollback - ROLLBACK_STACKS variable is empty!"
+              exit 1
+            elif [ -z "$ROLLED_BACK_STACKS" ]; then
+              echo "💥 No stacks were actually rolled back - check stack discovery!"
+              exit 1
+            elif [ -n "$FAILED_ROLLBACKS" ]; then
+              echo "💥 Rollbacks failed for:$FAILED_ROLLBACKS"
+              exit 1
+            fi
+
+            echo "🎉 All stacks rolled back successfully!"
+          EOF
           echo "::endgroup::"
 
       - name: Report Deployment Status
@@ -340,9 +689,24 @@ jobs:
 
           # Parse stacks from JSON input and create display list
           STACK_LIST="${{ join(fromJson(inputs.stacks), ', ') }}"
-          ${{ inputs.has-dockge == true && 'STACK_LIST="dockge, $STACK_LIST"' || '' }}
+          if [ "${{ inputs.has-dockge }}" = "true" ]; then
+            STACK_LIST="dockge, $STACK_LIST"
+          fi
 
-          if [ "${{ steps.deploy.outcome }}" == "success" ] && [ "${{ steps.health.outcome }}" == "success" ]; then
+          if [ "${{ steps.backup.outputs.deployment_needed }}" != "true" ]; then
+            echo "ℹ️ **NO DEPLOYMENT NEEDED**"
+            echo "✅ Repository already at target commit"
+            echo "📋 Target stacks: $STACK_LIST"
+            echo "🔄 SHA: ${{ inputs.target-ref }}"
+          elif [ "${{ inputs.force-deploy }}" = "true" ] && [ "${{ steps.deploy.outcome }}" == "success" ] && [ "${{ steps.health.outcome }}" == "success" ]; then
+            echo "🔄 **FORCE DEPLOYMENT SUCCESSFUL**"
+            echo "✅ All stacks force-deployed and healthy"
+            echo "📋 Deployed stacks: $STACK_LIST"
+            echo "🔄 SHA: ${{ inputs.target-ref }}"
+            if [ "${{ steps.cleanup.outcome }}" == "success" ]; then
+              echo "🧹 Cleanup completed successfully"
+            fi
+          elif [ "${{ steps.deploy.outcome }}" == "success" ] && [ "${{ steps.health.outcome }}" == "success" ]; then
             echo "🎉 **DEPLOYMENT SUCCESSFUL**"
             echo "✅ All stacks deployed and healthy"
             echo "📋 Deployed stacks: $STACK_LIST"
@@ -387,23 +751,17 @@ jobs:
         uses: sarisia/actions-status-discord@5ddd3b114a98457dd80a39b2f00b6a998cd69008  # v1.15.3
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
-          status: ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
-          title: "🚀 ${{ inputs.repo-name }} Deploy Results"
+          status: ${{ needs.deploy.outputs.deployment_needed != 'true' && 'success' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
+          title: "🚀 ${{ inputs.repo-name }} Deployment"
           description: |
-            **Repository:** `${{ inputs.repo-name }}`
-            **Branch:** `${{ github.ref_name }}`
-            **Commit:** `${{ inputs.target-ref }}`
-            **Trigger:** ${{ github.event_name }}
+            ${{ needs.deploy.outputs.deployment_needed != 'true' && 'ℹ️ **NO DEPLOYMENT NEEDED** - Repository already at target commit' || inputs.force-deploy == true && needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '🔄 **FORCE DEPLOYMENT SUCCESSFUL**' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ **DEPLOYMENT SUCCESSFUL**' || needs.deploy.outputs.rollback_status == 'success' && '🔄 **DEPLOYMENT FAILED - ROLLED BACK**' || '❌ **DEPLOYMENT FAILED**' }}
 
-            **Job Results:**
-            • Preparation: ${{ needs.deploy.result == 'success' && '✅ PASSED' || '❌ FAILED' }}
-            • Deployment: ${{ needs.deploy.outputs.deploy_status == 'success' && '✅ PASSED' || '❌ FAILED' }}
-            • Health Check: ${{ needs.deploy.outputs.health_status == 'success' && '✅ PASSED' || needs.deploy.outputs.health_status == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
-            • Cleanup: ${{ needs.deploy.outputs.cleanup_status == 'success' && '✅ PASSED' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
-            • Rollback: ${{ needs.deploy.outputs.rollback_status == 'success' && '✅ PASSED' || needs.deploy.outputs.rollback_status == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
+            ${{ needs.deploy.outputs.deployment_needed == 'true' && format('**Services:** {0}/{1} running ({2}%)', needs.deploy.outputs.running_containers || '?', needs.deploy.outputs.total_containers || '?', needs.deploy.outputs.success_rate || '?') || '**Target Stacks:** Ready for deployment when needed' }}
+            ${{ needs.deploy.outputs.healthy_stacks != '' && format('✅ Healthy: {0}', needs.deploy.outputs.healthy_stacks) || '' }}${{ needs.deploy.outputs.degraded_stacks != '' && format('⚠️ Degraded: {0}', needs.deploy.outputs.degraded_stacks) || '' }}${{ needs.deploy.outputs.failed_stacks != '' && format('❌ Failed: {0}', needs.deploy.outputs.failed_stacks) || '' }}
 
-            **Status:** ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ Successfully Deployed' || '❌ Deployment Failed' }}${{ needs.deploy.outputs.rollback_status == 'success' && ' - Services Rolled Back' || '' }}
-            **Stacks:** ${{ join(fromJson(inputs.stacks), ', ') }}${{ inputs.has-dockge == true && ', dockge' || '' }}
-          color: ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x00ff00 || 0xff0000 }}
-          username: "GitHub Actions - ${{ inputs.repo-name }}"
+            ${{ needs.deploy.outputs.deployment_needed == 'true' && format('**Pipeline:** Deploy {0} → Health {1} → Cleanup {2}{3}', needs.deploy.outputs.deploy_status == 'success' && '✅' || '❌', needs.deploy.outputs.health_status == 'success' && '✅' || needs.deploy.outputs.health_status == 'skipped' && '⏭️' || '❌', needs.deploy.outputs.cleanup_status == 'success' && '✅' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️' || '❌', needs.deploy.outputs.rollback_status != 'skipped' && format(' → Rollback {0}', needs.deploy.outputs.rollback_status == 'success' && '✅' || '❌') || '') || '**Status:** No changes detected' }}
+
+            ${{ github.event_name == 'workflow_dispatch' && '🔧 **Manual Trigger**' || format('📝 **Commit:** `{0}`', inputs.target-ref) }}
+          color: ${{ needs.deploy.outputs.deployment_needed != 'true' && 0x808080 || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x00ff00 || needs.deploy.outputs.degraded_stacks != '' && 0xff9900 || 0xff0000 }}
+          username: "GitHub Actions"
           avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
