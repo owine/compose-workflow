@@ -88,14 +88,14 @@ jobs:
         continue-on-error: true
         run: |
           echo "::group::Deploying all stacks"
-          
+
           # Parse stacks from JSON input
           STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
-          
+
           ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-            
+
             ${{ inputs.has-dockge == true && '
             echo \"🚀 Deploying Dockge...\"
             cd /opt/dockge
@@ -103,11 +103,11 @@ jobs:
             op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans ${{ inputs.args }}
             echo \"✅ Dockge deployed successfully\"
             ' || '' }}
-            
+
             echo \"Updating repository to ${{ inputs.target-ref }}...\"
             git -C /opt/compose/ fetch
             git -C /opt/compose/ checkout ${{ inputs.target-ref }}
-            
+
             # Function to deploy a single stack
             deploy_stack() {
               local STACK=\$1
@@ -115,44 +115,44 @@ jobs:
               {
                 echo \"🚀 Deploying \$STACK...\"
                 cd /opt/compose/\$STACK
-                
+
                 echo \"  Pulling images for \$STACK...\"
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
                   echo \"❌ Failed to pull images for \$STACK\"
                   return 1
                 fi
-                
+
                 echo \"  Starting services for \$STACK...\"
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans ${{ inputs.args }}; then
                   echo \"❌ Failed to start services for \$STACK\"
                   return 1
                 fi
-                
+
                 echo \"✅ \$STACK deployed successfully\"
                 return 0
               } > \"\$LOGFILE\" 2>&1
-              
+
               return \$?
             }
-            
+
             # Start all deployments in parallel
             echo \"🚀 Starting parallel deployment of all stacks...\"
             PIDS=\"\"
-            
+
             # Deploy each stack in parallel
             for STACK in \$STACKS; do
               deploy_stack \"\$STACK\" &
               PIDS=\"\$PIDS \$!\"
               echo \"Started deployment of \$STACK (PID: \$!)\"
             done
-            
+
             # Wait for all deployments and collect results
             echo \"⏳ Waiting for all deployments to complete...\"
             FAILED_STACKS=\"\"
-            
+
             # Wait for all background jobs
             wait
-            
+
             # Check deployment results from log files
             for STACK in \$STACKS; do
               if [ -f \"/tmp/deploy_\${STACK}.log\" ]; then
@@ -161,7 +161,7 @@ jobs:
                 fi
               fi
             done
-            
+
             # Display all deployment logs
             echo \"📋 Deployment Results:\"
             for STACK in \$STACKS; do
@@ -171,13 +171,13 @@ jobs:
                 rm -f \"/tmp/deploy_\${STACK}.log\"
               fi
             done
-            
+
             # Check if any deployments failed
             if [ -n \"\$FAILED_STACKS\" ]; then
               echo \"💥 Deployments failed for:\$FAILED_STACKS\"
               exit 1
             fi
-            
+
             echo \"🎉 All stacks deployed successfully in parallel!\"
           "
           echo "::endgroup::"
@@ -188,19 +188,19 @@ jobs:
         continue-on-error: true
         run: |
           echo "::group::Health checking all services"
-          
+
           # Parse stacks from JSON input
           STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
-          
+
           ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-            
+
             echo \"Waiting for services to stabilize...\"
             sleep 15
-            
+
             FAILED_STACKS=\"\"
-            
+
             ${{ inputs.has-dockge == true && '
             echo \"🔍 Health checking Dockge...\"
             cd /opt/dockge
@@ -212,7 +212,7 @@ jobs:
               echo \"✅ Dockge is running\"
             fi
             ' || '' }}
-            
+
             # Function to health check a single stack
             health_check_stack() {
               local STACK=\$1
@@ -220,11 +220,11 @@ jobs:
               {
                 echo \"🔍 Health checking \$STACK...\"
                 cd /opt/compose/\$STACK
-                
+
                 # Check if containers are running
                 RUNNING_SERVICES=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" | wc -l | tr -d \" \")
                 TOTAL_SERVICES=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d \" \")
-                
+
                 if [ \"\$RUNNING_SERVICES\" -eq 0 ]; then
                   echo \"❌ No services running for \$STACK\"
                   return 1
@@ -236,27 +236,27 @@ jobs:
                   return 0
                 fi
               } > \"\$LOGFILE\" 2>&1
-              
+
               return \$?
             }
-            
+
             # Start all health checks in parallel
             echo \"🔍 Starting parallel health checks...\"
             HEALTH_PIDS=\"\"
-            
+
             # Health check each stack in parallel
             for STACK in \$STACKS; do
               health_check_stack \"\$STACK\" &
               HEALTH_PIDS=\"\$HEALTH_PIDS \$!\"
               echo \"Started health check for \$STACK (PID: \$!)\"
             done
-            
+
             # Wait for all health checks and collect results
             echo \"⏳ Waiting for all health checks to complete...\"
-            
+
             # Wait for all background jobs
             wait
-            
+
             # Check health check results from log files
             for STACK in \$STACKS; do
               if [ -f \"/tmp/health_\${STACK}.log\" ]; then
@@ -265,7 +265,7 @@ jobs:
                 fi
               fi
             done
-            
+
             # Display all health check results
             echo \"📋 Health Check Results:\"
             for STACK in \$STACKS; do
@@ -275,12 +275,12 @@ jobs:
                 rm -f \"/tmp/health_\${STACK}.log\"
               fi
             done
-            
+
             if [ -n \"\$FAILED_STACKS\" ]; then
               echo \"❌ Health check failed for stacks:\$FAILED_STACKS\"
               exit 1
             fi
-            
+
             echo \"🎉 All services are healthy!\"
           "
           echo "::endgroup::"
@@ -307,28 +307,28 @@ jobs:
           echo "🔄 **INITIATING ROLLBACK**"
           echo "Previous SHA: ${{ steps.backup.outputs.previous_sha }}"
           echo "Failed SHA: ${{ inputs.target-ref }}"
-          
+
           # Parse stacks from JSON input
           STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
-          
+
           ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-            
+
             echo \"🔄 Rolling back to ${{ steps.backup.outputs.previous_sha }}...\"
             git -C /opt/compose/ checkout ${{ steps.backup.outputs.previous_sha }}
-            
+
             for STACK in \$STACKS; do
               echo \"🔄 Rolling back \$STACK...\"
               cd /opt/compose/\$STACK
-              
+
               if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans; then
                 echo \"❌ Failed to rollback \$STACK\"
               else
                 echo \"✅ \$STACK rolled back successfully\"
               fi
             done
-            
+
             echo \"✅ Rollback completed\"
           "
           echo "::endgroup::"
@@ -337,11 +337,11 @@ jobs:
         if: always()
         run: |
           echo "::group::Deployment Summary"
-          
+
           # Parse stacks from JSON input and create display list
           STACK_LIST="${{ join(fromJson(inputs.stacks), ', ') }}"
           ${{ inputs.has-dockge == true && 'STACK_LIST="dockge, $STACK_LIST"' || '' }}
-          
+
           if [ "${{ steps.deploy.outcome }}" == "success" ] && [ "${{ steps.health.outcome }}" == "success" ]; then
             echo "🎉 **DEPLOYMENT SUCCESSFUL**"
             echo "✅ All stacks deployed and healthy"
