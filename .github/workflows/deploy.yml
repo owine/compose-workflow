@@ -19,6 +19,15 @@ on:
         description: "Repository display name for notifications"
         required: true
         type: string
+      target-repository:
+        description: "Target repository to checkout (owner/repo-name)"
+        required: true
+        type: string
+      target-ref:
+        description: "Git reference to checkout from target repository"
+        required: false
+        type: string
+        default: 'main'
       has-dockge:
         description: "Whether this deployment includes Dockge"
         required: false
@@ -37,7 +46,11 @@ jobs:
       cleanup_status: ${{ steps.cleanup.outcome }}
       rollback_status: ${{ steps.rollback.outcome }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Checkout target repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          repository: ${{ inputs.target-repository }}
+          ref: ${{ inputs.target-ref }}
 
       - name: Configure 1Password Service Account
         uses: 1password/load-secrets-action/configure@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
@@ -388,7 +401,7 @@ jobs:
           status: ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
           title: "🚀 ${{ inputs.repo-name }} Deploy Results"
           description: |
-            **Repository:** `${{ github.repository }}`
+            **Repository:** `${{ inputs.target-repository }}`
             **Branch:** `${{ github.ref_name }}`
             **Commit:** `${{ github.sha }}`
             **Trigger:** ${{ github.event_name }}
