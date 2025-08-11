@@ -24,6 +24,26 @@ on:
         required: false
         type: string
         default: 'main'
+      github-event-before:
+        description: "GitHub event before SHA (github.event.before)"
+        required: false
+        type: string
+        default: ''
+      github-event-base:
+        description: "GitHub event base SHA (github.event.base)"
+        required: false
+        type: string
+        default: ''
+      github-pull-base-sha:
+        description: "GitHub pull request base SHA (github.event.pull_request.base.sha)"
+        required: false
+        type: string
+        default: ''
+      github-default-branch:
+        description: "GitHub repository default branch (github.event.repository.default_branch)"
+        required: false
+        type: string
+        default: 'main'
 
 jobs:
   scanning:
@@ -49,10 +69,10 @@ jobs:
       - name: GitGuardian scan
         uses: GitGuardian/ggshield/actions/secret@cfb60b30abf1fd5f18a736220612c4b055a3932b  # v1.42.0
         env:
-          GITHUB_PUSH_BEFORE_SHA: ${{ github.event.before }}
-          GITHUB_PUSH_BASE_SHA: ${{ github.event.base }}
-          GITHUB_PULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_PUSH_BEFORE_SHA: ${{ inputs.github-event-before }}
+          GITHUB_PUSH_BASE_SHA: ${{ inputs.github-event-base }}
+          GITHUB_PULL_BASE_SHA: ${{ inputs.github-pull-base-sha }}
+          GITHUB_DEFAULT_BRANCH: ${{ inputs.github-default-branch }}
           GITGUARDIAN_API_KEY: ${{ steps.op-load-secret.outputs.GITGUARDIAN_API_KEY }}
 
   lint:
