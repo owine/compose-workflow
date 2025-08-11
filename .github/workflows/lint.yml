@@ -44,12 +44,18 @@ on:
         required: false
         type: string
         default: 'main'
+      event-name:
+        description: "GitHub event name (github.event_name)"
+        required: false
+        type: string
+        default: 'push'
 
 jobs:
   scanning:
     name: GitGuardian scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    if: ${{ inputs.event-name == 'push' }}
     steps:
       - name: Load GitGuardian credentials
         id: op-load-secret
@@ -83,6 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: scanning
+    if: ${{ always() && (needs.scanning.result == 'success' || needs.scanning.result == 'skipped') }}
     steps:
       - name: Checkout target repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -133,10 +140,10 @@ jobs:
             **Trigger:** ${{ github.event_name }}
 
             **Job Results:**
-            • GitGuardian Scan: ${{ needs.scanning.result == 'success' && '✅ PASSED' || '❌ FAILED' }}
+            • GitGuardian Scan: ${{ needs.scanning.result == 'success' && '✅ PASSED' || needs.scanning.result == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
             • Lint Jobs: ${{ needs.lint.result == 'success' && '✅ PASSED' || '❌ FAILED' }}
 
             **Stacks Validated:** ${{ join(fromJson(inputs.stacks), ', ') }}
-          color: ${{ needs.scanning.result == 'success' && needs.lint.result == 'success' && 0x00ff00 || 0xff0000 }}
+          color: ${{ (needs.scanning.result == 'success' || needs.scanning.result == 'skipped') && needs.lint.result == 'success' && 0x00ff00 || 0xff0000 }}
           username: "GitHub Actions - ${{ inputs.repo-name }}"
           avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
