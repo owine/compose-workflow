@@ -13,10 +13,12 @@ This repository contains centralized, reusable workflows that can be called from
 Performs comprehensive linting and validation of Docker Compose configurations.
 
 **Features:**
-- GitGuardian secret scanning
+- GitGuardian secret scanning with 1Password integration
 - YAML validation with yamllint
 - Docker Compose syntax validation
-- Discord notifications with detailed results
+- Matrix strategy for parallel stack testing
+- Multi-repository support with configurable checkout
+- Discord notifications with detailed results and status information
 
 **Usage:**
 ```yaml
@@ -35,6 +37,13 @@ jobs:
       stacks: '["stack1", "stack2", "stack3"]'
       webhook-url: "op://Docker/discord-github-notifications/webhook_url"
       repo-name: "my-docker-repo"
+      target-repository: ${{ github.repository }}
+      target-ref: ${{ github.sha }}
+      github-event-before: ${{ github.event.before }}
+      github-event-base: ${{ github.event.base }}
+      github-pull-base-sha: ${{ github.event.pull_request.base.sha }}
+      github-default-branch: ${{ github.event.repository.default_branch }}
+      event-name: ${{ github.event_name }}
 ```
 
 ### 2. Deploy Workflow (`deploy.yml`)
@@ -42,12 +51,14 @@ jobs:
 Handles complete deployment pipeline including rollback capabilities.
 
 **Features:**
-- Secure Tailscale connection
-- Parallel stack deployment
-- Health checking
-- Automatic rollback on failure
-- Docker image cleanup
-- Discord notifications
+- Smart deployment logic with commit detection
+- Secure Tailscale connection for zero-trust networking
+- Parallel stack deployment with detailed logging
+- Comprehensive health checking with service monitoring
+- Automatic rollback on failure with previous commit restoration
+- Docker image cleanup after successful deployment
+- Rich Discord notifications with deployment metrics
+- Force deployment option for same-commit scenarios
 
 **Usage:**
 ```yaml
@@ -58,6 +69,10 @@ on:
       args:
         description: "docker compose up -d arguments"
         type: "string"
+      force-deploy:
+        description: "Force deployment even if at target commit"
+        type: "boolean"
+        default: false
   workflow_run:
     workflows: [Lint Docker Compose]
     types: [completed]
@@ -76,18 +91,27 @@ jobs:
       stacks: '["stack1", "stack2", "stack3"]'
       webhook-url: "op://Docker/discord-github-notifications/webhook_url"
       repo-name: "my-docker-repo"
+      target-ref: ${{ github.sha }}
       has-dockge: true
+      force-deploy: ${{ inputs.force-deploy || false }}
 ```
 
 ## Input Parameters
 
 ### Lint Workflow
 
-| Parameter | Description | Required | Type |
-|-----------|-------------|----------|------|
-| `stacks` | JSON array of stack names to lint | ✅ | string |
-| `webhook-url` | 1Password reference to Discord webhook URL | ✅ | string |
-| `repo-name` | Repository display name for notifications | ✅ | string |
+| Parameter | Description | Required | Type | Default |
+|-----------|-------------|----------|------|---------|
+| `stacks` | JSON array of stack names to lint | ✅ | string | |
+| `webhook-url` | 1Password reference to Discord webhook URL | ✅ | string | |
+| `repo-name` | Repository display name for notifications | ✅ | string | |
+| `target-repository` | Target repository to checkout (owner/repo-name) | ✅ | string | |
+| `target-ref` | Git reference to checkout from target repository | ❌ | string | main |
+| `github-event-before` | GitHub event before SHA (github.event.before) | ❌ | string | '' |
+| `github-event-base` | GitHub event base SHA (github.event.base) | ❌ | string | '' |
+| `github-pull-base-sha` | GitHub pull request base SHA | ❌ | string | '' |
+| `github-default-branch` | GitHub repository default branch | ❌ | string | main |
+| `event-name` | GitHub event name (github.event_name) | ❌ | string | push |
 
 ### Deploy Workflow
 
@@ -97,15 +121,21 @@ jobs:
 | `stacks` | JSON array of stack names to deploy | ✅ | string | |
 | `webhook-url` | 1Password reference to Discord webhook URL | ✅ | string | |
 | `repo-name` | Repository display name for notifications | ✅ | string | |
+| `target-ref` | Git reference to deploy | ✅ | string | |
 | `has-dockge` | Whether this deployment includes Dockge | ❌ | boolean | false |
+| `force-deploy` | Force deployment even if at target commit | ❌ | boolean | false |
 
 ## Required Secrets
 
 The calling repositories must have the following secrets configured:
 
-- `OP_SERVICE_ACCOUNT_TOKEN` - 1Password service account token
+- `OP_SERVICE_ACCOUNT_TOKEN` - 1Password service account token for secret management
 - `SSH_USER` - SSH username for deployment server
 - `SSH_HOST` - SSH hostname for deployment server
+
+Additional secrets required in 1Password:
+- `GITGUARDIAN_API_KEY` - For secret scanning in lint workflow
+- `TAILSCALE_OAUTH_CLIENT_ID` and `TAILSCALE_OAUTH_SECRET` - For secure deployment connections
 
 ## Repository Structure Requirements
 
@@ -150,10 +180,11 @@ with:
 ## Benefits
 
 - **Centralized Maintenance**: Update workflows in one place
-- **Consistency**: Standardized deployment process across all repositories
+- **Consistency**: Standardized deployment process across all repositories  
 - **Reduced Duplication**: Eliminate repetitive workflow code
-- **Version Control**: Pin to specific versions of the reusable workflows
-- **Security**: Centralized secret management and security practices
+- **Enhanced Reliability**: Automatic rollback, comprehensive health checking, and detailed monitoring
+- **Security Integration**: GitGuardian scanning, 1Password secret management, and Tailscale networking
+- **Rich Notifications**: Detailed Discord notifications with deployment status and health metrics
 
 ## Contributing
 

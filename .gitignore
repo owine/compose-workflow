@@ -1,0 +1,46 @@
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Node.js (if used for tooling)
+node_modules/
+package-lock.json
+yarn.lock
+
+# GitHub Actions runner temp files
+.runner/

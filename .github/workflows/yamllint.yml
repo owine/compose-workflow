@@ -1,0 +1,29 @@
+name: YAML Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  yamllint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+
+      - name: Run yamllint
+        run: yamllint --strict --config-file .yamllint .
+
+      - name: Report results
+        if: always()
+        run: |
+          if [ $? -eq 0 ]; then
+            echo "✅ All YAML files are properly formatted"
+          else
+            echo "❌ YAML formatting issues found"
+            echo "Please fix the issues above or update .yamllint configuration if needed"
+          fi
