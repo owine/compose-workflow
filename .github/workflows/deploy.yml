@@ -1,0 +1,407 @@
+name: Deploy Docker Compose
+
+on:
+  workflow_call:
+    inputs:
+      args:
+        description: "docker compose up -d arguments"
+        required: false
+        type: string
+      stacks:
+        description: "JSON array of stack names to deploy"
+        required: true
+        type: string
+      webhook-url:
+        description: "1Password reference to Discord webhook URL"
+        required: true
+        type: string
+      repo-name:
+        description: "Repository display name for notifications"
+        required: true
+        type: string
+      has-dockge:
+        description: "Whether this deployment includes Dockge"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    timeout-minutes: 40
+    outputs:
+      previous_sha: ${{ steps.backup.outputs.previous_sha }}
+      deploy_status: ${{ steps.deploy.outcome }}
+      health_status: ${{ steps.health.outcome }}
+      cleanup_status: ${{ steps.cleanup.outcome }}
+      rollback_status: ${{ steps.rollback.outcome }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Configure 1Password Service Account
+        uses: 1password/load-secrets-action/configure@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Load Tailscale credentials
+        id: load-tailscale-credentials
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
+        with:
+          export-env: false
+          unset-previous: true
+        env:
+          TAILSCALE_OAUTH_CLIENT_ID: "op://Docker/tailscale-oauth/client_id"
+          TAILSCALE_OAUTH_SECRET: "op://Docker/tailscale-oauth/secret"
+
+      - name: Connect to Tailnet
+        uses: tailscale/github-action@84a3f23bb4d843bcf4da6cf824ec1be473daf4de  # v3.2.3
+        with:
+          oauth-client-id: ${{ steps.load-tailscale-credentials.outputs.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ steps.load-tailscale-credentials.outputs.TAILSCALE_OAUTH_SECRET }}
+          tags: tag:ci
+          use-cache: true
+          version: latest
+
+      - name: Unload Tailscale credentials
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
+        with:
+          unset-previous: true
+
+      - name: Store current deployment for rollback
+        id: backup
+        run: |
+          echo "::group::Preparing deployment backup"
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+            cd /opt/compose
+            CURRENT_SHA=\$(git rev-parse HEAD)
+            echo \"Current deployed SHA: \$CURRENT_SHA\"
+            echo \"New deployment SHA: ${{ github.sha }}\"
+          "
+          echo "previous_sha=$(ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD')" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+      - name: Deploy All Stacks
+        id: deploy
+        continue-on-error: true
+        run: |
+          echo "::group::Deploying all stacks"
+          
+          # Parse stacks from JSON input
+          STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
+          
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+            set -e
+            export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+            
+            ${{ inputs.has-dockge == true && '
+            echo \"🚀 Deploying Dockge...\"
+            cd /opt/dockge
+            op run --env-file=/opt/compose/compose.env -- docker compose pull
+            op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans ${{ inputs.args }}
+            echo \"✅ Dockge deployed successfully\"
+            ' || '' }}
+            
+            echo \"Updating repository to ${{ github.sha }}...\"
+            git -C /opt/compose/ fetch
+            git -C /opt/compose/ checkout ${{ github.sha }}
+            
+            # Function to deploy a single stack
+            deploy_stack() {
+              local STACK=\$1
+              local LOGFILE=\"/tmp/deploy_\${STACK}.log\"
+              {
+                echo \"🚀 Deploying \$STACK...\"
+                cd /opt/compose/\$STACK
+                
+                echo \"  Pulling images for \$STACK...\"
+                if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                  echo \"❌ Failed to pull images for \$STACK\"
+                  return 1
+                fi
+                
+                echo \"  Starting services for \$STACK...\"
+                if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans ${{ inputs.args }}; then
+                  echo \"❌ Failed to start services for \$STACK\"
+                  return 1
+                fi
+                
+                echo \"✅ \$STACK deployed successfully\"
+                return 0
+              } > \"\$LOGFILE\" 2>&1
+              
+              return \$?
+            }
+            
+            # Start all deployments in parallel
+            echo \"🚀 Starting parallel deployment of all stacks...\"
+            PIDS=\"\"
+            
+            # Deploy each stack in parallel
+            for STACK in \$STACKS; do
+              deploy_stack \"\$STACK\" &
+              PIDS=\"\$PIDS \$!\"
+              echo \"Started deployment of \$STACK (PID: \$!)\"
+            done
+            
+            # Wait for all deployments and collect results
+            echo \"⏳ Waiting for all deployments to complete...\"
+            FAILED_STACKS=\"\"
+            
+            # Wait for all background jobs
+            wait
+            
+            # Check deployment results from log files
+            for STACK in \$STACKS; do
+              if [ -f \"/tmp/deploy_\${STACK}.log\" ]; then
+                if grep -q \"❌.*\$STACK\" \"/tmp/deploy_\${STACK}.log\"; then
+                  FAILED_STACKS=\"\$FAILED_STACKS \$STACK\"
+                fi
+              fi
+            done
+            
+            # Display all deployment logs
+            echo \"📋 Deployment Results:\"
+            for STACK in \$STACKS; do
+              if [ -f \"/tmp/deploy_\${STACK}.log\" ]; then
+                echo \"--- \$STACK ---\"
+                cat \"/tmp/deploy_\${STACK}.log\"
+                rm -f \"/tmp/deploy_\${STACK}.log\"
+              fi
+            done
+            
+            # Check if any deployments failed
+            if [ -n \"\$FAILED_STACKS\" ]; then
+              echo \"💥 Deployments failed for:\$FAILED_STACKS\"
+              exit 1
+            fi
+            
+            echo \"🎉 All stacks deployed successfully in parallel!\"
+          "
+          echo "::endgroup::"
+
+      - name: Health Check All Services
+        id: health
+        if: steps.deploy.outcome == 'success'
+        continue-on-error: true
+        run: |
+          echo "::group::Health checking all services"
+          
+          # Parse stacks from JSON input
+          STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
+          
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+            set -e
+            export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+            
+            echo \"Waiting for services to stabilize...\"
+            sleep 15
+            
+            FAILED_STACKS=\"\"
+            
+            ${{ inputs.has-dockge == true && '
+            echo \"🔍 Health checking Dockge...\"
+            cd /opt/dockge
+            DOCKGE_RUNNING=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" | wc -l | tr -d \" \")
+            if [ \"\$DOCKGE_RUNNING\" -eq 0 ]; then
+              echo \"❌ Dockge not running\"
+              FAILED_STACKS=\"\$FAILED_STACKS dockge\"
+            else
+              echo \"✅ Dockge is running\"
+            fi
+            ' || '' }}
+            
+            # Function to health check a single stack
+            health_check_stack() {
+              local STACK=\$1
+              local LOGFILE=\"/tmp/health_\${STACK}.log\"
+              {
+                echo \"🔍 Health checking \$STACK...\"
+                cd /opt/compose/\$STACK
+                
+                # Check if containers are running
+                RUNNING_SERVICES=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" | wc -l | tr -d \" \")
+                TOTAL_SERVICES=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d \" \")
+                
+                if [ \"\$RUNNING_SERVICES\" -eq 0 ]; then
+                  echo \"❌ No services running for \$STACK\"
+                  return 1
+                elif [ \"\$RUNNING_SERVICES\" -lt \"\$TOTAL_SERVICES\" ]; then
+                  echo \"⚠️  \$RUNNING_SERVICES/\$TOTAL_SERVICES services running for \$STACK\"
+                  return 0
+                else
+                  echo \"✅ All \$RUNNING_SERVICES services running for \$STACK\"
+                  return 0
+                fi
+              } > \"\$LOGFILE\" 2>&1
+              
+              return \$?
+            }
+            
+            # Start all health checks in parallel
+            echo \"🔍 Starting parallel health checks...\"
+            HEALTH_PIDS=\"\"
+            
+            # Health check each stack in parallel
+            for STACK in \$STACKS; do
+              health_check_stack \"\$STACK\" &
+              HEALTH_PIDS=\"\$HEALTH_PIDS \$!\"
+              echo \"Started health check for \$STACK (PID: \$!)\"
+            done
+            
+            # Wait for all health checks and collect results
+            echo \"⏳ Waiting for all health checks to complete...\"
+            
+            # Wait for all background jobs
+            wait
+            
+            # Check health check results from log files
+            for STACK in \$STACKS; do
+              if [ -f \"/tmp/health_\${STACK}.log\" ]; then
+                if grep -q \"❌.*\$STACK\" \"/tmp/health_\${STACK}.log\"; then
+                  FAILED_STACKS=\"\$FAILED_STACKS \$STACK\"
+                fi
+              fi
+            done
+            
+            # Display all health check results
+            echo \"📋 Health Check Results:\"
+            for STACK in \$STACKS; do
+              if [ -f \"/tmp/health_\${STACK}.log\" ]; then
+                echo \"--- \$STACK ---\"
+                cat \"/tmp/health_\${STACK}.log\"
+                rm -f \"/tmp/health_\${STACK}.log\"
+              fi
+            done
+            
+            if [ -n \"\$FAILED_STACKS\" ]; then
+              echo \"❌ Health check failed for stacks:\$FAILED_STACKS\"
+              exit 1
+            fi
+            
+            echo \"🎉 All services are healthy!\"
+          "
+          echo "::endgroup::"
+
+      - name: Cleanup unused images
+        id: cleanup
+        if: steps.deploy.outcome == 'success' && steps.health.outcome == 'success'
+        continue-on-error: true
+        run: |
+          echo "::group::Cleaning up unused Docker images"
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+            echo \"🧹 Cleaning up unused Docker images...\"
+            docker image prune -af
+            echo \"✅ Cleanup completed\"
+          "
+          echo "::endgroup::"
+
+      - name: Rollback to Previous Version
+        id: rollback
+        if: steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          echo "::group::Rolling back to previous deployment"
+          echo "🔄 **INITIATING ROLLBACK**"
+          echo "Previous SHA: ${{ steps.backup.outputs.previous_sha }}"
+          echo "Failed SHA: ${{ github.sha }}"
+          
+          # Parse stacks from JSON input
+          STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
+          
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+            set -e
+            export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+            
+            echo \"🔄 Rolling back to ${{ steps.backup.outputs.previous_sha }}...\"
+            git -C /opt/compose/ checkout ${{ steps.backup.outputs.previous_sha }}
+            
+            for STACK in \$STACKS; do
+              echo \"🔄 Rolling back \$STACK...\"
+              cd /opt/compose/\$STACK
+              
+              if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans; then
+                echo \"❌ Failed to rollback \$STACK\"
+              else
+                echo \"✅ \$STACK rolled back successfully\"
+              fi
+            done
+            
+            echo \"✅ Rollback completed\"
+          "
+          echo "::endgroup::"
+
+      - name: Report Deployment Status
+        if: always()
+        run: |
+          echo "::group::Deployment Summary"
+          
+          # Parse stacks from JSON input and create display list
+          STACK_LIST="${{ join(fromJson(inputs.stacks), ', ') }}"
+          ${{ inputs.has-dockge == true && 'STACK_LIST="dockge, $STACK_LIST"' || '' }}
+          
+          if [ "${{ steps.deploy.outcome }}" == "success" ] && [ "${{ steps.health.outcome }}" == "success" ]; then
+            echo "🎉 **DEPLOYMENT SUCCESSFUL**"
+            echo "✅ All stacks deployed and healthy"
+            echo "📋 Deployed stacks: $STACK_LIST"
+            echo "🔄 SHA: ${{ github.sha }}"
+            if [ "${{ steps.cleanup.outcome }}" == "success" ]; then
+              echo "🧹 Cleanup completed successfully"
+            fi
+          else
+            echo "💥 **DEPLOYMENT FAILED**"
+            echo "❌ Deploy status: ${{ steps.deploy.outcome }}"
+            echo "❌ Health check status: ${{ steps.health.outcome }}"
+            if [ "${{ steps.rollback.outcome }}" == "success" ]; then
+              echo "🔄 Rollback completed successfully"
+            else
+              echo "❌ Rollback status: ${{ steps.rollback.outcome }}"
+            fi
+            exit 1
+          fi
+          echo "::endgroup::"
+
+  notify:
+    name: Discord Notification
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+    steps:
+      - name: Configure 1Password Service Account
+        uses: 1password/load-secrets-action/configure@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Load Discord webhook
+        id: op-load-discord
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
+        with:
+          export-env: false
+          unset-previous: true
+        env:
+          DISCORD_WEBHOOK: ${{ inputs.webhook-url }}
+
+      - name: Send Discord notification
+        uses: sarisia/actions-status-discord@5ddd3b114a98457dd80a39b2f00b6a998cd69008  # v1.15.3
+        with:
+          webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
+          status: ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
+          title: "🚀 ${{ inputs.repo-name }} Deploy Results"
+          description: |
+            **Repository:** `${{ github.repository }}`
+            **Branch:** `${{ github.ref_name }}`
+            **Commit:** `${{ github.sha }}`
+            **Trigger:** ${{ github.event_name }}
+
+            **Job Results:**
+            • Preparation: ${{ needs.deploy.result == 'success' && '✅ PASSED' || '❌ FAILED' }}
+            • Deployment: ${{ needs.deploy.outputs.deploy_status == 'success' && '✅ PASSED' || '❌ FAILED' }}
+            • Health Check: ${{ needs.deploy.outputs.health_status == 'success' && '✅ PASSED' || needs.deploy.outputs.health_status == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
+            • Cleanup: ${{ needs.deploy.outputs.cleanup_status == 'success' && '✅ PASSED' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
+            • Rollback: ${{ needs.deploy.outputs.rollback_status == 'success' && '✅ PASSED' || needs.deploy.outputs.rollback_status == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
+
+            **Status:** ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ Successfully Deployed' || '❌ Deployment Failed' }}${{ needs.deploy.outputs.rollback_status == 'success' && ' - Services Rolled Back' || '' }}
+            **Stacks:** ${{ join(fromJson(inputs.stacks), ', ') }}${{ inputs.has-dockge == true && ', dockge' || '' }}
+          color: ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x00ff00 || 0xff0000 }}
+          username: "GitHub Actions - ${{ inputs.repo-name }}"
+          avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
