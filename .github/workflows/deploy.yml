@@ -19,6 +19,10 @@ on:
         description: "Repository display name for notifications"
         required: true
         type: string
+      target-ref:
+        description: "Git reference to checkout on remote server"
+        required: true
+        type: string
       has-dockge:
         description: "Whether this deployment includes Dockge"
         required: false
@@ -74,7 +78,7 @@ jobs:
             cd /opt/compose
             CURRENT_SHA=\$(git rev-parse HEAD)
             echo \"Current deployed SHA: \$CURRENT_SHA\"
-            echo \"New deployment SHA: ${{ github.sha }}\"
+            echo \"New deployment SHA: ${{ inputs.target-ref }}\"
           "
           echo "previous_sha=$(ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD')" >> $GITHUB_OUTPUT
           echo "::endgroup::"
@@ -100,9 +104,9 @@ jobs:
             echo \"✅ Dockge deployed successfully\"
             ' || '' }}
             
-            echo \"Updating repository to ${{ github.sha }}...\"
+            echo \"Updating repository to ${{ inputs.target-ref }}...\"
             git -C /opt/compose/ fetch
-            git -C /opt/compose/ checkout ${{ github.sha }}
+            git -C /opt/compose/ checkout ${{ inputs.target-ref }}
             
             # Function to deploy a single stack
             deploy_stack() {
@@ -302,7 +306,7 @@ jobs:
           echo "::group::Rolling back to previous deployment"
           echo "🔄 **INITIATING ROLLBACK**"
           echo "Previous SHA: ${{ steps.backup.outputs.previous_sha }}"
-          echo "Failed SHA: ${{ github.sha }}"
+          echo "Failed SHA: ${{ inputs.target-ref }}"
           
           # Parse stacks from JSON input
           STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
@@ -342,7 +346,7 @@ jobs:
             echo "🎉 **DEPLOYMENT SUCCESSFUL**"
             echo "✅ All stacks deployed and healthy"
             echo "📋 Deployed stacks: $STACK_LIST"
-            echo "🔄 SHA: ${{ github.sha }}"
+            echo "🔄 SHA: ${{ inputs.target-ref }}"
             if [ "${{ steps.cleanup.outcome }}" == "success" ]; then
               echo "🧹 Cleanup completed successfully"
             fi
@@ -388,7 +392,7 @@ jobs:
           description: |
             **Repository:** `${{ inputs.repo-name }}`
             **Branch:** `${{ github.ref_name }}`
-            **Commit:** `${{ github.sha }}`
+            **Commit:** `${{ inputs.target-ref }}`
             **Trigger:** ${{ github.event_name }}
 
             **Job Results:**
