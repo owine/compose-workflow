@@ -135,8 +135,8 @@ jobs:
             git -C /opt/compose/ fetch
             git -C /opt/compose/ checkout $TARGET_REF
 
-            # Set stacks variable
-            STACKS="$STACKS"
+            # Set stacks variable (unquoted to allow word splitting)
+            STACKS=$STACKS
 
             # Function to deploy a single stack
             deploy_stack() {
@@ -228,8 +228,8 @@ jobs:
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
             
-            # Set stacks variable
-            STACKS="$STACKS"
+            # Set stacks variable (unquoted to allow word splitting)
+            STACKS=$STACKS
 
             echo "⏳ Waiting for services to stabilize..."
             sleep 15
@@ -445,8 +445,8 @@ jobs:
             echo "🔄 Rolling back to $PREVIOUS_SHA..."
             git -C /opt/compose/ checkout $PREVIOUS_SHA
 
-            # Set stacks variable
-            STACKS="$STACKS"
+            # Set stacks variable (unquoted to allow word splitting)
+            STACKS=$STACKS
 
             for STACK in \$STACKS; do
               echo "🔄 Rolling back \$STACK..."
