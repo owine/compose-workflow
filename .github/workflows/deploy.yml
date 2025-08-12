@@ -195,12 +195,15 @@ jobs:
         run: |
           echo "::group::Health checking all services"
 
-          # Parse stacks from JSON input
-          STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
-
+          # Parse stacks from JSON input for SSH
+          STACKS_LIST="${{ join(fromJson(inputs.stacks), ' ') }}"
+          
           ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+            
+            # Set stacks variable in SSH session
+            STACKS=\"$STACKS_LIST\"
 
             echo \"⏳ Waiting for services to stabilize...\"
             sleep 15
