@@ -283,8 +283,6 @@ jobs:
 
             # Health check each stack sequentially for reliability
             echo \"🔍 Starting comprehensive health checks...\"
-            echo \"DEBUG: STACKS variable contains: '\$STACKS'\"
-            echo \"DEBUG: Stack count: \$(echo \$STACKS | wc -w)\"
             for STACK in \$STACKS; do
               echo \"Starting health check for \$STACK...\"
               if health_check_stack \"\$STACK\"; then
