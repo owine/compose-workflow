@@ -202,8 +202,8 @@ jobs:
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
             
-            # Set stacks variable in SSH session
-            STACKS=\"$STACKS_LIST\"
+            # Set stacks variable in SSH session (without quotes for proper word splitting)
+            STACKS=$STACKS_LIST
 
             echo \"⏳ Waiting for services to stabilize...\"
             sleep 15
