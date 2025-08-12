@@ -138,29 +138,29 @@ jobs:
 
             # Function to deploy a single stack
             deploy_stack() {
-              local STACK=\$1
-              local LOGFILE="/tmp/deploy_\${STACK}.log"
+              local STACK=$1
+              local LOGFILE="/tmp/deploy_${STACK}.log"
               {
-                echo "🚀 Deploying \$STACK..."
-                cd /opt/compose/\$STACK
+                echo "🚀 Deploying $STACK..."
+                cd /opt/compose/$STACK
 
-                echo "  Pulling images for \$STACK..."
+                echo "  Pulling images for $STACK..."
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-                  echo "❌ Failed to pull images for \$STACK"
+                  echo "❌ Failed to pull images for $STACK"
                   return 1
                 fi
 
-                echo "  Starting services for \$STACK..."
+                echo "  Starting services for $STACK..."
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
-                  echo "❌ Failed to start services for \$STACK"
+                  echo "❌ Failed to start services for $STACK"
                   return 1
                 fi
 
-                echo "✅ \$STACK deployed successfully"
+                echo "✅ $STACK deployed successfully"
                 return 0
-              } > "\$LOGFILE" 2>&1
+              } > "$LOGFILE" 2>&1
 
-              return \$?
+              return $?
             }
 
             # Start all deployments in parallel
@@ -169,9 +169,9 @@ jobs:
 
             # Deploy each stack in parallel
             for STACK in $STACKS; do
-              deploy_stack "\$STACK" &
-              PIDS="\$PIDS \$!"
-              echo "Started deployment of \$STACK (PID: \$!)"
+              deploy_stack "$STACK" &
+              PIDS="$PIDS $!"
+              echo "Started deployment of $STACK (PID: $!)"
             done
 
             # Wait for all deployments and collect results
@@ -183,9 +183,9 @@ jobs:
 
             # Check deployment results from log files
             for STACK in $STACKS; do
-              if [ -f "/tmp/deploy_\${STACK}.log" ]; then
-                if grep -q "❌.*\$STACK" "/tmp/deploy_\${STACK}.log"; then
-                  FAILED_STACKS="\$FAILED_STACKS \$STACK"
+              if [ -f "/tmp/deploy_${STACK}.log" ]; then
+                if grep -q "❌.*$STACK" "/tmp/deploy_${STACK}.log"; then
+                  FAILED_STACKS="$FAILED_STACKS $STACK"
                 fi
               fi
             done
@@ -193,16 +193,16 @@ jobs:
             # Display all deployment logs
             echo "📋 Deployment Results:"
             for STACK in $STACKS; do
-              if [ -f "/tmp/deploy_\${STACK}.log" ]; then
-                echo "--- \$STACK ---"
-                cat "/tmp/deploy_\${STACK}.log"
-                rm -f "/tmp/deploy_\${STACK}.log"
+              if [ -f "/tmp/deploy_${STACK}.log" ]; then
+                echo "--- $STACK ---"
+                cat "/tmp/deploy_${STACK}.log"
+                rm -f "/tmp/deploy_${STACK}.log"
               fi
             done
 
             # Check if any deployments failed
-            if [ -n "\$FAILED_STACKS" ]; then
-              echo "💥 Deployments failed for:\$FAILED_STACKS"
+            if [ -n "$FAILED_STACKS" ]; then
+              echo "💥 Deployments failed for:$FAILED_STACKS"
               exit 1
             fi
 
@@ -239,142 +239,142 @@ jobs:
             if [ "$HAS_DOCKGE" = "true" ]; then
               echo "🔍 Health checking Dockge..."
               cd /opt/dockge
-              DOCKGE_RUNNING=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" | wc -l | tr -d " ")
-              DOCKGE_TOTAL=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d " ")
-              TOTAL_CONTAINERS=\$((TOTAL_CONTAINERS + DOCKGE_TOTAL))
-              RUNNING_CONTAINERS=\$((RUNNING_CONTAINERS + DOCKGE_RUNNING))
+              DOCKGE_RUNNING=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" | wc -l | tr -d " ")
+              DOCKGE_TOTAL=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d " ")
+              TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + DOCKGE_TOTAL))
+              RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + DOCKGE_RUNNING))
               
-              if [ "\$DOCKGE_RUNNING" -eq 0 ]; then
-                echo "❌ Dockge: 0/\$DOCKGE_TOTAL services running"
-                FAILED_STACKS="\$FAILED_STACKS dockge"
-              elif [ "\$DOCKGE_RUNNING" -lt "\$DOCKGE_TOTAL" ]; then
-                echo "⚠️ Dockge: \$DOCKGE_RUNNING/\$DOCKGE_TOTAL services running (degraded)"
-                DEGRADED_STACKS="\$DEGRADED_STACKS dockge"
+              if [ "$DOCKGE_RUNNING" -eq 0 ]; then
+                echo "❌ Dockge: 0/$DOCKGE_TOTAL services running"
+                FAILED_STACKS="$FAILED_STACKS dockge"
+              elif [ "$DOCKGE_RUNNING" -lt "$DOCKGE_TOTAL" ]; then
+                echo "⚠️ Dockge: $DOCKGE_RUNNING/$DOCKGE_TOTAL services running (degraded)"
+                DEGRADED_STACKS="$DEGRADED_STACKS dockge"
               else
-                echo "✅ Dockge: All \$DOCKGE_RUNNING services healthy"
-                HEALTHY_STACKS="\$HEALTHY_STACKS dockge"
+                echo "✅ Dockge: All $DOCKGE_RUNNING services healthy"
+                HEALTHY_STACKS="$HEALTHY_STACKS dockge"
               fi
             fi
 
             # Function to perform comprehensive health check on a stack
             health_check_stack() {
-              local STACK=\$1
-              local LOGFILE=\"/tmp/health_\${STACK}.log\"
+              local STACK=$1
+              local LOGFILE="/tmp/health_${STACK}.log"
               {
-                echo \"🔍 Health checking \$STACK...\"
-                cd /opt/compose/\$STACK
+                echo "🔍 Health checking $STACK..."
+                cd /opt/compose/$STACK
 
                 # Get container status information
-                SERVICES_INFO=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --format json 2>/dev/null || echo '[]')
-                RUNNING_COUNT=\$(echo \"\$SERVICES_INFO\" | jq -r 'length')
-                TOTAL_COUNT=\$(op run --env-file=/opt/compose/compose.env -- docker compose config --services | wc -l | tr -d \" \")
+                SERVICES_INFO=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --format json 2>/dev/null || echo '[]')
+                RUNNING_COUNT=$(echo "$SERVICES_INFO" | jq -r 'length')
+                TOTAL_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose config --services | wc -l | tr -d " ")
                 
                 # Count healthy vs unhealthy containers
-                HEALTHY_COUNT=\$(echo \"\$SERVICES_INFO\" | jq -r '[.[] | select(.State == \"running\")] | length' 2>/dev/null || echo \"0\")
-                EXITED_COUNT=\$(echo \"\$SERVICES_INFO\" | jq -r '[.[] | select(.State == \"exited\")] | length' 2>/dev/null || echo \"0\")
+                HEALTHY_COUNT=$(echo "$SERVICES_INFO" | jq -r '[.[] | select(.State == "running")] | length' 2>/dev/null || echo "0")
+                EXITED_COUNT=$(echo "$SERVICES_INFO" | jq -r '[.[] | select(.State == "exited")] | length' 2>/dev/null || echo "0")
                 
                 # Check for restart loops (containers that have restarted recently)
-                RESTART_ISSUES=\$(echo \"\$SERVICES_INFO\" | jq -r '[.[] | select(.State == \"running\" and (.Status | contains(\"Restarting\")))] | length' 2>/dev/null || echo \"0\")
+                RESTART_ISSUES=$(echo "$SERVICES_INFO" | jq -r '[.[] | select(.State == "running" and (.Status | contains("Restarting")))] | length' 2>/dev/null || echo "0")
 
                 # Resource usage check
-                if [ \"\$HEALTHY_COUNT\" -gt 0 ]; then
-                  CONTAINER_NAMES=\$(echo \"\$SERVICES_INFO\" | jq -r '.[] | select(.State == \"running\") | .Name' 2>/dev/null | tr '\n' ' ')
-                  if [ -n \"\$CONTAINER_NAMES\" ]; then
-                    RESOURCE_INFO=\$(docker stats --no-stream --format \"{{.Name}}: CPU {{.CPUPerc}}, Mem {{.MemUsage}}\" \$CONTAINER_NAMES 2>/dev/null | head -3)
+                if [ "$HEALTHY_COUNT" -gt 0 ]; then
+                  CONTAINER_NAMES=$(echo "$SERVICES_INFO" | jq -r '.[] | select(.State == "running") | .Name' 2>/dev/null | tr '\n' ' ')
+                  if [ -n "$CONTAINER_NAMES" ]; then
+                    RESOURCE_INFO=$(docker stats --no-stream --format "{{.Name}}: CPU {{.CPUPerc}}, Mem {{.MemUsage}}" $CONTAINER_NAMES 2>/dev/null | head -3)
                   fi
                 fi
 
                 # Determine stack health status
-                if [ \"\$HEALTHY_COUNT\" -eq 0 ]; then
-                  echo \"❌ \$STACK: No services running (\$EXITED_COUNT exited)\"
-                  [ -n \"\$RESOURCE_INFO\" ] && echo \"   Resources: \$RESOURCE_INFO\"
+                if [ "$HEALTHY_COUNT" -eq 0 ]; then
+                  echo "❌ $STACK: No services running ($EXITED_COUNT exited)"
+                  [ -n "$RESOURCE_INFO" ] && echo "   Resources: $RESOURCE_INFO"
                   return 1
-                elif [ \"\$HEALTHY_COUNT\" -lt \"\$TOTAL_COUNT\" ]; then
-                  echo \"⚠️  \$STACK: \$HEALTHY_COUNT/\$TOTAL_COUNT services running\"
-                  [ \"\$EXITED_COUNT\" -gt 0 ] && echo \"   \$EXITED_COUNT services exited\"
-                  [ \"\$RESTART_ISSUES\" -gt 0 ] && echo \"   ⚠️ \$RESTART_ISSUES services restarting\"
-                  [ -n \"\$RESOURCE_INFO\" ] && echo \"   Resources: \$RESOURCE_INFO\"
+                elif [ "$HEALTHY_COUNT" -lt "$TOTAL_COUNT" ]; then
+                  echo "⚠️  $STACK: $HEALTHY_COUNT/$TOTAL_COUNT services running"
+                  [ "$EXITED_COUNT" -gt 0 ] && echo "   $EXITED_COUNT services exited"
+                  [ "$RESTART_ISSUES" -gt 0 ] && echo "   ⚠️ $RESTART_ISSUES services restarting"
+                  [ -n "$RESOURCE_INFO" ] && echo "   Resources: $RESOURCE_INFO"
                   return 2  # Degraded state
                 else
-                  echo \"✅ \$STACK: All \$HEALTHY_COUNT services healthy\"
-                  [ \"\$RESTART_ISSUES\" -gt 0 ] && echo \"   ⚠️ \$RESTART_ISSUES services had recent restarts\"
-                  [ -n \"\$RESOURCE_INFO\" ] && echo \"   Resources: \$RESOURCE_INFO\"
+                  echo "✅ $STACK: All $HEALTHY_COUNT services healthy"
+                  [ "$RESTART_ISSUES" -gt 0 ] && echo "   ⚠️ $RESTART_ISSUES services had recent restarts"
+                  [ -n "$RESOURCE_INFO" ] && echo "   Resources: $RESOURCE_INFO"
                   return 0
                 fi
-              } > \"\$LOGFILE\" 2>&1
+              } > "$LOGFILE" 2>&1
 
-              return \$?
+              return $?
             }
 
             # Health check each stack sequentially for reliability
-            echo \"🔍 Starting comprehensive health checks...\"
+            echo "🔍 Starting comprehensive health checks..."
             for STACK in $STACKS; do
-              echo \"Starting health check for \$STACK...\"
-              if health_check_stack \"\$STACK\"; then
-                EXIT_CODE=\$?
-                case \$EXIT_CODE in
-                  0) HEALTHY_STACKS=\"\$HEALTHY_STACKS \$STACK\" ;;
-                  2) DEGRADED_STACKS=\"\$DEGRADED_STACKS \$STACK\" ;;
-                  *) FAILED_STACKS=\"\$FAILED_STACKS \$STACK\" ;;
+              echo "Starting health check for $STACK..."
+              if health_check_stack "$STACK"; then
+                EXIT_CODE=$?
+                case $EXIT_CODE in
+                  0) HEALTHY_STACKS="$HEALTHY_STACKS $STACK" ;;
+                  2) DEGRADED_STACKS="$DEGRADED_STACKS $STACK" ;;
+                  *) FAILED_STACKS="$FAILED_STACKS $STACK" ;;
                 esac
               else
-                EXIT_CODE=\$?
-                if [ \$EXIT_CODE -eq 2 ]; then
-                  DEGRADED_STACKS=\"\$DEGRADED_STACKS \$STACK\"
+                EXIT_CODE=$?
+                if [ $EXIT_CODE -eq 2 ]; then
+                  DEGRADED_STACKS="$DEGRADED_STACKS $STACK"
                 else
-                  FAILED_STACKS=\"\$FAILED_STACKS \$STACK\"
+                  FAILED_STACKS="$FAILED_STACKS $STACK"
                 fi
               fi
             done
 
             # Calculate container statistics
             for STACK in $STACKS; do
-              if [ -f \"/tmp/health_\${STACK}.log\" ]; then
-                STACK_CONTAINERS=\$(cd /opt/compose/\$STACK && op run --env-file=/opt/compose/compose.env -- docker compose config --services | wc -l | tr -d \" \")
-                STACK_RUNNING=\$(cd /opt/compose/\$STACK && op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" 2>/dev/null | wc -l | tr -d \" \" || echo \"0\")
-                TOTAL_CONTAINERS=\$((TOTAL_CONTAINERS + STACK_CONTAINERS))
-                RUNNING_CONTAINERS=\$((RUNNING_CONTAINERS + STACK_RUNNING))
+              if [ -f "/tmp/health_${STACK}.log" ]; then
+                STACK_CONTAINERS=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose config --services | wc -l | tr -d " ")
+                STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
+                TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_CONTAINERS))
+                RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
               fi
             done
 
             # Display comprehensive health check results
-            echo \"\"
-            echo \"📊 Health Check Summary:\"
-            echo \"════════════════════════\"
-            echo \"Total Services: \$TOTAL_CONTAINERS\"
-            echo \"Running Services: \$RUNNING_CONTAINERS\"
-            echo \"Success Rate: \$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))%\"
-            echo \"\"
+            echo ""
+            echo "📊 Health Check Summary:"
+            echo "════════════════════════"
+            echo "Total Services: $TOTAL_CONTAINERS"
+            echo "Running Services: $RUNNING_CONTAINERS"
+            echo "Success Rate: $(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))%"
+            echo ""
 
             # Display results by category
-            [ -n \"\$HEALTHY_STACKS\" ] && echo \"✅ Healthy Stacks: \$(echo \$HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')\"
-            [ -n \"\$DEGRADED_STACKS\" ] && echo \"⚠️ Degraded Stacks: \$(echo \$DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')\"
-            [ -n \"\$FAILED_STACKS\" ] && echo \"❌ Failed Stacks: \$(echo \$FAILED_STACKS | tr ' ' ',' | sed 's/^,//')\"
+            [ -n "$HEALTHY_STACKS" ] && echo "✅ Healthy Stacks: $(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')"
+            [ -n "$DEGRADED_STACKS" ] && echo "⚠️ Degraded Stacks: $(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')"
+            [ -n "$FAILED_STACKS" ] && echo "❌ Failed Stacks: $(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//')"
 
-            echo \"\"
-            echo \"📋 Detailed Results:\"
-            echo \"══════════════════════\"
+            echo ""
+            echo "📋 Detailed Results:"
+            echo "══════════════════════"
             for STACK in $STACKS; do
-              if [ -f \"/tmp/health_\${STACK}.log\" ]; then
-                cat \"/tmp/health_\${STACK}.log\"
-                rm -f \"/tmp/health_\${STACK}.log\"
+              if [ -f "/tmp/health_${STACK}.log" ]; then
+                cat "/tmp/health_${STACK}.log"
+                rm -f "/tmp/health_${STACK}.log"
               fi
             done
 
             # Export variables for output capture
-            echo "HEALTH_OUTPUT_HEALTHY=\$(echo \$HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')"
-            echo "HEALTH_OUTPUT_DEGRADED=\$(echo \$DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')"
-            echo "HEALTH_OUTPUT_FAILED=\$(echo \$FAILED_STACKS | tr ' ' ',' | sed 's/^,//')"
-            echo "HEALTH_OUTPUT_TOTAL=\$TOTAL_CONTAINERS"
-            echo "HEALTH_OUTPUT_RUNNING=\$RUNNING_CONTAINERS"
-            echo "HEALTH_OUTPUT_SUCCESS_RATE=\$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))"
+            echo "HEALTH_OUTPUT_HEALTHY=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')"
+            echo "HEALTH_OUTPUT_DEGRADED=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')"
+            echo "HEALTH_OUTPUT_FAILED=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//')"
+            echo "HEALTH_OUTPUT_TOTAL=$TOTAL_CONTAINERS"
+            echo "HEALTH_OUTPUT_RUNNING=$RUNNING_CONTAINERS"
+            echo "HEALTH_OUTPUT_SUCCESS_RATE=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))"
 
             # Determine final health status
-            if [ -n "\$FAILED_STACKS" ]; then
+            if [ -n "$FAILED_STACKS" ]; then
               echo ""
               echo "💥 Health check failed - some stacks are not running"
               exit 1
-            elif [ -n "\$DEGRADED_STACKS" ]; then
+            elif [ -n "$DEGRADED_STACKS" ]; then
               echo ""
               echo "⚠️ Health check passed with warnings - some services degraded"
               exit 0
@@ -443,13 +443,13 @@ jobs:
             git -C /opt/compose/ checkout $PREVIOUS_SHA
 
             for STACK in $STACKS; do
-              echo "🔄 Rolling back \$STACK..."
-              cd /opt/compose/\$STACK
+              echo "🔄 Rolling back $STACK..."
+              cd /opt/compose/$STACK
 
               if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans; then
-                echo "❌ Failed to rollback \$STACK"
+                echo "❌ Failed to rollback $STACK"
               else
-                echo "✅ \$STACK rolled back successfully"
+                echo "✅ $STACK rolled back successfully"
               fi
             done
 
