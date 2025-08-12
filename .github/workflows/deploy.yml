@@ -212,42 +212,44 @@ jobs:
         run: |
           echo "::group::Health checking all services"
           
-          # Parse stacks from JSON input
+          # Parse inputs outside SSH context
           STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
+          OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+          HAS_DOCKGE="${{ inputs.has-dockge }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF | tee /tmp/health_output.log
             set -e
-            export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+            export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
             
-            # Set stacks variable from passed parameter
-            STACKS=\"$STACKS\""
+            # Set stacks variable
+            STACKS="$STACKS"
 
-            echo \"⏳ Waiting for services to stabilize...\"
+            echo "⏳ Waiting for services to stabilize..."
             sleep 15
 
-            FAILED_STACKS=\"\"
-            DEGRADED_STACKS=\"\"
-            HEALTHY_STACKS=\"\"
+            FAILED_STACKS=""
+            DEGRADED_STACKS=""
+            HEALTHY_STACKS=""
             TOTAL_CONTAINERS=0
             RUNNING_CONTAINERS=0
 
-            if [ \"${{ inputs.has-dockge }}\" = \"true\" ]; then
-              echo \"🔍 Health checking Dockge...\"
+            if [ "$HAS_DOCKGE" = "true" ]; then
+              echo "🔍 Health checking Dockge..."
               cd /opt/dockge
-              DOCKGE_RUNNING=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" | wc -l | tr -d \" \")
-              DOCKGE_TOTAL=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d \" \")
+              DOCKGE_RUNNING=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" | wc -l | tr -d " ")
+              DOCKGE_TOTAL=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d " ")
               TOTAL_CONTAINERS=\$((TOTAL_CONTAINERS + DOCKGE_TOTAL))
               RUNNING_CONTAINERS=\$((RUNNING_CONTAINERS + DOCKGE_RUNNING))
               
-              if [ \"\$DOCKGE_RUNNING\" -eq 0 ]; then
-                echo \"❌ Dockge: 0/\$DOCKGE_TOTAL services running\"
-                FAILED_STACKS=\"\$FAILED_STACKS dockge\"
-              elif [ \"\$DOCKGE_RUNNING\" -lt \"\$DOCKGE_TOTAL\" ]; then
-                echo \"⚠️ Dockge: \$DOCKGE_RUNNING/\$DOCKGE_TOTAL services running (degraded)\"
-                DEGRADED_STACKS=\"\$DEGRADED_STACKS dockge\"
+              if [ "\$DOCKGE_RUNNING" -eq 0 ]; then
+                echo "❌ Dockge: 0/\$DOCKGE_TOTAL services running"
+                FAILED_STACKS="\$FAILED_STACKS dockge"
+              elif [ "\$DOCKGE_RUNNING" -lt "\$DOCKGE_TOTAL" ]; then
+                echo "⚠️ Dockge: \$DOCKGE_RUNNING/\$DOCKGE_TOTAL services running (degraded)"
+                DEGRADED_STACKS="\$DEGRADED_STACKS dockge"
               else
-                echo \"✅ Dockge: All \$DOCKGE_RUNNING services healthy\"
-                HEALTHY_STACKS=\"\$HEALTHY_STACKS dockge\"
+                echo "✅ Dockge: All \$DOCKGE_RUNNING services healthy"
+                HEALTHY_STACKS="\$HEALTHY_STACKS dockge"
               fi
             fi
 
@@ -357,28 +359,28 @@ jobs:
             done
 
             # Export variables for output capture
-            echo \"HEALTH_OUTPUT_HEALTHY=\$(echo \$HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')\"
-            echo \"HEALTH_OUTPUT_DEGRADED=\$(echo \$DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')\"
-            echo \"HEALTH_OUTPUT_FAILED=\$(echo \$FAILED_STACKS | tr ' ' ',' | sed 's/^,//')\"
-            echo \"HEALTH_OUTPUT_TOTAL=\$TOTAL_CONTAINERS\"
-            echo \"HEALTH_OUTPUT_RUNNING=\$RUNNING_CONTAINERS\"
-            echo \"HEALTH_OUTPUT_SUCCESS_RATE=\$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))\""
+            echo "HEALTH_OUTPUT_HEALTHY=\$(echo \$HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')"
+            echo "HEALTH_OUTPUT_DEGRADED=\$(echo \$DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')"
+            echo "HEALTH_OUTPUT_FAILED=\$(echo \$FAILED_STACKS | tr ' ' ',' | sed 's/^,//')"
+            echo "HEALTH_OUTPUT_TOTAL=\$TOTAL_CONTAINERS"
+            echo "HEALTH_OUTPUT_RUNNING=\$RUNNING_CONTAINERS"
+            echo "HEALTH_OUTPUT_SUCCESS_RATE=\$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))"
 
             # Determine final health status
-            if [ -n \"\$FAILED_STACKS\" ]; then
-              echo \"\"
-              echo \"💥 Health check failed - some stacks are not running\"
+            if [ -n "\$FAILED_STACKS" ]; then
+              echo ""
+              echo "💥 Health check failed - some stacks are not running"
               exit 1
-            elif [ -n \"\$DEGRADED_STACKS\" ]; then
-              echo \"\"
-              echo \"⚠️ Health check passed with warnings - some services degraded\"
+            elif [ -n "\$DEGRADED_STACKS" ]; then
+              echo ""
+              echo "⚠️ Health check passed with warnings - some services degraded"
               exit 0
             else
-              echo \"\"
-              echo \"🎉 All services are fully healthy!\"
+              echo ""
+              echo "🎉 All services are fully healthy!"
               exit 0
             fi
-          " | tee /tmp/health_output.log
+          EOF
           
           # Extract health outputs for Discord notifications
           if grep -q "HEALTH_OUTPUT_" /tmp/health_output.log 2>/dev/null; then
