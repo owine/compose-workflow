@@ -40,6 +40,12 @@ jobs:
       health_status: ${{ steps.health.outcome }}
       cleanup_status: ${{ steps.cleanup.outcome }}
       rollback_status: ${{ steps.rollback.outcome }}
+      healthy_stacks: ${{ steps.health.outputs.healthy_stacks }}
+      degraded_stacks: ${{ steps.health.outputs.degraded_stacks }}
+      failed_stacks: ${{ steps.health.outputs.failed_stacks }}
+      total_containers: ${{ steps.health.outputs.total_containers }}
+      running_containers: ${{ steps.health.outputs.running_containers }}
+      success_rate: ${{ steps.health.outputs.success_rate }}
     steps:
       - name: Configure 1Password Service Account
         uses: 1password/load-secrets-action/configure@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
@@ -196,24 +202,36 @@ jobs:
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
-            echo \"Waiting for services to stabilize...\"
+            echo \"⏳ Waiting for services to stabilize...\"
             sleep 15
 
             FAILED_STACKS=\"\"
+            DEGRADED_STACKS=\"\"
+            HEALTHY_STACKS=\"\"
+            TOTAL_CONTAINERS=0
+            RUNNING_CONTAINERS=0
 
             ${{ inputs.has-dockge == true && '
             echo \"🔍 Health checking Dockge...\"
             cd /opt/dockge
             DOCKGE_RUNNING=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" | wc -l | tr -d \" \")
+            DOCKGE_TOTAL=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d \" \")
+            TOTAL_CONTAINERS=\$((TOTAL_CONTAINERS + DOCKGE_TOTAL))
+            RUNNING_CONTAINERS=\$((RUNNING_CONTAINERS + DOCKGE_RUNNING))
+            
             if [ \"\$DOCKGE_RUNNING\" -eq 0 ]; then
-              echo \"❌ Dockge not running\"
+              echo \"❌ Dockge: 0/\$DOCKGE_TOTAL services running\"
               FAILED_STACKS=\"\$FAILED_STACKS dockge\"
+            elif [ \"\$DOCKGE_RUNNING\" -lt \"\$DOCKGE_TOTAL\" ]; then
+              echo \"⚠️ Dockge: \$DOCKGE_RUNNING/\$DOCKGE_TOTAL services running (degraded)\"
+              DEGRADED_STACKS=\"\$DEGRADED_STACKS dockge\"
             else
-              echo \"✅ Dockge is running\"
+              echo \"✅ Dockge: All \$DOCKGE_RUNNING services healthy\"
+              HEALTHY_STACKS=\"\$HEALTHY_STACKS dockge\"
             fi
             ' || '' }}
 
-            # Function to health check a single stack
+            # Function to perform comprehensive health check on a stack
             health_check_stack() {
               local STACK=\$1
               local LOGFILE=\"/tmp/health_\${STACK}.log\"
@@ -221,18 +239,41 @@ jobs:
                 echo \"🔍 Health checking \$STACK...\"
                 cd /opt/compose/\$STACK
 
-                # Check if containers are running
-                RUNNING_SERVICES=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" | wc -l | tr -d \" \")
-                TOTAL_SERVICES=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d \" \")
+                # Get container status information
+                SERVICES_INFO=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --format json 2>/dev/null || echo '[]')
+                RUNNING_COUNT=\$(echo \"\$SERVICES_INFO\" | jq -r 'length')
+                TOTAL_COUNT=\$(op run --env-file=/opt/compose/compose.env -- docker compose config --services | wc -l | tr -d \" \")
+                
+                # Count healthy vs unhealthy containers
+                HEALTHY_COUNT=\$(echo \"\$SERVICES_INFO\" | jq -r '[.[] | select(.State == \"running\")] | length' 2>/dev/null || echo \"0\")
+                EXITED_COUNT=\$(echo \"\$SERVICES_INFO\" | jq -r '[.[] | select(.State == \"exited\")] | length' 2>/dev/null || echo \"0\")
+                
+                # Check for restart loops (containers that have restarted recently)
+                RESTART_ISSUES=\$(echo \"\$SERVICES_INFO\" | jq -r '[.[] | select(.State == \"running\" and (.Status | contains(\"Restarting\")))] | length' 2>/dev/null || echo \"0\")
 
-                if [ \"\$RUNNING_SERVICES\" -eq 0 ]; then
-                  echo \"❌ No services running for \$STACK\"
+                # Resource usage check
+                if [ \"\$HEALTHY_COUNT\" -gt 0 ]; then
+                  CONTAINER_NAMES=\$(echo \"\$SERVICES_INFO\" | jq -r '.[] | select(.State == \"running\") | .Name' 2>/dev/null | tr '\n' ' ')
+                  if [ -n \"\$CONTAINER_NAMES\" ]; then
+                    RESOURCE_INFO=\$(docker stats --no-stream --format \"{{.Name}}: CPU {{.CPUPerc}}, Mem {{.MemUsage}}\" \$CONTAINER_NAMES 2>/dev/null | head -3)
+                  fi
+                fi
+
+                # Determine stack health status
+                if [ \"\$HEALTHY_COUNT\" -eq 0 ]; then
+                  echo \"❌ \$STACK: No services running (\$EXITED_COUNT exited)\"
+                  [ -n \"\$RESOURCE_INFO\" ] && echo \"   Resources: \$RESOURCE_INFO\"
                   return 1
-                elif [ \"\$RUNNING_SERVICES\" -lt \"\$TOTAL_SERVICES\" ]; then
-                  echo \"⚠️  \$RUNNING_SERVICES/\$TOTAL_SERVICES services running for \$STACK\"
-                  return 0
+                elif [ \"\$HEALTHY_COUNT\" -lt \"\$TOTAL_COUNT\" ]; then
+                  echo \"⚠️  \$STACK: \$HEALTHY_COUNT/\$TOTAL_COUNT services running\"
+                  [ \"\$EXITED_COUNT\" -gt 0 ] && echo \"   \$EXITED_COUNT services exited\"
+                  [ \"\$RESTART_ISSUES\" -gt 0 ] && echo \"   ⚠️ \$RESTART_ISSUES services restarting\"
+                  [ -n \"\$RESOURCE_INFO\" ] && echo \"   Resources: \$RESOURCE_INFO\"
+                  return 2  # Degraded state
                 else
-                  echo \"✅ All \$RUNNING_SERVICES services running for \$STACK\"
+                  echo \"✅ \$STACK: All \$HEALTHY_COUNT services healthy\"
+                  [ \"\$RESTART_ISSUES\" -gt 0 ] && echo \"   ⚠️ \$RESTART_ISSUES services had recent restarts\"
+                  [ -n \"\$RESOURCE_INFO\" ] && echo \"   Resources: \$RESOURCE_INFO\"
                   return 0
                 fi
               } > \"\$LOGFILE\" 2>&1
@@ -241,47 +282,89 @@ jobs:
             }
 
             # Start all health checks in parallel
-            echo \"🔍 Starting parallel health checks...\"
+            echo \"🔍 Starting comprehensive health checks...\"
             HEALTH_PIDS=\"\"
+            declare -A HEALTH_RESULTS
 
             # Health check each stack in parallel
             for STACK in \$STACKS; do
               health_check_stack \"\$STACK\" &
-              HEALTH_PIDS=\"\$HEALTH_PIDS \$!\"
-              echo \"Started health check for \$STACK (PID: \$!)\"
+              PID=\$!
+              HEALTH_PIDS=\"\$HEALTH_PIDS \$PID\"
+              HEALTH_RESULTS[\$PID]=\$STACK
+              echo \"Started health check for \$STACK (PID: \$PID)\"
             done
 
             # Wait for all health checks and collect results
-            echo \"⏳ Waiting for all health checks to complete...\"
+            echo \"⏳ Waiting for health checks to complete...\"
+            for PID in \$HEALTH_PIDS; do
+              wait \$PID
+              EXIT_CODE=\$?
+              STACK=\${HEALTH_RESULTS[\$PID]}
+              
+              case \$EXIT_CODE in
+                0) HEALTHY_STACKS=\"\$HEALTHY_STACKS \$STACK\" ;;
+                1) FAILED_STACKS=\"\$FAILED_STACKS \$STACK\" ;;
+                2) DEGRADED_STACKS=\"\$DEGRADED_STACKS \$STACK\" ;;
+              esac
+            done
 
-            # Wait for all background jobs
-            wait
-
-            # Check health check results from log files
+            # Calculate container statistics
             for STACK in \$STACKS; do
               if [ -f \"/tmp/health_\${STACK}.log\" ]; then
-                if grep -q \"❌.*\$STACK\" \"/tmp/health_\${STACK}.log\"; then
-                  FAILED_STACKS=\"\$FAILED_STACKS \$STACK\"
-                fi
+                STACK_CONTAINERS=\$(cd /opt/compose/\$STACK && op run --env-file=/opt/compose/compose.env -- docker compose config --services | wc -l | tr -d \" \")
+                STACK_RUNNING=\$(cd /opt/compose/\$STACK && op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" 2>/dev/null | wc -l | tr -d \" \" || echo \"0\")
+                TOTAL_CONTAINERS=\$((TOTAL_CONTAINERS + STACK_CONTAINERS))
+                RUNNING_CONTAINERS=\$((RUNNING_CONTAINERS + STACK_RUNNING))
               fi
             done
 
-            # Display all health check results
-            echo \"📋 Health Check Results:\"
-            for STACK in \$STACKS; do
+            # Display comprehensive health check results
+            echo \"\"
+            echo \"📊 Health Check Summary:\"
+            echo \"════════════════════════\"
+            echo \"Total Services: \$TOTAL_CONTAINERS\"
+            echo \"Running Services: \$RUNNING_CONTAINERS\"
+            echo \"Success Rate: \$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))%\"
+            echo \"\"
+
+            # Display results by category
+            [ -n \"\$HEALTHY_STACKS\" ] && echo \"✅ Healthy Stacks: \$(echo \$HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')\"
+            [ -n \"\$DEGRADED_STACKS\" ] && echo \"⚠️ Degraded Stacks: \$(echo \$DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')\"
+            [ -n \"\$FAILED_STACKS\" ] && echo \"❌ Failed Stacks: \$(echo \$FAILED_STACKS | tr ' ' ',' | sed 's/^,//')\"
+
+            echo \"\"
+            echo \"📋 Detailed Results:\"
+            echo \"══════════════════════\"
+            for STACK in \$(echo \"\$STACKS\" | tr ' ' '\n' | sort); do
               if [ -f \"/tmp/health_\${STACK}.log\" ]; then
-                echo \"--- \$STACK ---\"
                 cat \"/tmp/health_\${STACK}.log\"
                 rm -f \"/tmp/health_\${STACK}.log\"
               fi
             done
 
-            if [ -n \"\$FAILED_STACKS\" ]; then
-              echo \"❌ Health check failed for stacks:\$FAILED_STACKS\"
-              exit 1
-            fi
+            # Set output variables for Discord notifications
+            echo \"healthy_stacks=\$(echo \$HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')\" >> \$GITHUB_OUTPUT
+            echo \"degraded_stacks=\$(echo \$DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')\" >> \$GITHUB_OUTPUT
+            echo \"failed_stacks=\$(echo \$FAILED_STACKS | tr ' ' ',' | sed 's/^,//')\" >> \$GITHUB_OUTPUT
+            echo \"total_containers=\$TOTAL_CONTAINERS\" >> \$GITHUB_OUTPUT
+            echo \"running_containers=\$RUNNING_CONTAINERS\" >> \$GITHUB_OUTPUT
+            echo \"success_rate=\$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))\" >> \$GITHUB_OUTPUT
 
-            echo \"🎉 All services are healthy!\"
+            # Determine final health status
+            if [ -n \"\$FAILED_STACKS\" ]; then
+              echo \"\"
+              echo \"💥 Health check failed - some stacks are not running\"
+              exit 1
+            elif [ -n \"\$DEGRADED_STACKS\" ]; then
+              echo \"\"
+              echo \"⚠️ Health check passed with warnings - some services degraded\"
+              exit 0
+            else
+              echo \"\"
+              echo \"🎉 All services are fully healthy!\"
+              exit 0
+            fi
           "
           echo "::endgroup::"
 
@@ -388,22 +471,16 @@ jobs:
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
           status: ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
-          title: "🚀 ${{ inputs.repo-name }} Deploy Results"
+          title: "🚀 ${{ inputs.repo-name }} Deployment"
           description: |
-            **Repository:** `${{ inputs.repo-name }}`
-            **Branch:** `${{ github.ref_name }}`
-            **Commit:** `${{ inputs.target-ref }}`
-            **Trigger:** ${{ github.event_name }}
+            ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ **DEPLOYMENT SUCCESSFUL**' || needs.deploy.outputs.rollback_status == 'success' && '🔄 **DEPLOYMENT FAILED - ROLLED BACK**' || '❌ **DEPLOYMENT FAILED**' }}
 
-            **Job Results:**
-            • Preparation: ${{ needs.deploy.result == 'success' && '✅ PASSED' || '❌ FAILED' }}
-            • Deployment: ${{ needs.deploy.outputs.deploy_status == 'success' && '✅ PASSED' || '❌ FAILED' }}
-            • Health Check: ${{ needs.deploy.outputs.health_status == 'success' && '✅ PASSED' || needs.deploy.outputs.health_status == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
-            • Cleanup: ${{ needs.deploy.outputs.cleanup_status == 'success' && '✅ PASSED' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
-            • Rollback: ${{ needs.deploy.outputs.rollback_status == 'success' && '✅ PASSED' || needs.deploy.outputs.rollback_status == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
+            **Services:** ${{ needs.deploy.outputs.running_containers || '?' }}/${{ needs.deploy.outputs.total_containers || '?' }} running (${{ needs.deploy.outputs.success_rate || '?' }}%)
+            ${{ needs.deploy.outputs.healthy_stacks != '' && format('✅ Healthy: {0}', needs.deploy.outputs.healthy_stacks) || '' }}${{ needs.deploy.outputs.degraded_stacks != '' && format('⚠️ Degraded: {0}', needs.deploy.outputs.degraded_stacks) || '' }}${{ needs.deploy.outputs.failed_stacks != '' && format('❌ Failed: {0}', needs.deploy.outputs.failed_stacks) || '' }}
 
-            **Status:** ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ Successfully Deployed' || '❌ Deployment Failed' }}${{ needs.deploy.outputs.rollback_status == 'success' && ' - Services Rolled Back' || '' }}
-            **Stacks:** ${{ join(fromJson(inputs.stacks), ', ') }}${{ inputs.has-dockge == true && ', dockge' || '' }}
-          color: ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x00ff00 || 0xff0000 }}
-          username: "GitHub Actions - ${{ inputs.repo-name }}"
+            **Pipeline:** Deploy ${{ needs.deploy.outputs.deploy_status == 'success' && '✅' || '❌' }} → Health ${{ needs.deploy.outputs.health_status == 'success' && '✅' || needs.deploy.outputs.health_status == 'skipped' && '⏭️' || '❌' }} → Cleanup ${{ needs.deploy.outputs.cleanup_status == 'success' && '✅' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️' || '❌' }}${{ needs.deploy.outputs.rollback_status != 'skipped' && format(' → Rollback {0}', needs.deploy.outputs.rollback_status == 'success' && '✅' || '❌') || '' }}
+
+            ${{ github.event_name == 'workflow_dispatch' && '🔧 **Manual Trigger**' || format('📝 **Commit:** `{0}`', inputs.target-ref) }}
+          color: ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x00ff00 || needs.deploy.outputs.degraded_stacks != '' && 0xff9900 || 0xff0000 }}
+          username: "GitHub Actions"
           avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"

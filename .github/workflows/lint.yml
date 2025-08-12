@@ -148,21 +148,18 @@ jobs:
 
       - name: Send Discord notification
         uses: sarisia/actions-status-discord@5ddd3b114a98457dd80a39b2f00b6a998cd69008  # v1.15.3
+        if: ${{ needs.lint-summary.result == 'failure' || (needs.lint-summary.result == 'success' && github.event_name != 'pull_request') }}
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
           status: ${{ needs.lint-summary.result == 'success' && 'success' || 'failure' }}
-          title: "🔍 ${{ inputs.repo-name }} Lint Results"
+          title: "🔍 ${{ inputs.repo-name }} Validation"
           description: |
-            **Repository:** `${{ inputs.target-repository }}`
-            **Branch:** `${{ github.ref_name }}`
-            **Commit:** `${{ github.sha }}`
-            **Trigger:** ${{ github.event_name }}
+            ${{ needs.lint-summary.result == 'success' && '✅ **VALIDATION PASSED**' || '❌ **VALIDATION FAILED**' }}
 
-            **Job Results:**
-            • GitGuardian Scan: ${{ needs.scanning.result == 'success' && '✅ PASSED' || needs.scanning.result == 'skipped' && '⏭️ SKIPPED' || '❌ FAILED' }}
-            • Lint Jobs: ${{ needs.lint.result == 'success' && '✅ PASSED' || '❌ FAILED' }}
+            **Security:** GitGuardian ${{ needs.scanning.result == 'success' && '✅' || needs.scanning.result == 'skipped' && '⏭️' || '❌' }} **Quality:** Linting ${{ needs.lint.result == 'success' && '✅' || '❌' }}
 
-            **Stacks Validated:** ${{ join(fromJson(inputs.stacks), ', ') }}
+            ${{ github.event_name == 'pull_request' && '🔀 **Pull Request**' || github.event_name == 'workflow_dispatch' && '🔧 **Manual Trigger**' || format('📝 **Push to {0}**', github.ref_name) }}
+            **Stacks:** ${{ join(fromJson(inputs.stacks), ', ') }}
           color: ${{ needs.lint-summary.result == 'success' && 0x00ff00 || 0xff0000 }}
-          username: "GitHub Actions - ${{ inputs.repo-name }}"
+          username: "GitHub Actions"
           avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
