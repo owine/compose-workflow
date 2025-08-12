@@ -112,97 +112,104 @@ jobs:
         run: |
           echo "::group::Deploying all stacks"
 
-          # Parse stacks from JSON input
+          # Parse inputs outside SSH context
           STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
+          OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+          HAS_DOCKGE="${{ inputs.has-dockge }}"
+          TARGET_REF="${{ inputs.target-ref }}"
+          COMPOSE_ARGS="${{ inputs.args || '' }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
             set -e
-            export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+            export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
 
-            if [ \"${{ inputs.has-dockge }}\" = \"true\" ]; then
-              echo \"🚀 Deploying Dockge...\"
+            if [ "$HAS_DOCKGE" = "true" ]; then
+              echo "🚀 Deploying Dockge..."
               cd /opt/dockge
               op run --env-file=/opt/compose/compose.env -- docker compose pull
-              op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans ${{ inputs.args || '' }}
-              echo \"✅ Dockge deployed successfully\"
+              op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS
+              echo "✅ Dockge deployed successfully"
             fi
 
-            echo \"Updating repository to ${{ inputs.target-ref }}...\"
+            echo "Updating repository to $TARGET_REF..."
             git -C /opt/compose/ fetch
-            git -C /opt/compose/ checkout ${{ inputs.target-ref }}
+            git -C /opt/compose/ checkout $TARGET_REF
+
+            # Set stacks variable
+            STACKS="$STACKS"
 
             # Function to deploy a single stack
             deploy_stack() {
               local STACK=\$1
-              local LOGFILE=\"/tmp/deploy_\${STACK}.log\"
+              local LOGFILE="/tmp/deploy_\${STACK}.log"
               {
-                echo \"🚀 Deploying \$STACK...\"
+                echo "🚀 Deploying \$STACK..."
                 cd /opt/compose/\$STACK
 
-                echo \"  Pulling images for \$STACK...\"
+                echo "  Pulling images for \$STACK..."
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-                  echo \"❌ Failed to pull images for \$STACK\"
+                  echo "❌ Failed to pull images for \$STACK"
                   return 1
                 fi
 
-                echo \"  Starting services for \$STACK...\"
-                if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans ${{ inputs.args || '' }}; then
-                  echo \"❌ Failed to start services for \$STACK\"
+                echo "  Starting services for \$STACK..."
+                if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                  echo "❌ Failed to start services for \$STACK"
                   return 1
                 fi
 
-                echo \"✅ \$STACK deployed successfully\"
+                echo "✅ \$STACK deployed successfully"
                 return 0
-              } > \"\$LOGFILE\" 2>&1
+              } > "\$LOGFILE" 2>&1
 
               return \$?
             }
 
             # Start all deployments in parallel
-            echo \"🚀 Starting parallel deployment of all stacks...\"
-            PIDS=\"\"
+            echo "🚀 Starting parallel deployment of all stacks..."
+            PIDS=""
 
             # Deploy each stack in parallel
             for STACK in \$STACKS; do
-              deploy_stack \"\$STACK\" &
-              PIDS=\"\$PIDS \$!\"
-              echo \"Started deployment of \$STACK (PID: \$!)\"
+              deploy_stack "\$STACK" &
+              PIDS="\$PIDS \$!"
+              echo "Started deployment of \$STACK (PID: \$!)"
             done
 
             # Wait for all deployments and collect results
-            echo \"⏳ Waiting for all deployments to complete...\"
-            FAILED_STACKS=\"\"
+            echo "⏳ Waiting for all deployments to complete..."
+            FAILED_STACKS=""
 
             # Wait for all background jobs
             wait
 
             # Check deployment results from log files
             for STACK in \$STACKS; do
-              if [ -f \"/tmp/deploy_\${STACK}.log\" ]; then
-                if grep -q \"❌.*\$STACK\" \"/tmp/deploy_\${STACK}.log\"; then
-                  FAILED_STACKS=\"\$FAILED_STACKS \$STACK\"
+              if [ -f "/tmp/deploy_\${STACK}.log" ]; then
+                if grep -q "❌.*\$STACK" "/tmp/deploy_\${STACK}.log"; then
+                  FAILED_STACKS="\$FAILED_STACKS \$STACK"
                 fi
               fi
             done
 
             # Display all deployment logs
-            echo \"📋 Deployment Results:\"
+            echo "📋 Deployment Results:"
             for STACK in \$STACKS; do
-              if [ -f \"/tmp/deploy_\${STACK}.log\" ]; then
-                echo \"--- \$STACK ---\"
-                cat \"/tmp/deploy_\${STACK}.log\"
-                rm -f \"/tmp/deploy_\${STACK}.log\"
+              if [ -f "/tmp/deploy_\${STACK}.log" ]; then
+                echo "--- \$STACK ---"
+                cat "/tmp/deploy_\${STACK}.log"
+                rm -f "/tmp/deploy_\${STACK}.log"
               fi
             done
 
             # Check if any deployments failed
-            if [ -n \"\$FAILED_STACKS\" ]; then
-              echo \"💥 Deployments failed for:\$FAILED_STACKS\"
+            if [ -n "\$FAILED_STACKS" ]; then
+              echo "💥 Deployments failed for:\$FAILED_STACKS"
               exit 1
             fi
 
-            echo \"🎉 All stacks deployed successfully in parallel!\"
-          "
+            echo "🎉 All stacks deployed successfully in parallel!"
+          EOF
           echo "::endgroup::"
 
       - name: Health Check All Services
@@ -409,11 +416,11 @@ jobs:
         continue-on-error: true
         run: |
           echo "::group::Cleaning up unused Docker images"
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
-            echo \"🧹 Cleaning up unused Docker images...\"
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
+            echo "🧹 Cleaning up unused Docker images..."
             docker image prune -af
-            echo \"✅ Cleanup completed\"
-          "
+            echo "✅ Cleanup completed"
+          EOF
           echo "::endgroup::"
 
       - name: Rollback to Previous Version
@@ -426,29 +433,34 @@ jobs:
           echo "Previous SHA: ${{ steps.backup.outputs.previous_sha }}"
           echo "Failed SHA: ${{ inputs.target-ref }}"
 
-          # Parse stacks from JSON input
+          # Parse inputs outside SSH context
           STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
+          OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+          PREVIOUS_SHA="${{ steps.backup.outputs.previous_sha }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
             set -e
-            export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+            export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
 
-            echo \"🔄 Rolling back to ${{ steps.backup.outputs.previous_sha }}...\"
-            git -C /opt/compose/ checkout ${{ steps.backup.outputs.previous_sha }}
+            echo "🔄 Rolling back to $PREVIOUS_SHA..."
+            git -C /opt/compose/ checkout $PREVIOUS_SHA
+
+            # Set stacks variable
+            STACKS="$STACKS"
 
             for STACK in \$STACKS; do
-              echo \"🔄 Rolling back \$STACK...\"
+              echo "🔄 Rolling back \$STACK..."
               cd /opt/compose/\$STACK
 
               if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans; then
-                echo \"❌ Failed to rollback \$STACK\"
+                echo "❌ Failed to rollback \$STACK"
               else
-                echo \"✅ \$STACK rolled back successfully\"
+                echo "✅ \$STACK rolled back successfully"
               fi
             done
 
-            echo \"✅ Rollback completed\"
-          "
+            echo "✅ Rollback completed"
+          EOF
           echo "::endgroup::"
 
       - name: Report Deployment Status
