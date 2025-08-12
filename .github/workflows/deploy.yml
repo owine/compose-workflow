@@ -281,32 +281,25 @@ jobs:
               return \$?
             }
 
-            # Start all health checks in parallel
+            # Health check each stack sequentially for reliability
             echo \"🔍 Starting comprehensive health checks...\"
-            HEALTH_PIDS=\"\"
-            declare -A HEALTH_RESULTS
-
-            # Health check each stack in parallel
             for STACK in \$STACKS; do
-              health_check_stack \"\$STACK\" &
-              PID=\$!
-              HEALTH_PIDS=\"\$HEALTH_PIDS \$PID\"
-              HEALTH_RESULTS[\$PID]=\$STACK
-              echo \"Started health check for \$STACK (PID: \$PID)\"
-            done
-
-            # Wait for all health checks and collect results
-            echo \"⏳ Waiting for health checks to complete...\"
-            for PID in \$HEALTH_PIDS; do
-              wait \$PID
-              EXIT_CODE=\$?
-              STACK=\${HEALTH_RESULTS[\$PID]}
-              
-              case \$EXIT_CODE in
-                0) HEALTHY_STACKS=\"\$HEALTHY_STACKS \$STACK\" ;;
-                1) FAILED_STACKS=\"\$FAILED_STACKS \$STACK\" ;;
-                2) DEGRADED_STACKS=\"\$DEGRADED_STACKS \$STACK\" ;;
-              esac
+              echo \"Starting health check for \$STACK...\"
+              if health_check_stack \"\$STACK\"; then
+                EXIT_CODE=\$?
+                case \$EXIT_CODE in
+                  0) HEALTHY_STACKS=\"\$HEALTHY_STACKS \$STACK\" ;;
+                  2) DEGRADED_STACKS=\"\$DEGRADED_STACKS \$STACK\" ;;
+                  *) FAILED_STACKS=\"\$FAILED_STACKS \$STACK\" ;;
+                esac
+              else
+                EXIT_CODE=\$?
+                if [ \$EXIT_CODE -eq 2 ]; then
+                  DEGRADED_STACKS=\"\$DEGRADED_STACKS \$STACK\"
+                else
+                  FAILED_STACKS=\"\$FAILED_STACKS \$STACK\"
+                fi
+              fi
             done
 
             # Calculate container statistics
