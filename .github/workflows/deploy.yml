@@ -174,8 +174,8 @@ jobs:
 
             # Deploy each stack in parallel
             # Convert space-separated string to proper word splitting
-            IFS=' ' read -ra STACK_ARRAY <<< "$STACKS"
-            for STACK in "${STACK_ARRAY[@]}"; do
+            set -- $STACKS
+            for STACK in "$@"; do
               echo "DEBUG: Processing stack: '$STACK'"
               deploy_stack "$STACK" &
               PIDS="$PIDS $!"
@@ -193,8 +193,8 @@ jobs:
 
             # Check deployment results from log files
             DEPLOYED_STACKS=""
-            IFS=' ' read -ra STACK_ARRAY <<< "$STACKS"
-            for STACK in "${STACK_ARRAY[@]}"; do
+            set -- $STACKS
+            for STACK in "$@"; do
               if [ -f "/tmp/deploy_${STACK}.log" ]; then
                 DEPLOYED_STACKS="$DEPLOYED_STACKS $STACK"
                 if grep -q "❌.*$STACK" "/tmp/deploy_${STACK}.log"; then
@@ -208,8 +208,8 @@ jobs:
 
             # Display all deployment logs
             echo "📋 Deployment Results:"
-            IFS=' ' read -ra STACK_ARRAY <<< "$STACKS"
-            for STACK in "${STACK_ARRAY[@]}"; do
+            set -- $STACKS
+            for STACK in "$@"; do
               if [ -f "/tmp/deploy_${STACK}.log" ]; then
                 echo "--- $STACK ---"
                 cat "/tmp/deploy_${STACK}.log"
@@ -330,8 +330,8 @@ jobs:
 
             # Health check each stack sequentially for reliability
             echo "🔍 Starting comprehensive health checks..."
-            IFS=' ' read -ra STACK_ARRAY <<< "$STACKS"
-            for STACK in "${STACK_ARRAY[@]}"; do
+            set -- $STACKS
+            for STACK in "$@"; do
               echo "Starting health check for $STACK..."
               if health_check_stack "$STACK"; then
                 EXIT_CODE=$?
@@ -351,8 +351,8 @@ jobs:
             done
 
             # Calculate container statistics
-            IFS=' ' read -ra STACK_ARRAY <<< "$STACKS"
-            for STACK in "${STACK_ARRAY[@]}"; do
+            set -- $STACKS
+            for STACK in "$@"; do
               if [ -f "/tmp/health_${STACK}.log" ]; then
                 STACK_CONTAINERS=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose config --services | wc -l | tr -d " ")
                 STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
@@ -378,8 +378,8 @@ jobs:
             echo ""
             echo "📋 Detailed Results:"
             echo "══════════════════════"
-            IFS=' ' read -ra STACK_ARRAY <<< "$STACKS"
-            for STACK in "${STACK_ARRAY[@]}"; do
+            set -- $STACKS
+            for STACK in "$@"; do
               if [ -f "/tmp/health_${STACK}.log" ]; then
                 cat "/tmp/health_${STACK}.log"
                 rm -f "/tmp/health_${STACK}.log"
@@ -466,8 +466,8 @@ jobs:
             echo "🔄 Rolling back to $PREVIOUS_SHA..."
             git -C /opt/compose/ checkout $PREVIOUS_SHA
 
-            IFS=' ' read -ra STACK_ARRAY <<< "$STACKS"
-            for STACK in "${STACK_ARRAY[@]}"; do
+            set -- $STACKS
+            for STACK in "$@"; do
               echo "🔄 Rolling back $STACK..."
               cd /opt/compose/$STACK
 
