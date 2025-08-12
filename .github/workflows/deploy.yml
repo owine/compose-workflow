@@ -123,8 +123,7 @@ jobs:
           echo "DEBUG: Parsed STACKS: '$STACKS'"
           echo "DEBUG: HAS_DOCKGE: '$HAS_DOCKGE'"
 
-          STACKS="$STACKS" OP_TOKEN="$OP_TOKEN" HAS_DOCKGE="$HAS_DOCKGE" TARGET_REF="$TARGET_REF" COMPOSE_ARGS="$COMPOSE_ARGS" \
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
 
