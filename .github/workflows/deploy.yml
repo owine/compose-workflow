@@ -343,13 +343,13 @@ jobs:
               fi
             done
 
-            # Set output variables for Discord notifications
-            echo \"healthy_stacks=\$(echo \$HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')\" >> \$GITHUB_OUTPUT
-            echo \"degraded_stacks=\$(echo \$DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')\" >> \$GITHUB_OUTPUT
-            echo \"failed_stacks=\$(echo \$FAILED_STACKS | tr ' ' ',' | sed 's/^,//')\" >> \$GITHUB_OUTPUT
-            echo \"total_containers=\$TOTAL_CONTAINERS\" >> \$GITHUB_OUTPUT
-            echo \"running_containers=\$RUNNING_CONTAINERS\" >> \$GITHUB_OUTPUT
-            echo \"success_rate=\$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))\" >> \$GITHUB_OUTPUT
+            # Export variables for output capture
+            echo \"HEALTH_OUTPUT_HEALTHY=\$(echo \$HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')\"
+            echo \"HEALTH_OUTPUT_DEGRADED=\$(echo \$DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')\"
+            echo \"HEALTH_OUTPUT_FAILED=\$(echo \$FAILED_STACKS | tr ' ' ',' | sed 's/^,//')\"
+            echo \"HEALTH_OUTPUT_TOTAL=\$TOTAL_CONTAINERS\"
+            echo \"HEALTH_OUTPUT_RUNNING=\$RUNNING_CONTAINERS\"
+            echo \"HEALTH_OUTPUT_SUCCESS_RATE=\$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))\""
 
             # Determine final health status
             if [ -n \"\$FAILED_STACKS\" ]; then
@@ -365,7 +365,27 @@ jobs:
               echo \"🎉 All services are fully healthy!\"
               exit 0
             fi
-          "
+          " | tee /tmp/health_output.log
+          
+          # Extract health outputs for Discord notifications
+          if grep -q "HEALTH_OUTPUT_" /tmp/health_output.log 2>/dev/null; then
+            grep "HEALTH_OUTPUT_HEALTHY=" /tmp/health_output.log | cut -d'=' -f2 | head -1 | xargs -I {} echo "healthy_stacks={}" >> $GITHUB_OUTPUT
+            grep "HEALTH_OUTPUT_DEGRADED=" /tmp/health_output.log | cut -d'=' -f2 | head -1 | xargs -I {} echo "degraded_stacks={}" >> $GITHUB_OUTPUT
+            grep "HEALTH_OUTPUT_FAILED=" /tmp/health_output.log | cut -d'=' -f2 | head -1 | xargs -I {} echo "failed_stacks={}" >> $GITHUB_OUTPUT
+            grep "HEALTH_OUTPUT_TOTAL=" /tmp/health_output.log | cut -d'=' -f2 | head -1 | xargs -I {} echo "total_containers={}" >> $GITHUB_OUTPUT
+            grep "HEALTH_OUTPUT_RUNNING=" /tmp/health_output.log | cut -d'=' -f2 | head -1 | xargs -I {} echo "running_containers={}" >> $GITHUB_OUTPUT
+            grep "HEALTH_OUTPUT_SUCCESS_RATE=" /tmp/health_output.log | cut -d'=' -f2 | head -1 | xargs -I {} echo "success_rate={}" >> $GITHUB_OUTPUT
+          else
+            # Fallback outputs if parsing fails
+            echo "healthy_stacks=" >> $GITHUB_OUTPUT
+            echo "degraded_stacks=" >> $GITHUB_OUTPUT
+            echo "failed_stacks=" >> $GITHUB_OUTPUT
+            echo "total_containers=0" >> $GITHUB_OUTPUT
+            echo "running_containers=0" >> $GITHUB_OUTPUT
+            echo "success_rate=0" >> $GITHUB_OUTPUT
+          fi
+          
+          rm -f /tmp/health_output.log
           echo "::endgroup::"
 
       - name: Cleanup unused images
