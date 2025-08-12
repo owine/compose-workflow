@@ -118,6 +118,10 @@ jobs:
           HAS_DOCKGE="${{ inputs.has-dockge }}"
           TARGET_REF="${{ inputs.target-ref }}"
           COMPOSE_ARGS="${{ inputs.args || '' }}"
+          
+          echo "DEBUG: Raw inputs.stacks: ${{ inputs.stacks }}"
+          echo "DEBUG: Parsed STACKS: '$STACKS'"
+          echo "DEBUG: HAS_DOCKGE: '$HAS_DOCKGE'"
 
           STACKS="$STACKS" OP_TOKEN="$OP_TOKEN" HAS_DOCKGE="$HAS_DOCKGE" TARGET_REF="$TARGET_REF" COMPOSE_ARGS="$COMPOSE_ARGS" \
           ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
@@ -187,13 +191,18 @@ jobs:
             wait
 
             # Check deployment results from log files
+            DEPLOYED_STACKS=""
             for STACK in $STACKS; do
               if [ -f "/tmp/deploy_${STACK}.log" ]; then
+                DEPLOYED_STACKS="$DEPLOYED_STACKS $STACK"
                 if grep -q "❌.*$STACK" "/tmp/deploy_${STACK}.log"; then
                   FAILED_STACKS="$FAILED_STACKS $STACK"
                 fi
               fi
             done
+            
+            echo "DEBUG: Expected stacks: '$STACKS'"
+            echo "DEBUG: Actually deployed: '$DEPLOYED_STACKS'"
 
             # Display all deployment logs
             echo "📋 Deployment Results:"
@@ -206,7 +215,13 @@ jobs:
             done
 
             # Check if any deployments failed
-            if [ -n "$FAILED_STACKS" ]; then
+            if [ -z "$STACKS" ]; then
+              echo "💥 No stacks to deploy - STACKS variable is empty!"
+              exit 1
+            elif [ -z "$DEPLOYED_STACKS" ]; then
+              echo "💥 No stacks were actually deployed - check stack discovery!"
+              exit 1
+            elif [ -n "$FAILED_STACKS" ]; then
               echo "💥 Deployments failed for:$FAILED_STACKS"
               exit 1
             fi
