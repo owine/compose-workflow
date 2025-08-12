@@ -241,8 +241,7 @@ jobs:
           OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
           HAS_DOCKGE="${{ inputs.has-dockge }}"
 
-          STACKS="$STACKS" OP_TOKEN="$OP_TOKEN" HAS_DOCKGE="$HAS_DOCKGE" \
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF' | tee /tmp/health_output.log
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF | tee /tmp/health_output.log
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
 
@@ -453,8 +452,7 @@ jobs:
           OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
           PREVIOUS_SHA="${{ steps.backup.outputs.previous_sha }}"
 
-          STACKS="$STACKS" OP_TOKEN="$OP_TOKEN" PREVIOUS_SHA="$PREVIOUS_SHA" \
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
 
