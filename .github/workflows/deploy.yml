@@ -211,13 +211,16 @@ jobs:
         continue-on-error: true
         run: |
           echo "::group::Health checking all services"
+          
+          # Parse stacks from JSON input
+          STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
 
           ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
             
-            # Set stacks variable from GitHub Actions context
-            STACKS=\"${{ join(fromJson(inputs.stacks), ' ') }}\""
+            # Set stacks variable from passed parameter
+            STACKS=\"$STACKS\""
 
             echo \"⏳ Waiting for services to stabilize...\"
             sleep 15
