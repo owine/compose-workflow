@@ -119,7 +119,8 @@ jobs:
           TARGET_REF="${{ inputs.target-ref }}"
           COMPOSE_ARGS="${{ inputs.args || '' }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
+          STACKS="$STACKS" OP_TOKEN="$OP_TOKEN" HAS_DOCKGE="$HAS_DOCKGE" TARGET_REF="$TARGET_REF" COMPOSE_ARGS="$COMPOSE_ARGS" \
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
 
@@ -134,9 +135,6 @@ jobs:
             echo "Updating repository to $TARGET_REF..."
             git -C /opt/compose/ fetch
             git -C /opt/compose/ checkout $TARGET_REF
-
-            # Set stacks variable (unquoted to allow word splitting)
-            STACKS=$STACKS
 
             # Function to deploy a single stack
             deploy_stack() {
@@ -170,7 +168,7 @@ jobs:
             PIDS=""
 
             # Deploy each stack in parallel
-            for STACK in \$STACKS; do
+            for STACK in $STACKS; do
               deploy_stack "\$STACK" &
               PIDS="\$PIDS \$!"
               echo "Started deployment of \$STACK (PID: \$!)"
@@ -184,7 +182,7 @@ jobs:
             wait
 
             # Check deployment results from log files
-            for STACK in \$STACKS; do
+            for STACK in $STACKS; do
               if [ -f "/tmp/deploy_\${STACK}.log" ]; then
                 if grep -q "❌.*\$STACK" "/tmp/deploy_\${STACK}.log"; then
                   FAILED_STACKS="\$FAILED_STACKS \$STACK"
@@ -194,7 +192,7 @@ jobs:
 
             # Display all deployment logs
             echo "📋 Deployment Results:"
-            for STACK in \$STACKS; do
+            for STACK in $STACKS; do
               if [ -f "/tmp/deploy_\${STACK}.log" ]; then
                 echo "--- \$STACK ---"
                 cat "/tmp/deploy_\${STACK}.log"
@@ -224,12 +222,10 @@ jobs:
           OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
           HAS_DOCKGE="${{ inputs.has-dockge }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF | tee /tmp/health_output.log
+          STACKS="$STACKS" OP_TOKEN="$OP_TOKEN" HAS_DOCKGE="$HAS_DOCKGE" \
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF' | tee /tmp/health_output.log
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
-            
-            # Set stacks variable (unquoted to allow word splitting)
-            STACKS=$STACKS
 
             echo "⏳ Waiting for services to stabilize..."
             sleep 15
@@ -312,7 +308,7 @@ jobs:
 
             # Health check each stack sequentially for reliability
             echo \"🔍 Starting comprehensive health checks...\"
-            for STACK in \$STACKS; do
+            for STACK in $STACKS; do
               echo \"Starting health check for \$STACK...\"
               if health_check_stack \"\$STACK\"; then
                 EXIT_CODE=\$?
@@ -332,7 +328,7 @@ jobs:
             done
 
             # Calculate container statistics
-            for STACK in \$STACKS; do
+            for STACK in $STACKS; do
               if [ -f \"/tmp/health_\${STACK}.log\" ]; then
                 STACK_CONTAINERS=\$(cd /opt/compose/\$STACK && op run --env-file=/opt/compose/compose.env -- docker compose config --services | wc -l | tr -d \" \")
                 STACK_RUNNING=\$(cd /opt/compose/\$STACK && op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" 2>/dev/null | wc -l | tr -d \" \" || echo \"0\")
@@ -358,7 +354,7 @@ jobs:
             echo \"\"
             echo \"📋 Detailed Results:\"
             echo \"══════════════════════\"
-            for STACK in \$(echo \"\$STACKS\" | tr ' ' '\n' | sort); do
+            for STACK in $STACKS; do
               if [ -f \"/tmp/health_\${STACK}.log\" ]; then
                 cat \"/tmp/health_\${STACK}.log\"
                 rm -f \"/tmp/health_\${STACK}.log\"
@@ -438,17 +434,15 @@ jobs:
           OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
           PREVIOUS_SHA="${{ steps.backup.outputs.previous_sha }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
+          STACKS="$STACKS" OP_TOKEN="$OP_TOKEN" PREVIOUS_SHA="$PREVIOUS_SHA" \
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
 
             echo "🔄 Rolling back to $PREVIOUS_SHA..."
             git -C /opt/compose/ checkout $PREVIOUS_SHA
 
-            # Set stacks variable (unquoted to allow word splitting)
-            STACKS=$STACKS
-
-            for STACK in \$STACKS; do
+            for STACK in $STACKS; do
               echo "🔄 Rolling back \$STACK..."
               cd /opt/compose/\$STACK
 
