@@ -28,6 +28,11 @@ on:
         required: false
         type: boolean
         default: false
+      force-deploy:
+        description: "Force deployment even if repository is already at target commit"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   deploy:
@@ -36,6 +41,7 @@ jobs:
     timeout-minutes: 40
     outputs:
       previous_sha: ${{ steps.backup.outputs.previous_sha }}
+      deployment_needed: ${{ steps.backup.outputs.deployment_needed }}
       deploy_status: ${{ steps.deploy.outcome }}
       health_status: ${{ steps.health.outcome }}
       cleanup_status: ${{ steps.cleanup.outcome }}
@@ -80,17 +86,28 @@ jobs:
         id: backup
         run: |
           echo "::group::Preparing deployment backup"
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "
-            cd /opt/compose
-            CURRENT_SHA=\$(git rev-parse HEAD)
-            echo \"Current deployed SHA: \$CURRENT_SHA\"
-            echo \"New deployment SHA: ${{ inputs.target-ref }}\"
-          "
-          echo "previous_sha=$(ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD')" >> $GITHUB_OUTPUT
+          CURRENT_SHA=$(ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD')
+          TARGET_SHA="${{ inputs.target-ref }}"
+          
+          echo "Current deployed SHA: $CURRENT_SHA"
+          echo "New deployment SHA: $TARGET_SHA"
+          echo "previous_sha=$CURRENT_SHA" >> $GITHUB_OUTPUT
+          
+          if [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "${{ inputs.force-deploy }}" != "true" ]; then
+            echo "⚠️ Repository is already at target commit - no deployment needed"
+            echo "deployment_needed=false" >> $GITHUB_OUTPUT
+          elif [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "${{ inputs.force-deploy }}" = "true" ]; then
+            echo "🔄 Force deployment requested - proceeding despite same commit"
+            echo "deployment_needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Deployment needed - proceeding with update"
+            echo "deployment_needed=true" >> $GITHUB_OUTPUT
+          fi
           echo "::endgroup::"
 
       - name: Deploy All Stacks
         id: deploy
+        if: steps.backup.outputs.deployment_needed == 'true'
         continue-on-error: true
         run: |
           echo "::group::Deploying all stacks"
@@ -102,13 +119,13 @@ jobs:
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN=${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
-            ${{ inputs.has-dockge == true && format('
-            echo \"🚀 Deploying Dockge...\"
-            cd /opt/dockge
-            op run --env-file=/opt/compose/compose.env -- docker compose pull
-            op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans {0}
-            echo \"✅ Dockge deployed successfully\"
-            ', inputs.args || '') || '' }}
+            if [ \"${{ inputs.has-dockge }}\" = \"true\" ]; then
+              echo \"🚀 Deploying Dockge...\"
+              cd /opt/dockge
+              op run --env-file=/opt/compose/compose.env -- docker compose pull
+              op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans ${{ inputs.args || '' }}
+              echo \"✅ Dockge deployed successfully\"
+            fi
 
             echo \"Updating repository to ${{ inputs.target-ref }}...\"
             git -C /opt/compose/ fetch
@@ -190,7 +207,7 @@ jobs:
 
       - name: Health Check All Services
         id: health
-        if: steps.deploy.outcome == 'success'
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
         continue-on-error: true
         run: |
           echo "::group::Health checking all services"
@@ -211,25 +228,25 @@ jobs:
             TOTAL_CONTAINERS=0
             RUNNING_CONTAINERS=0
 
-            ${{ inputs.has-dockge == true && '
-            echo \"🔍 Health checking Dockge...\"
-            cd /opt/dockge
-            DOCKGE_RUNNING=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" | wc -l | tr -d \" \")
-            DOCKGE_TOTAL=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d \" \")
-            TOTAL_CONTAINERS=\$((TOTAL_CONTAINERS + DOCKGE_TOTAL))
-            RUNNING_CONTAINERS=\$((RUNNING_CONTAINERS + DOCKGE_RUNNING))
-            
-            if [ \"\$DOCKGE_RUNNING\" -eq 0 ]; then
-              echo \"❌ Dockge: 0/\$DOCKGE_TOTAL services running\"
-              FAILED_STACKS=\"\$FAILED_STACKS dockge\"
-            elif [ \"\$DOCKGE_RUNNING\" -lt \"\$DOCKGE_TOTAL\" ]; then
-              echo \"⚠️ Dockge: \$DOCKGE_RUNNING/\$DOCKGE_TOTAL services running (degraded)\"
-              DEGRADED_STACKS=\"\$DEGRADED_STACKS dockge\"
-            else
-              echo \"✅ Dockge: All \$DOCKGE_RUNNING services healthy\"
-              HEALTHY_STACKS=\"\$HEALTHY_STACKS dockge\"
+            if [ \"${{ inputs.has-dockge }}\" = \"true\" ]; then
+              echo \"🔍 Health checking Dockge...\"
+              cd /opt/dockge
+              DOCKGE_RUNNING=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter \"status=running\" | wc -l | tr -d \" \")
+              DOCKGE_TOTAL=\$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d \" \")
+              TOTAL_CONTAINERS=\$((TOTAL_CONTAINERS + DOCKGE_TOTAL))
+              RUNNING_CONTAINERS=\$((RUNNING_CONTAINERS + DOCKGE_RUNNING))
+              
+              if [ \"\$DOCKGE_RUNNING\" -eq 0 ]; then
+                echo \"❌ Dockge: 0/\$DOCKGE_TOTAL services running\"
+                FAILED_STACKS=\"\$FAILED_STACKS dockge\"
+              elif [ \"\$DOCKGE_RUNNING\" -lt \"\$DOCKGE_TOTAL\" ]; then
+                echo \"⚠️ Dockge: \$DOCKGE_RUNNING/\$DOCKGE_TOTAL services running (degraded)\"
+                DEGRADED_STACKS=\"\$DEGRADED_STACKS dockge\"
+              else
+                echo \"✅ Dockge: All \$DOCKGE_RUNNING services healthy\"
+                HEALTHY_STACKS=\"\$HEALTHY_STACKS dockge\"
+              fi
             fi
-            ' || '' }}
 
             # Function to perform comprehensive health check on a stack
             health_check_stack() {
@@ -383,7 +400,7 @@ jobs:
 
       - name: Cleanup unused images
         id: cleanup
-        if: steps.deploy.outcome == 'success' && steps.health.outcome == 'success'
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success' && steps.health.outcome == 'success'
         continue-on-error: true
         run: |
           echo "::group::Cleaning up unused Docker images"
@@ -396,7 +413,7 @@ jobs:
 
       - name: Rollback to Previous Version
         id: rollback
-        if: steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure'
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure')
         continue-on-error: true
         run: |
           echo "::group::Rolling back to previous deployment"
@@ -436,9 +453,24 @@ jobs:
 
           # Parse stacks from JSON input and create display list
           STACK_LIST="${{ join(fromJson(inputs.stacks), ', ') }}"
-          ${{ inputs.has-dockge == true && 'STACK_LIST="dockge, $STACK_LIST"' || '' }}
+          if [ "${{ inputs.has-dockge }}" = "true" ]; then
+            STACK_LIST="dockge, $STACK_LIST"
+          fi
 
-          if [ "${{ steps.deploy.outcome }}" == "success" ] && [ "${{ steps.health.outcome }}" == "success" ]; then
+          if [ "${{ steps.backup.outputs.deployment_needed }}" != "true" ]; then
+            echo "ℹ️ **NO DEPLOYMENT NEEDED**"
+            echo "✅ Repository already at target commit"
+            echo "📋 Target stacks: $STACK_LIST"
+            echo "🔄 SHA: ${{ inputs.target-ref }}"
+          elif [ "${{ inputs.force-deploy }}" = "true" ] && [ "${{ steps.deploy.outcome }}" == "success" ] && [ "${{ steps.health.outcome }}" == "success" ]; then
+            echo "🔄 **FORCE DEPLOYMENT SUCCESSFUL**"
+            echo "✅ All stacks force-deployed and healthy"
+            echo "📋 Deployed stacks: $STACK_LIST"
+            echo "🔄 SHA: ${{ inputs.target-ref }}"
+            if [ "${{ steps.cleanup.outcome }}" == "success" ]; then
+              echo "🧹 Cleanup completed successfully"
+            fi
+          elif [ "${{ steps.deploy.outcome }}" == "success" ] && [ "${{ steps.health.outcome }}" == "success" ]; then
             echo "🎉 **DEPLOYMENT SUCCESSFUL**"
             echo "✅ All stacks deployed and healthy"
             echo "📋 Deployed stacks: $STACK_LIST"
@@ -483,17 +515,17 @@ jobs:
         uses: sarisia/actions-status-discord@5ddd3b114a98457dd80a39b2f00b6a998cd69008  # v1.15.3
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
-          status: ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
+          status: ${{ needs.deploy.outputs.deployment_needed != 'true' && 'success' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
           title: "🚀 ${{ inputs.repo-name }} Deployment"
           description: |
-            ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ **DEPLOYMENT SUCCESSFUL**' || needs.deploy.outputs.rollback_status == 'success' && '🔄 **DEPLOYMENT FAILED - ROLLED BACK**' || '❌ **DEPLOYMENT FAILED**' }}
+            ${{ needs.deploy.outputs.deployment_needed != 'true' && 'ℹ️ **NO DEPLOYMENT NEEDED** - Repository already at target commit' || inputs.force-deploy == true && needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '🔄 **FORCE DEPLOYMENT SUCCESSFUL**' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ **DEPLOYMENT SUCCESSFUL**' || needs.deploy.outputs.rollback_status == 'success' && '🔄 **DEPLOYMENT FAILED - ROLLED BACK**' || '❌ **DEPLOYMENT FAILED**' }}
 
-            **Services:** ${{ needs.deploy.outputs.running_containers || '?' }}/${{ needs.deploy.outputs.total_containers || '?' }} running (${{ needs.deploy.outputs.success_rate || '?' }}%)
+            ${{ needs.deploy.outputs.deployment_needed == 'true' && format('**Services:** {0}/{1} running ({2}%)', needs.deploy.outputs.running_containers || '?', needs.deploy.outputs.total_containers || '?', needs.deploy.outputs.success_rate || '?') || '**Target Stacks:** Ready for deployment when needed' }}
             ${{ needs.deploy.outputs.healthy_stacks != '' && format('✅ Healthy: {0}', needs.deploy.outputs.healthy_stacks) || '' }}${{ needs.deploy.outputs.degraded_stacks != '' && format('⚠️ Degraded: {0}', needs.deploy.outputs.degraded_stacks) || '' }}${{ needs.deploy.outputs.failed_stacks != '' && format('❌ Failed: {0}', needs.deploy.outputs.failed_stacks) || '' }}
 
-            **Pipeline:** Deploy ${{ needs.deploy.outputs.deploy_status == 'success' && '✅' || '❌' }} → Health ${{ needs.deploy.outputs.health_status == 'success' && '✅' || needs.deploy.outputs.health_status == 'skipped' && '⏭️' || '❌' }} → Cleanup ${{ needs.deploy.outputs.cleanup_status == 'success' && '✅' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️' || '❌' }}${{ needs.deploy.outputs.rollback_status != 'skipped' && format(' → Rollback {0}', needs.deploy.outputs.rollback_status == 'success' && '✅' || '❌') || '' }}
+            ${{ needs.deploy.outputs.deployment_needed == 'true' && format('**Pipeline:** Deploy {0} → Health {1} → Cleanup {2}{3}', needs.deploy.outputs.deploy_status == 'success' && '✅' || '❌', needs.deploy.outputs.health_status == 'success' && '✅' || needs.deploy.outputs.health_status == 'skipped' && '⏭️' || '❌', needs.deploy.outputs.cleanup_status == 'success' && '✅' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️' || '❌', needs.deploy.outputs.rollback_status != 'skipped' && format(' → Rollback {0}', needs.deploy.outputs.rollback_status == 'success' && '✅' || '❌') || '') || '**Status:** No changes detected' }}
 
             ${{ github.event_name == 'workflow_dispatch' && '🔧 **Manual Trigger**' || format('📝 **Commit:** `{0}`', inputs.target-ref) }}
-          color: ${{ needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x00ff00 || needs.deploy.outputs.degraded_stacks != '' && 0xff9900 || 0xff0000 }}
+          color: ${{ needs.deploy.outputs.deployment_needed != 'true' && 0x808080 || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x00ff00 || needs.deploy.outputs.degraded_stacks != '' && 0xff9900 || 0xff0000 }}
           username: "GitHub Actions"
           avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
