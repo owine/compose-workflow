@@ -165,14 +165,19 @@ jobs:
 
             # Start all deployments in parallel
             echo "🚀 Starting parallel deployment of all stacks..."
+            echo "DEBUG: STACKS variable contains: '$STACKS'"
+            echo "DEBUG: Number of stacks: $(echo $STACKS | wc -w)"
             PIDS=""
 
             # Deploy each stack in parallel
             for STACK in $STACKS; do
+              echo "DEBUG: Processing stack: '$STACK'"
               deploy_stack "$STACK" &
               PIDS="$PIDS $!"
               echo "Started deployment of $STACK (PID: $!)"
             done
+            
+            echo "DEBUG: PIDs: '$PIDS'"
 
             # Wait for all deployments and collect results
             echo "⏳ Waiting for all deployments to complete..."
