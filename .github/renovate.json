@@ -1,6 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:best-practices"],
+  "extends": [
+    "config:best-practices"
+  ],
   "dependencyDashboard": true,
   "timezone": "America/Chicago",
   "prHourlyLimit": 4,
@@ -11,7 +13,9 @@
     {
       "groupName": "Security updates",
       "groupSlug": "security",
-      "matchUpdateTypes": ["patch"],
+      "matchUpdateTypes": [
+        "patch"
+      ],
       "isVulnerabilityAlert": true,
       "automerge": true,
       "prPriority": 10
@@ -19,17 +23,28 @@
     {
       "groupName": "GitHub Actions",
       "groupSlug": "all-gha",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "digest"
+      ],
       "automerge": true,
-      "stabilityDays": 0
+      "minimumReleaseAge": null
     },
     {
       "groupName": "Major GitHub Actions",
       "groupSlug": "all-gha-major",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["major"],
-      "stabilityDays": 3
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "minimumReleaseAge": "3 days"
     }
   ]
 }
