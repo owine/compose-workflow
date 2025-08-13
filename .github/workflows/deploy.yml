@@ -369,37 +369,45 @@ jobs:
               return $?
             }
 
-            # Health check each stack sequentially for reliability
-            echo "🔍 Starting comprehensive health checks..."
-            set -- $STACKS
-            for STACK in "$@"; do
+            # Health check each stack in parallel for speed
+            echo "🔍 Starting parallel health checks..."
+            HEALTH_PIDS=""
+            
+            # Start all health checks in parallel
+            for STACK in $STACKS; do
               echo "Starting health check for $STACK..."
-              if health_check_stack "$STACK"; then
-                EXIT_CODE=$?
-                case $EXIT_CODE in
-                  0) HEALTHY_STACKS="$HEALTHY_STACKS $STACK" ;;
-                  2) DEGRADED_STACKS="$DEGRADED_STACKS $STACK" ;;
-                  *) FAILED_STACKS="$FAILED_STACKS $STACK" ;;
-                esac
-              else
-                EXIT_CODE=$?
-                if [ $EXIT_CODE -eq 2 ]; then
+              health_check_stack "$STACK" &
+              HEALTH_PIDS="$HEALTH_PIDS $!"
+              echo "Started health check of $STACK (PID: $!)"
+            done
+            
+            # Wait for all health checks to complete
+            echo "⏳ Waiting for all health checks to complete..."
+            wait
+            
+            # Check health check results from log files
+            for STACK in $STACKS; do
+              if [ -f "/tmp/health_${STACK}.log" ]; then
+                # Check the exit code stored in the log file
+                if grep -q "✅.*$STACK.*healthy" "/tmp/health_${STACK}.log"; then
+                  HEALTHY_STACKS="$HEALTHY_STACKS $STACK"
+                elif grep -q "⚠️.*$STACK.*degraded\|running" "/tmp/health_${STACK}.log"; then
                   DEGRADED_STACKS="$DEGRADED_STACKS $STACK"
                 else
                   FAILED_STACKS="$FAILED_STACKS $STACK"
                 fi
+              else
+                # No log file means the health check failed completely
+                FAILED_STACKS="$FAILED_STACKS $STACK"
               fi
             done
 
-            # Calculate container statistics
-            set -- $STACKS
-            for STACK in "$@"; do
-              if [ -f "/tmp/health_${STACK}.log" ]; then
-                STACK_CONTAINERS=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose config --services | wc -l | tr -d " ")
-                STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
-                TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_CONTAINERS))
-                RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
-              fi
+            # Calculate container statistics from all stacks
+            for STACK in $STACKS; do
+              STACK_CONTAINERS=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+              STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
+              TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_CONTAINERS))
+              RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
             done
 
             # Display comprehensive health check results
