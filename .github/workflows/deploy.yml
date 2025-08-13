@@ -119,9 +119,6 @@ jobs:
           TARGET_REF="${{ inputs.target-ref }}"
           COMPOSE_ARGS="${{ inputs.args || '' }}"
           
-          echo "DEBUG: Raw inputs.stacks: ${{ inputs.stacks }}"
-          echo "DEBUG: Parsed STACKS: '$STACKS'"
-          echo "DEBUG: HAS_DOCKGE: '$HAS_DOCKGE'"
 
           ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$HAS_DOCKGE" "$TARGET_REF" "$COMPOSE_ARGS" << 'EOF'
             set -e
@@ -156,12 +153,6 @@ jobs:
               fi
             done
             
-            echo "DEBUG: Total args: $TOTAL_ARGS"
-            echo "DEBUG: All args: $*"
-            echo "DEBUG: Parsed STACKS: '$STACKS'"
-            echo "DEBUG: Parsed HAS_DOCKGE: '$HAS_DOCKGE'"
-            echo "DEBUG: Parsed TARGET_REF: '$TARGET_REF'"
-            echo "DEBUG: Parsed COMPOSE_ARGS: '$COMPOSE_ARGS'"
             
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
@@ -184,10 +175,7 @@ jobs:
               local LOGFILE="/tmp/deploy_${STACK}.log"
               {
                 echo "🚀 Deploying $STACK..."
-                echo "  Changing to directory: /opt/compose/$STACK"
                 cd /opt/compose/$STACK
-                echo "  Current working directory: $(pwd)"
-                echo "  Compose files in directory: $(ls -la *.y*ml 2>/dev/null || echo 'No compose files found')"
 
                 echo "  Pulling images for $STACK..."
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
@@ -196,7 +184,6 @@ jobs:
                 fi
 
                 echo "  Starting services for $STACK..."
-                echo "  Using compose args: '$COMPOSE_ARGS'"
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
                   echo "❌ Failed to start services for $STACK"
                   return 1
@@ -211,12 +198,7 @@ jobs:
 
             # Start all deployments in parallel
             echo "🚀 Starting parallel deployment of all stacks..."
-            echo "DEBUG: STACKS variable contains: '$STACKS'"
-            echo "DEBUG: Number of stacks: $(echo $STACKS | wc -w)"
             PIDS=""
-
-            # Deploy each stack in parallel
-            echo "DEBUG: STACKS variable contains: '$STACKS'"
             
             # Simple approach - use for loop directly with unquoted variable
             for STACK in $STACKS; do
@@ -225,8 +207,6 @@ jobs:
               PIDS="$PIDS $!"
               echo "Started deployment of $STACK (PID: $!)"
             done
-            
-            echo "DEBUG: PIDs: '$PIDS'"
 
             # Wait for all deployments and collect results
             echo "⏳ Waiting for all deployments to complete..."
@@ -245,9 +225,6 @@ jobs:
                 fi
               fi
             done
-            
-            echo "DEBUG: Expected stacks: '$STACKS'"
-            echo "DEBUG: Actually deployed: '$DEPLOYED_STACKS'"
 
             # Display all deployment logs
             echo ""
@@ -359,15 +336,9 @@ jobs:
                 cd /opt/compose/$STACK
 
                 # Get container status information using simpler approach
-                echo "  DEBUG: Checking directory $(pwd)"
-                echo "  DEBUG: Available compose files: $(ls -la *.y*ml 2>/dev/null || echo 'none')"
-                
-                # Use simpler commands instead of JSON parsing
                 RUNNING_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
                 TOTAL_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
                 EXITED_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=exited" 2>/dev/null | wc -l | tr -d " " || echo "0")
-                
-                echo "  DEBUG: RUNNING_COUNT=$RUNNING_COUNT, TOTAL_COUNT=$TOTAL_COUNT, EXITED_COUNT=$EXITED_COUNT"
                 
                 # Set HEALTHY_COUNT to same as RUNNING_COUNT for simplicity
                 HEALTHY_COUNT=$RUNNING_COUNT
