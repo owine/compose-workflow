@@ -419,9 +419,9 @@ jobs:
             echo ""
 
             # Display results by category
-            [ -n "$HEALTHY_STACKS" ] && echo "✅ Healthy Stacks: $(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')"
-            [ -n "$DEGRADED_STACKS" ] && echo "⚠️ Degraded Stacks: $(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')"
-            [ -n "$FAILED_STACKS" ] && echo "❌ Failed Stacks: $(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//')"
+            [ -n "$HEALTHY_STACKS" ] && echo "✅ Healthy Stacks: $(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            [ -n "$DEGRADED_STACKS" ] && echo "⚠️ Degraded Stacks: $(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            [ -n "$FAILED_STACKS" ] && echo "❌ Failed Stacks: $(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
 
             echo ""
             echo "📋 Detailed Health Check Results:"
@@ -445,9 +445,9 @@ jobs:
             echo "════════════════════════════════════════════════════════════════"
 
             # Export variables for output capture
-            echo "HEALTH_OUTPUT_HEALTHY=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')"
-            echo "HEALTH_OUTPUT_DEGRADED=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//')"
-            echo "HEALTH_OUTPUT_FAILED=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//')"
+            echo "HEALTH_OUTPUT_HEALTHY=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "HEALTH_OUTPUT_DEGRADED=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "HEALTH_OUTPUT_FAILED=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
             echo "HEALTH_OUTPUT_TOTAL=$TOTAL_CONTAINERS"
             echo "HEALTH_OUTPUT_RUNNING=$RUNNING_CONTAINERS"
             echo "HEALTH_OUTPUT_SUCCESS_RATE=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))"
