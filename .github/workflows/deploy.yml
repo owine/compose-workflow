@@ -123,14 +123,29 @@ jobs:
           echo "DEBUG: Parsed STACKS: '$STACKS'"
           echo "DEBUG: HAS_DOCKGE: '$HAS_DOCKGE'"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s "$STACKS" "$HAS_DOCKGE" "$TARGET_REF" "$COMPOSE_ARGS" << 'EOF'
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$HAS_DOCKGE" "$TARGET_REF" "$COMPOSE_ARGS" << 'EOF'
             set -e
             
             # Get arguments passed to script (excluding sensitive OP_TOKEN)
-            STACKS="$1"
-            HAS_DOCKGE="$2"
-            TARGET_REF="$3"
-            COMPOSE_ARGS="$4"
+            # First arguments are the individual stack names, last few are other params
+            # Count total args to determine where stacks end
+            TOTAL_ARGS=$#
+            
+            # Last 3 args are HAS_DOCKGE, TARGET_REF, COMPOSE_ARGS
+            HAS_DOCKGE="${@:$((TOTAL_ARGS-2)):1}"
+            TARGET_REF="${@:$((TOTAL_ARGS-1)):1}"
+            COMPOSE_ARGS="${@:$TOTAL_ARGS:1}"
+            
+            # All args except last 3 are stack names
+            STACK_COUNT=$((TOTAL_ARGS-3))
+            STACKS="${@:1:$STACK_COUNT}"
+            
+            echo "DEBUG: Total args: $TOTAL_ARGS"
+            echo "DEBUG: All args: $*"
+            echo "DEBUG: Stack count: $STACK_COUNT"
+            echo "DEBUG: Parsed STACKS: '$STACKS'"
+            echo "DEBUG: Parsed HAS_DOCKGE: '$HAS_DOCKGE'"
+            echo "DEBUG: Parsed TARGET_REF: '$TARGET_REF'"
             
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
