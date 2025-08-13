@@ -267,7 +267,6 @@ jobs:
       - name: Health Check All Services
         id: health
         if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
-        continue-on-error: true
         run: |
           echo "::group::Health checking all services"
           
