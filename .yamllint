@@ -1,0 +1,11 @@
+extends: default
+
+rules:
+  line-length:
+    max: 640  # GitHub Actions workflows can have extremely long lines in Discord notification templates
+  document-start: disable  # GitHub Actions workflows don't require document start markers
+  truthy:
+    allowed-values: ['true', 'false', 'on', 'off', 'yes', 'no']  # Allow GitHub Actions syntax
+  comments:
+    min-spaces-from-content: 1  # Allow single space before comments in workflows
+  trailing-spaces: enable  # Keep trailing spaces check - this is important
