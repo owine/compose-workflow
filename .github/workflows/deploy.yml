@@ -250,14 +250,26 @@ jobs:
             echo "DEBUG: Actually deployed: '$DEPLOYED_STACKS'"
 
             # Display all deployment logs
+            echo ""
             echo "📋 Deployment Results:"
+            echo "════════════════════════════════════════════════════════════════"
             for STACK in $STACKS; do
               if [ -f "/tmp/deploy_${STACK}.log" ]; then
-                echo "--- $STACK ---"
+                echo ""
+                echo "🔸 STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
                 cat "/tmp/deploy_${STACK}.log"
+                echo "────────────────────────────────────────────────────────────────"
                 rm -f "/tmp/deploy_${STACK}.log"
+              else
+                echo ""
+                echo "🔸 STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+                echo "⚠️  No deployment log found for $STACK"
+                echo "────────────────────────────────────────────────────────────────"
               fi
             done
+            echo "════════════════════════════════════════════════════════════════"
 
             # Check if any deployments failed
             if [ -z "$STACKS" ]; then
@@ -434,15 +446,25 @@ jobs:
             [ -n "$FAILED_STACKS" ] && echo "❌ Failed Stacks: $(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//')"
 
             echo ""
-            echo "📋 Detailed Results:"
-            echo "══════════════════════"
-            set -- $STACKS
-            for STACK in "$@"; do
+            echo "📋 Detailed Health Check Results:"
+            echo "════════════════════════════════════════════════════════════════"
+            for STACK in $STACKS; do
               if [ -f "/tmp/health_${STACK}.log" ]; then
+                echo ""
+                echo "🔸 STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
                 cat "/tmp/health_${STACK}.log"
+                echo "────────────────────────────────────────────────────────────────"
                 rm -f "/tmp/health_${STACK}.log"
+              else
+                echo ""
+                echo "🔸 STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+                echo "⚠️  No health check log found for $STACK"
+                echo "────────────────────────────────────────────────────────────────"
               fi
             done
+            echo "════════════════════════════════════════════════════════════════"
 
             # Export variables for output capture
             echo "HEALTH_OUTPUT_HEALTHY=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//')"
