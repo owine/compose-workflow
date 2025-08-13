@@ -347,9 +347,16 @@ jobs:
                 cd /opt/compose/$STACK
 
                 # Get container status information
+                echo "  DEBUG: Checking directory $(pwd)"
+                echo "  DEBUG: Available compose files: $(ls -la *.y*ml 2>/dev/null || echo 'none')"
+                
                 SERVICES_INFO=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --format json 2>/dev/null || echo '[]')
-                RUNNING_COUNT=$(echo "$SERVICES_INFO" | jq -r 'length')
-                TOTAL_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose config --services | wc -l | tr -d " ")
+                echo "  DEBUG: Raw docker compose ps output: $SERVICES_INFO"
+                
+                RUNNING_COUNT=$(echo "$SERVICES_INFO" | jq -r 'length' 2>/dev/null || echo "0")
+                TOTAL_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+                
+                echo "  DEBUG: RUNNING_COUNT=$RUNNING_COUNT, TOTAL_COUNT=$TOTAL_COUNT"
                 
                 # Count healthy vs unhealthy containers
                 HEALTHY_COUNT=$(echo "$SERVICES_INFO" | jq -r '[.[] | select(.State == "running")] | length' 2>/dev/null || echo "0")
