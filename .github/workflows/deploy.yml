@@ -174,13 +174,31 @@ jobs:
 
             # Deploy each stack in parallel
             # Convert space-separated string to proper word splitting
+            echo "DEBUG: Before set, positional params: $#"
             set -- $STACKS
-            for STACK in "$@"; do
-              echo "DEBUG: Processing stack: '$STACK'"
-              deploy_stack "$STACK" &
-              PIDS="$PIDS $!"
-              echo "Started deployment of $STACK (PID: $!)"
-            done
+            echo "DEBUG: After set, positional params: $#"
+            echo "DEBUG: All positional params: $*"
+            echo "DEBUG: First param: '$1', Second param: '$2'"
+            
+            # Alternative approach if set -- doesn't work
+            if [ $# -eq 0 ]; then
+              echo "DEBUG: set -- failed, trying alternative approach"
+              echo "DEBUG: STACKS value: '$STACKS'"
+              # Try manual parsing
+              for STACK in dozzle homebridge portainer services swag; do
+                echo "DEBUG: Manual processing stack: '$STACK'"
+                deploy_stack "$STACK" &
+                PIDS="$PIDS $!"
+                echo "Started deployment of $STACK (PID: $!)"
+              done
+            else
+              for STACK in "$@"; do
+                echo "DEBUG: Processing stack: '$STACK'"
+                deploy_stack "$STACK" &
+                PIDS="$PIDS $!"
+                echo "Started deployment of $STACK (PID: $!)"
+              done
+            fi
             
             echo "DEBUG: PIDs: '$PIDS'"
 
