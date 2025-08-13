@@ -121,7 +121,7 @@ jobs:
         run: |
           echo "Scanning result: ${{ needs.scanning.result }}"
           echo "Lint result: ${{ needs.lint.result }}"
-          
+
           if [[ "${{ needs.scanning.result }}" == "success" || "${{ needs.scanning.result }}" == "skipped" ]] && [[ "${{ needs.lint.result }}" == "success" ]]; then
             echo "✅ All lint checks passed"
             exit 0

@@ -88,11 +88,11 @@ jobs:
           echo "::group::Preparing deployment backup"
           CURRENT_SHA=$(ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD')
           TARGET_SHA="${{ inputs.target-ref }}"
-          
+
           echo "Current deployed SHA: $CURRENT_SHA"
           echo "New deployment SHA: $TARGET_SHA"
           echo "previous_sha=$CURRENT_SHA" >> $GITHUB_OUTPUT
-          
+
           if [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "${{ inputs.force-deploy }}" != "true" ]; then
             echo "⚠️ Repository is already at target commit - no deployment needed"
             echo "deployment_needed=false" >> $GITHUB_OUTPUT
@@ -118,27 +118,27 @@ jobs:
           HAS_DOCKGE="${{ inputs.has-dockge }}"
           TARGET_REF="${{ inputs.target-ref }}"
           COMPOSE_ARGS="${{ inputs.args || '' }}"
-          
+
 
           ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$HAS_DOCKGE" "$TARGET_REF" "$COMPOSE_ARGS" << 'EOF'
             set -e
-            
+
             # Get arguments passed to script (excluding sensitive OP_TOKEN)
             # Arguments: stack1 stack2 stack3 ... HAS_DOCKGE TARGET_REF [COMPOSE_ARGS]
             # COMPOSE_ARGS might be empty, so we need to handle variable arg count
-            
+
             TOTAL_ARGS=$#
-            
+
             # Find HAS_DOCKGE by looking for 'true' or 'false' in the args
             HAS_DOCKGE=""
             TARGET_REF=""
             COMPOSE_ARGS=""
-            
+
             # The last few args should be: HAS_DOCKGE TARGET_REF [COMPOSE_ARGS]
             # HAS_DOCKGE is always 'true' or 'false'
             # TARGET_REF is a commit SHA (starts with letter/number)
             # COMPOSE_ARGS is optional and could be empty
-            
+
             for i in $(seq 1 $TOTAL_ARGS); do
               ARG="${!i}"
               if [ "$ARG" = "true" ] || [ "$ARG" = "false" ]; then
@@ -152,8 +152,8 @@ jobs:
                 break
               fi
             done
-            
-            
+
+
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
@@ -199,7 +199,7 @@ jobs:
             # Start all deployments in parallel
             echo "🚀 Starting parallel deployment of all stacks..."
             PIDS=""
-            
+
             # Simple approach - use for loop directly with unquoted variable
             for STACK in $STACKS; do
               echo "🚀 Deploying $STACK..."
@@ -269,7 +269,7 @@ jobs:
         if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
         run: |
           echo "::group::Health checking all services"
-          
+
           # Parse inputs outside SSH context
           STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
           OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
@@ -277,13 +277,13 @@ jobs:
 
           ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$HAS_DOCKGE" << 'EOF' | tee /tmp/health_output.log
             set -e
-            
+
             # Get arguments passed to script (excluding sensitive OP_TOKEN)
             TOTAL_ARGS=$#
-            
+
             # Find HAS_DOCKGE by looking for 'true' or 'false' in the args
             HAS_DOCKGE=""
-            
+
             for i in $(seq 1 $TOTAL_ARGS); do
               ARG="${!i}"
               if [ "$ARG" = "true" ] || [ "$ARG" = "false" ]; then
@@ -293,7 +293,7 @@ jobs:
                 break
               fi
             done
-            
+
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
@@ -313,7 +313,7 @@ jobs:
               DOCKGE_TOTAL=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d " ")
               TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + DOCKGE_TOTAL))
               RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + DOCKGE_RUNNING))
-              
+
               if [ "$DOCKGE_RUNNING" -eq 0 ]; then
                 echo "❌ Dockge: 0/$DOCKGE_TOTAL services running"
                 FAILED_STACKS="$FAILED_STACKS dockge"
@@ -338,10 +338,10 @@ jobs:
                 RUNNING_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
                 TOTAL_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
                 EXITED_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=exited" 2>/dev/null | wc -l | tr -d " " || echo "0")
-                
+
                 # Set HEALTHY_COUNT to same as RUNNING_COUNT for simplicity
                 HEALTHY_COUNT=$RUNNING_COUNT
-                
+
                 # For simplicity, assume no restart issues or resource monitoring for now
                 RESTART_ISSUES=0
                 RESOURCE_INFO=""
@@ -371,7 +371,7 @@ jobs:
             # Health check each stack in parallel for speed
             echo "🔍 Starting parallel health checks..."
             HEALTH_PIDS=""
-            
+
             # Start all health checks in parallel
             for STACK in $STACKS; do
               echo "Starting health check for $STACK..."
@@ -379,11 +379,11 @@ jobs:
               HEALTH_PIDS="$HEALTH_PIDS $!"
               echo "Started health check of $STACK (PID: $!)"
             done
-            
+
             # Wait for all health checks to complete
             echo "⏳ Waiting for all health checks to complete..."
             wait
-            
+
             # Check health check results from log files
             for STACK in $STACKS; do
               if [ -f "/tmp/health_${STACK}.log" ]; then
@@ -467,7 +467,7 @@ jobs:
               exit 0
             fi
           EOF
-          
+
           # Extract health outputs for Discord notifications
           if grep -q "HEALTH_OUTPUT_" /tmp/health_output.log 2>/dev/null; then
             grep "HEALTH_OUTPUT_HEALTHY=" /tmp/health_output.log | cut -d'=' -f2 | head -1 | xargs -I {} echo "healthy_stacks={}" >> $GITHUB_OUTPUT
@@ -485,7 +485,7 @@ jobs:
             echo "running_containers=0" >> $GITHUB_OUTPUT
             echo "success_rate=0" >> $GITHUB_OUTPUT
           fi
-          
+
           rm -f /tmp/health_output.log
           echo "::endgroup::"
 
@@ -519,12 +519,12 @@ jobs:
 
           ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s "$HAS_DOCKGE" "$PREVIOUS_SHA" "$COMPOSE_ARGS" << 'EOF'
             set -e
-            
+
             # Get arguments passed to script (excluding sensitive OP_TOKEN)
             HAS_DOCKGE="$1"
             PREVIOUS_SHA="$2"
             COMPOSE_ARGS="$3"
-            
+
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
@@ -590,7 +590,7 @@ jobs:
             # Start all rollback deployments in parallel
             echo "🔄 Starting parallel rollback of all stacks..."
             ROLLBACK_PIDS=""
-            
+
             for STACK in $ROLLBACK_STACKS; do
               echo "🔄 Rolling back $STACK..."
               rollback_stack "$STACK" &
