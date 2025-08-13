@@ -168,7 +168,10 @@ jobs:
               local LOGFILE="/tmp/deploy_${STACK}.log"
               {
                 echo "🚀 Deploying $STACK..."
+                echo "  Changing to directory: /opt/compose/$STACK"
                 cd /opt/compose/$STACK
+                echo "  Current working directory: $(pwd)"
+                echo "  Compose files in directory: $(ls -la *.y*ml 2>/dev/null || echo 'No compose files found')"
 
                 echo "  Pulling images for $STACK..."
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
@@ -177,6 +180,7 @@ jobs:
                 fi
 
                 echo "  Starting services for $STACK..."
+                echo "  Using compose args: '$COMPOSE_ARGS'"
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
                   echo "❌ Failed to start services for $STACK"
                   return 1
