@@ -123,7 +123,8 @@ jobs:
           echo "DEBUG: Parsed STACKS: '$STACKS'"
           echo "DEBUG: HAS_DOCKGE: '$HAS_DOCKGE'"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
+          STACKS="$STACKS" OP_TOKEN="$OP_TOKEN" HAS_DOCKGE="$HAS_DOCKGE" TARGET_REF="$TARGET_REF" COMPOSE_ARGS="$COMPOSE_ARGS" \
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
             set -e
             export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
 
@@ -173,32 +174,15 @@ jobs:
             PIDS=""
 
             # Deploy each stack in parallel
-            # Convert space-separated string to proper word splitting
-            echo "DEBUG: Before set, positional params: $#"
-            set -- $STACKS
-            echo "DEBUG: After set, positional params: $#"
-            echo "DEBUG: All positional params: $*"
-            echo "DEBUG: First param: '$1', Second param: '$2'"
+            echo "DEBUG: STACKS variable contains: '$STACKS'"
             
-            # Alternative approach if set -- doesn't work
-            if [ $# -eq 0 ]; then
-              echo "DEBUG: set -- failed, trying alternative approach"
-              echo "DEBUG: STACKS value: '$STACKS'"
-              # Try manual parsing
-              for STACK in dozzle homebridge portainer services swag; do
-                echo "DEBUG: Manual processing stack: '$STACK'"
-                deploy_stack "$STACK" &
-                PIDS="$PIDS $!"
-                echo "Started deployment of $STACK (PID: $!)"
-              done
-            else
-              for STACK in "$@"; do
-                echo "DEBUG: Processing stack: '$STACK'"
-                deploy_stack "$STACK" &
-                PIDS="$PIDS $!"
-                echo "Started deployment of $STACK (PID: $!)"
-              done
-            fi
+            # Simple approach - use for loop directly with unquoted variable
+            for STACK in $STACKS; do
+              echo "🚀 Deploying $STACK..."
+              deploy_stack "$STACK" &
+              PIDS="$PIDS $!"
+              echo "Started deployment of $STACK (PID: $!)"
+            done
             
             echo "DEBUG: PIDs: '$PIDS'"
 
@@ -211,8 +195,7 @@ jobs:
 
             # Check deployment results from log files
             DEPLOYED_STACKS=""
-            set -- $STACKS
-            for STACK in "$@"; do
+            for STACK in $STACKS; do
               if [ -f "/tmp/deploy_${STACK}.log" ]; then
                 DEPLOYED_STACKS="$DEPLOYED_STACKS $STACK"
                 if grep -q "❌.*$STACK" "/tmp/deploy_${STACK}.log"; then
@@ -226,8 +209,7 @@ jobs:
 
             # Display all deployment logs
             echo "📋 Deployment Results:"
-            set -- $STACKS
-            for STACK in "$@"; do
+            for STACK in $STACKS; do
               if [ -f "/tmp/deploy_${STACK}.log" ]; then
                 echo "--- $STACK ---"
                 cat "/tmp/deploy_${STACK}.log"
