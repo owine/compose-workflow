@@ -287,9 +287,27 @@ jobs:
           OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
           HAS_DOCKGE="${{ inputs.has-dockge }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF | tee /tmp/health_output.log
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$HAS_DOCKGE" << 'EOF' | tee /tmp/health_output.log
             set -e
-            export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
+            
+            # Get arguments passed to script (excluding sensitive OP_TOKEN)
+            TOTAL_ARGS=$#
+            
+            # Find HAS_DOCKGE by looking for 'true' or 'false' in the args
+            HAS_DOCKGE=""
+            
+            for i in $(seq 1 $TOTAL_ARGS); do
+              ARG="${!i}"
+              if [ "$ARG" = "true" ] || [ "$ARG" = "false" ]; then
+                HAS_DOCKGE="$ARG"
+                # All args before this position are stack names
+                STACKS="${@:1:$((i-1))}"
+                break
+              fi
+            done
+            
+            # Set OP_TOKEN via environment (passed separately)
+            export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
             echo "⏳ Waiting for services to stabilize..."
             sleep 15
@@ -501,15 +519,23 @@ jobs:
           OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
           PREVIOUS_SHA="${{ steps.backup.outputs.previous_sha }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$PREVIOUS_SHA" << 'EOF'
             set -e
-            export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
+            
+            # Get arguments passed to script (excluding sensitive OP_TOKEN)
+            TOTAL_ARGS=$#
+            
+            # Last argument is PREVIOUS_SHA, all others are stack names
+            PREVIOUS_SHA="${@:$TOTAL_ARGS:1}"
+            STACKS="${@:1:$((TOTAL_ARGS-1))}"
+            
+            # Set OP_TOKEN via environment (passed separately)
+            export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
             echo "🔄 Rolling back to $PREVIOUS_SHA..."
             git -C /opt/compose/ checkout $PREVIOUS_SHA
 
-            set -- $STACKS
-            for STACK in "$@"; do
+            for STACK in $STACKS; do
               echo "🔄 Rolling back $STACK..."
               cd /opt/compose/$STACK
 
