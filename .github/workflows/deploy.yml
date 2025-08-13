@@ -513,38 +513,144 @@ jobs:
           echo "Failed SHA: ${{ inputs.target-ref }}"
 
           # Parse inputs outside SSH context
-          STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
-          OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+          HAS_DOCKGE="${{ inputs.has-dockge }}"
           PREVIOUS_SHA="${{ steps.backup.outputs.previous_sha }}"
+          COMPOSE_ARGS="${{ inputs.args || '' }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$PREVIOUS_SHA" << 'EOF'
+          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s "$HAS_DOCKGE" "$PREVIOUS_SHA" "$COMPOSE_ARGS" << 'EOF'
             set -e
             
             # Get arguments passed to script (excluding sensitive OP_TOKEN)
-            TOTAL_ARGS=$#
-            
-            # Last argument is PREVIOUS_SHA, all others are stack names
-            PREVIOUS_SHA="${@:$TOTAL_ARGS:1}"
-            STACKS="${@:1:$((TOTAL_ARGS-1))}"
+            HAS_DOCKGE="$1"
+            PREVIOUS_SHA="$2"
+            COMPOSE_ARGS="$3"
             
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
             echo "🔄 Rolling back to $PREVIOUS_SHA..."
+            git -C /opt/compose/ fetch
             git -C /opt/compose/ checkout $PREVIOUS_SHA
 
-            for STACK in $STACKS; do
-              echo "🔄 Rolling back $STACK..."
-              cd /opt/compose/$STACK
-
-              if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans; then
-                echo "❌ Failed to rollback $STACK"
-              else
-                echo "✅ $STACK rolled back successfully"
+            # Dynamically discover stacks based on the previous commit's structure
+            echo "🔍 Discovering stacks in previous commit..."
+            ROLLBACK_STACKS=""
+            cd /opt/compose
+            for dir in */; do
+              if [[ -d "$dir" && (-f "$dir/compose.yml" || -f "$dir/compose.yaml") ]]; then
+                STACK_NAME=$(basename "$dir")
+                ROLLBACK_STACKS="$ROLLBACK_STACKS $STACK_NAME"
+                echo "  Found stack: $STACK_NAME"
               fi
             done
 
-            echo "✅ Rollback completed"
+            if [ -z "$ROLLBACK_STACKS" ]; then
+              echo "⚠️ No stacks found in previous commit - rollback cannot proceed"
+              exit 1
+            fi
+
+            echo "📋 Stacks to rollback:$ROLLBACK_STACKS"
+
+            # Deploy Dockge first if needed
+            if [ "$HAS_DOCKGE" = "true" ]; then
+              echo "🔄 Rolling back Dockge..."
+              cd /opt/dockge
+              op run --env-file=/opt/compose/compose.env -- docker compose pull
+              op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS
+              echo "✅ Dockge rolled back successfully"
+            fi
+
+            # Function to rollback a single stack (same pattern as deploy)
+            rollback_stack() {
+              local STACK=$1
+              local LOGFILE="/tmp/rollback_${STACK}.log"
+              {
+                echo "🔄 Rolling back $STACK..."
+                cd /opt/compose/$STACK
+
+                echo "  Pulling images for $STACK..."
+                if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                  echo "❌ Failed to pull images for $STACK during rollback"
+                  return 1
+                fi
+
+                echo "  Starting services for $STACK..."
+                if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                  echo "❌ Failed to start services for $STACK during rollback"
+                  return 1
+                fi
+
+                echo "✅ $STACK rolled back successfully"
+                return 0
+              } > "$LOGFILE" 2>&1
+
+              return $?
+            }
+
+            # Start all rollback deployments in parallel
+            echo "🔄 Starting parallel rollback of all stacks..."
+            ROLLBACK_PIDS=""
+            
+            for STACK in $ROLLBACK_STACKS; do
+              echo "🔄 Rolling back $STACK..."
+              rollback_stack "$STACK" &
+              ROLLBACK_PIDS="$ROLLBACK_PIDS $!"
+              echo "Started rollback of $STACK (PID: $!)"
+            done
+
+            # Wait for all rollback deployments and collect results
+            echo "⏳ Waiting for all rollbacks to complete..."
+            FAILED_ROLLBACKS=""
+
+            # Wait for all background jobs
+            wait
+
+            # Check rollback results from log files
+            ROLLED_BACK_STACKS=""
+            for STACK in $ROLLBACK_STACKS; do
+              if [ -f "/tmp/rollback_${STACK}.log" ]; then
+                ROLLED_BACK_STACKS="$ROLLED_BACK_STACKS $STACK"
+                if grep -q "❌.*$STACK.*rollback" "/tmp/rollback_${STACK}.log"; then
+                  FAILED_ROLLBACKS="$FAILED_ROLLBACKS $STACK"
+                fi
+              fi
+            done
+
+            # Display all rollback logs
+            echo ""
+            echo "📋 Rollback Results:"
+            echo "════════════════════════════════════════════════════════════════"
+            for STACK in $ROLLBACK_STACKS; do
+              if [ -f "/tmp/rollback_${STACK}.log" ]; then
+                echo ""
+                echo "🔸 ROLLBACK STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+                cat "/tmp/rollback_${STACK}.log"
+                echo "────────────────────────────────────────────────────────────────"
+                rm -f "/tmp/rollback_${STACK}.log"
+              else
+                echo ""
+                echo "🔸 ROLLBACK STACK: $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+                echo "⚠️  No rollback log found for $STACK"
+                echo "────────────────────────────────────────────────────────────────"
+              fi
+            done
+            echo "════════════════════════════════════════════════════════════════"
+
+            # Check if any rollbacks failed
+            if [ -z "$ROLLBACK_STACKS" ]; then
+              echo "💥 No stacks to rollback - ROLLBACK_STACKS variable is empty!"
+              exit 1
+            elif [ -z "$ROLLED_BACK_STACKS" ]; then
+              echo "💥 No stacks were actually rolled back - check stack discovery!"
+              exit 1
+            elif [ -n "$FAILED_ROLLBACKS" ]; then
+              echo "💥 Rollbacks failed for:$FAILED_ROLLBACKS"
+              exit 1
+            fi
+
+            echo "🎉 All stacks rolled back successfully!"
           EOF
           echo "::endgroup::"
 
