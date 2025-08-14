@@ -154,8 +154,8 @@ For the workflows to function properly, calling repositories must have:
 ## Discord Webhook Configuration
 
 Webhook URLs should be stored in 1Password with references like:
-- `op://Docker/discord-github-notifications/zendc_webhook_url`
-- `op://Docker/discord-github-notifications/piwine_webhook_url`
+- `op://Docker/discord-github-notifications/environment1_webhook_url`
+- `op://Docker/discord-github-notifications/environment2_webhook_url`
 
 ## Examples
 
@@ -163,17 +163,17 @@ Webhook URLs should be stored in 1Password with references like:
 ```yaml
 with:
   stacks: '["dozzle", "portainer", "services"]'
-  webhook-url: "op://Docker/discord-github-notifications/piwine_webhook_url"
-  repo-name: "docker-piwine"
+  webhook-url: "op://Docker/discord-github-notifications/environment1_webhook_url"
+  repo-name: "docker-environment1"
   has-dockge: true
 ```
 
 ### Repository without Dockge  
 ```yaml
 with:
-  stacks: '["barassistant", "beszel", "logging", "media", "services", "zencommand"]'
-  webhook-url: "op://Docker/discord-github-notifications/zendc_webhook_url"
-  repo-name: "docker-zendc"
+  stacks: '["app1", "app2", "logging", "media", "services", "monitoring"]'
+  webhook-url: "op://Docker/discord-github-notifications/environment2_webhook_url"
+  repo-name: "docker-environment2"
   has-dockge: false
 ```
 

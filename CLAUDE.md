@@ -83,7 +83,7 @@ Webhook URLs should be stored in 1Password with references like:
 
 Example Discord notification configuration:
 ```yaml
-webhook-url: "op://Docker/discord-github-notifications/zendc_webhook_url"
+webhook-url: "op://Docker/discord-github-notifications/environment_webhook_url"
 ```
 
 ## Development Commands
