@@ -745,7 +745,10 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/commits/${{ inputs.target-ref }}" \
             | jq -r '.commit.message // "No commit message available"' \
             | head -1)
+          SHORT_SHA="${{ inputs.target-ref }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
           echo "message=$COMMIT_MSG" >> $GITHUB_OUTPUT
+          echo "short-sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
       - name: Load Discord webhook
         id: op-load-discord
@@ -770,7 +773,7 @@ jobs:
 
             ${{ needs.deploy.outputs.deployment_needed == 'true' && format('**Pipeline:** Deploy {0} → Health {1} → Cleanup {2}{3}', needs.deploy.outputs.deploy_status == 'success' && '✅' || '❌', needs.deploy.outputs.health_status == 'success' && '✅' || needs.deploy.outputs.health_status == 'skipped' && '⏭️' || '❌', needs.deploy.outputs.cleanup_status == 'success' && '✅' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️' || '❌', needs.deploy.outputs.rollback_status != 'skipped' && format(' → Rollback {0}', needs.deploy.outputs.rollback_status == 'success' && '✅' || '❌') || '') || '**Status:** No changes detected' }}
 
-            ${{ github.event_name == 'workflow_dispatch' && '🔧 **Manual Trigger**' || format('📝 **Commit:** `{0}` - {1}', inputs.target-ref, steps.commit-msg.outputs.message) }}
+            ${{ github.event_name == 'workflow_dispatch' && '🔧 **Manual Trigger**' || format('📝 **Commit:** `{0}` - {1}', steps.commit-msg.outputs.short-sha, steps.commit-msg.outputs.message) }}
           color: ${{ needs.deploy.outputs.deployment_needed != 'true' && 0x808080 || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x00ff00 || needs.deploy.outputs.degraded_stacks != '' && 0xff9900 || 0xff0000 }}
           username: "GitHub Actions"
           avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
