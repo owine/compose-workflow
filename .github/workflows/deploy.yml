@@ -60,7 +60,7 @@ jobs:
             echo "::error::Invalid stacks JSON format: ${{ inputs.stacks }}"
             exit 1
           }
-          
+
           # Validate stack names contain only safe characters
           INVALID_STACKS=""
           echo '${{ inputs.stacks }}' | jq -r '.[]' | while read -r stack; do
@@ -74,7 +74,7 @@ jobs:
               exit 1
             fi
           done
-          
+
           # Validate target-ref format
           TARGET_REF="${{ inputs.target-ref }}"
           if [[ ! "$TARGET_REF" =~ ^[a-fA-F0-9]{7,40}$|^[a-zA-Z0-9_/-]+$ ]]; then
@@ -82,7 +82,7 @@ jobs:
             echo "::error::Expected: commit SHA (7-40 hex chars) or branch/tag name"
             exit 1
           fi
-          
+
           # Validate and sanitize compose args
           COMPOSE_ARGS="${{ inputs.args }}"
           if [[ -n "$COMPOSE_ARGS" ]]; then
@@ -103,7 +103,7 @@ jobs:
               exit 1
             fi
           fi
-          
+
           # Validate webhook URL format
           WEBHOOK_URL="${{ inputs.webhook-url }}"
           if [[ ! "$WEBHOOK_URL" =~ ^op://[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$ ]]; then
@@ -111,7 +111,7 @@ jobs:
             echo "::error::Expected format: op://vault/item/field"
             exit 1
           fi
-          
+
           # Validate repo name
           REPO_NAME="${{ inputs.repo-name }}"
           if [[ ! "$REPO_NAME" =~ ^[a-zA-Z0-9_-]+$ ]] || [ ${#REPO_NAME} -gt 100 ]; then
@@ -119,7 +119,7 @@ jobs:
             echo "::error::Must be alphanumeric with hyphens/underscores, max 100 chars"
             exit 1
           fi
-          
+
           echo "✅ All input validation passed"
 
       - name: Setup retry mechanism
@@ -132,7 +132,7 @@ jobs:
             local delay=$2
             local command="${@:3}"
             local attempt=1
-            
+
             while [ $attempt -le $max_attempts ]; do
               echo "Attempt $attempt of $max_attempts: $command"
               if eval "$command"; then
@@ -148,18 +148,18 @@ jobs:
                 attempt=$((attempt + 1))
               fi
             done
-            
+
             echo "💥 Command failed after $max_attempts attempts"
             return 1
           }
-          
+
           # Create SSH retry function with specific error handling
           ssh_retry() {
             local max_attempts=$1
             local delay=$2
             local ssh_cmd="${@:3}"
             local attempt=1
-            
+
             while [ $attempt -le $max_attempts ]; do
               echo "SSH Attempt $attempt of $max_attempts"
               if eval "$ssh_cmd"; then
@@ -168,14 +168,14 @@ jobs:
               else
                 local exit_code=$?
                 echo "❌ SSH command failed on attempt $attempt (exit code: $exit_code)"
-                
+
                 # Check for specific SSH errors
                 case $exit_code in
                   255) echo "SSH connection error - network/auth issue" ;;
                   1) echo "General SSH error" ;;
                   *) echo "Unknown error code: $exit_code" ;;
                 esac
-                
+
                 if [ $attempt -lt $max_attempts ]; then
                   echo "⏳ Waiting ${delay}s before SSH retry..."
                   sleep $delay
@@ -183,7 +183,7 @@ jobs:
                 attempt=$((attempt + 1))
               fi
             done
-            
+
             echo "💥 SSH command failed after $max_attempts attempts"
             return 1
           }
@@ -256,15 +256,15 @@ jobs:
             Compression yes
             TCPKeepAlive yes
           EOF
-          
+
           # Pre-establish SSH connection for multiplexing
           echo "🔗 Pre-establishing SSH connection for multiplexing..."
           ssh -o "StrictHostKeyChecking no" deployment-server -O check 2>/dev/null || \
           ssh -o "StrictHostKeyChecking no" deployment-server -O forward -N &
-          
+
           # Give the connection a moment to establish
           sleep 2
-          
+
           echo "✅ SSH connection optimization configured"
 
       - name: Store current deployment for rollback
@@ -298,10 +298,10 @@ jobs:
         continue-on-error: true
         run: |
           echo "::group::Deploying all stacks"
-          
+
           # Source retry functions
           source /tmp/retry.sh
-          
+
           # Set error handling
           set -e
           trap 'echo "❌ Deployment failed at line $LINENO"' ERR
@@ -317,11 +317,11 @@ jobs:
           # Use retry mechanism and optimized deployment
           ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s $STACKS \"$HAS_DOCKGE\" \"$TARGET_REF\" \"$COMPOSE_ARGS\"" << 'EOF'
             set -e
-            
+
             # Performance optimizations
             export DOCKER_BUILDKIT=1
             export COMPOSE_DOCKER_CLI_BUILD=1
-            
+
             # Enable parallel image pulls
             export COMPOSE_PARALLEL_LIMIT=8
 
@@ -480,10 +480,10 @@ jobs:
         if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
         run: |
           echo "::group::Health checking all services"
-          
+
           # Source retry functions
           source /tmp/retry.sh
-          
+
           # Set error handling
           set -e
           trap 'echo "❌ Health check failed at line $LINENO"' ERR
@@ -519,37 +519,37 @@ jobs:
 
             # Enhanced health check with exponential backoff
             echo "🔍 Starting enhanced health check with exponential backoff..."
-            
+
             # Health check function with retry logic
             health_check_with_retry() {
               local stack=$1
               local max_attempts=6
               local wait_time=5
               local attempt=1
-              
+
               echo "🔍 Health checking $stack with retry logic..."
-              
+
               while [ $attempt -le $max_attempts ]; do
                 echo "  Attempt $attempt/$max_attempts for $stack (wait: ${wait_time}s)"
-                
+
                 cd "/opt/compose/$stack" || {
                   echo "❌ $stack: Directory not found"
                   return 1
                 }
-                
+
                 # Get container status
                 local running_count
                 local total_count
                 local exited_count
                 local restarting_count
-                
+
                 running_count=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
                 total_count=$(op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
                 exited_count=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=exited" 2>/dev/null | wc -l | tr -d " " || echo "0")
                 restarting_count=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=restarting" 2>/dev/null | wc -l | tr -d " " || echo "0")
-                
+
                 echo "  $stack status: $running_count/$total_count running, $exited_count exited, $restarting_count restarting"
-                
+
                 # Check if all services are running
                 if [ "$running_count" -eq "$total_count" ] && [ "$total_count" -gt 0 ]; then
                   echo "✅ $stack: All $running_count services healthy"
@@ -568,10 +568,10 @@ jobs:
                     wait_time=120  # Cap at 2 minutes
                   fi
                 fi
-                
+
                 attempt=$((attempt + 1))
               done
-              
+
               echo "❌ $stack: Health check failed after $max_attempts attempts"
               return 1
             }
@@ -656,12 +656,12 @@ jobs:
 
             # Enhanced health checks with sequential retry logic
             echo "🔍 Starting enhanced health checks with retry logic..."
-            
+
             # Check each stack with the new enhanced health check
             for STACK in $STACKS; do
               echo ""
               echo "🔍 Checking stack: $STACK"
-              
+
               health_check_with_retry "$STACK"
               case $? in
                 0)
@@ -946,10 +946,10 @@ jobs:
           # Close SSH connection multiplexing
           echo "🧹 Cleaning up SSH connections..."
           ssh -o "StrictHostKeyChecking no" deployment-server -O exit 2>/dev/null || true
-          
+
           # Clean up SSH control sockets
           rm -f ~/.ssh/%r@%h:%p 2>/dev/null || true
-          
+
           echo "✅ SSH cleanup completed"
 
       - name: Report Deployment Status
