@@ -101,7 +101,9 @@ jobs:
               exit 1
             fi
             # Validate against known docker compose options
-            if [[ ! "$COMPOSE_ARGS" =~ ^[a-zA-Z0-9 _.-]*$ ]]; then
+            if [[ "$COMPOSE_ARGS" =~ ^[a-zA-Z0-9_.-]+$ ]] || [[ "$COMPOSE_ARGS" =~ ^[a-zA-Z0-9_.-]+[[:space:]][a-zA-Z0-9_.-]+$ ]]; then
+              echo "✅ Compose args format valid: $COMPOSE_ARGS"
+            else
               echo "::error::Compose args contain invalid characters: $COMPOSE_ARGS"
               exit 1
             fi
