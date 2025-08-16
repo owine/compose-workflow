@@ -141,12 +141,12 @@ jobs:
             echo "❌ No compose file found for ${{ matrix.stack }}"
             exit 1
           fi
-          
+
           echo "📋 Extracting images from $COMPOSE_FILE..."
-          
+
           # Extract unique image names from compose file
           IMAGES=$(grep -E "^\s*image:" "$COMPOSE_FILE" | sed 's/.*image:\s*//' | sed 's/[",]//g' | sort -u || echo "")
-          
+
           if [ -z "$IMAGES" ]; then
             echo "⚠️ No images found in $COMPOSE_FILE"
             echo "images=" >> $GITHUB_OUTPUT
@@ -155,7 +155,7 @@ jobs:
             echo "$IMAGES" | while read -r image; do
               echo "  - $image"
             done
-            
+
             # Convert to JSON array for matrix
             IMAGE_ARRAY=$(echo "$IMAGES" | jq -R -s -c 'split("\n")[:-1]')
             echo "images=$IMAGE_ARRAY" >> $GITHUB_OUTPUT
@@ -183,22 +183,22 @@ jobs:
         if: steps.extract-images.outputs.images != ''
         run: |
           echo "::group::Security scanning all images in ${{ matrix.stack }}"
-          
+
           IMAGES="${{ steps.extract-images.outputs.images }}"
           if [ "$IMAGES" = "" ] || [ "$IMAGES" = "null" ]; then
             echo "⚠️ No images to scan for ${{ matrix.stack }}"
             exit 0
           fi
-          
+
           FAILED_SCANS=0
           TOTAL_SCANS=0
-          
+
           echo "$IMAGES" | jq -r '.[]' | while read -r image; do
             if [ -n "$image" ]; then
               TOTAL_SCANS=$((TOTAL_SCANS + 1))
               echo ""
               echo "🔍 Scanning image: $image"
-              
+
               # Run Trivy scan with text output for visibility
               if docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
                   aquasec/trivy:latest image \
@@ -214,18 +214,18 @@ jobs:
               fi
             fi
           done
-          
+
           echo ""
           echo "📊 Security scan summary for ${{ matrix.stack }}:"
           echo "Total images scanned: $TOTAL_SCANS"
           echo "Failed scans: $FAILED_SCANS"
-          
+
           if [ $FAILED_SCANS -gt 0 ]; then
             echo "⚠️ Some security scans failed - check logs above"
           else
             echo "✅ All security scans completed successfully"
           fi
-          
+
           echo "::endgroup::"
 
   lint-summary:
