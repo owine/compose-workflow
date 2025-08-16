@@ -87,13 +87,13 @@ jobs:
           COMPOSE_ARGS="${{ inputs.args }}"
           if [[ -n "$COMPOSE_ARGS" ]]; then
             # Check for dangerous characters and patterns
-            if [[ "$COMPOSE_ARGS" =~ [;&|`$\\] ]]; then
+            if [[ "$COMPOSE_ARGS" =~ [\;\&\|\`\$\\] ]]; then
               echo "::error::Compose args contain potentially dangerous characters: $COMPOSE_ARGS"
               echo "::error::Prohibited characters: ; & | \` $ \\"
               exit 1
             fi
             # Check for suspicious patterns
-            if [[ "$COMPOSE_ARGS" =~ (rm|kill|shutdown|reboot|format|dd|>|<|sudo|su) ]]; then
+            if [[ "$COMPOSE_ARGS" =~ (rm|kill|shutdown|reboot|format|dd|\>|\<|sudo|su) ]]; then
               echo "::error::Compose args contain prohibited commands: $COMPOSE_ARGS"
               exit 1
             fi
