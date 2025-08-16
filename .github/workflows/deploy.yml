@@ -201,9 +201,9 @@ jobs:
           path: |
             ~/.cache/tailscale
             /var/lib/tailscale
-          key: tailscale-${{ runner.os }}-${{ github.repository }}-${{ github.run_id }}
+          key: tailscale-${{ runner.os }}-${{ github.repository_owner }}-${{ github.run_number }}
           restore-keys: |
-            tailscale-${{ runner.os }}-${{ github.repository }}-
+            tailscale-${{ runner.os }}-${{ github.repository_owner }}-
             tailscale-${{ runner.os }}-
 
       - name: Cache deployment tools
@@ -213,7 +213,7 @@ jobs:
             ~/.cache/pip
             ~/.cache/docker
             ~/.ssh
-          key: deploy-tools-${{ runner.os }}-${{ hashFiles('.github/workflows/deploy.yml') }}
+          key: deploy-tools-${{ runner.os }}-v1
           restore-keys: |
             deploy-tools-${{ runner.os }}-
 
