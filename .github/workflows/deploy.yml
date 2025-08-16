@@ -278,12 +278,39 @@ jobs:
           echo "::group::Preparing deployment backup"
           # Use retry mechanism for SSH connection
           source /tmp/retry.sh
-          CURRENT_SHA=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD'")
-          TARGET_SHA="${{ inputs.target-ref }}"
 
-          echo "Current deployed SHA: $CURRENT_SHA"
-          echo "New deployment SHA: $TARGET_SHA"
-          echo "previous_sha=$CURRENT_SHA" >> $GITHUB_OUTPUT
+          # Get current deployment SHA with error handling
+          echo "🔍 Checking current deployment SHA..."
+          if CURRENT_SHA=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD 2>/dev/null'"); then
+            # Validate SHA format
+            if [[ "$CURRENT_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
+              echo "✅ Current deployed SHA: $CURRENT_SHA"
+            else
+              echo "⚠️ Invalid SHA format from server: $CURRENT_SHA"
+              CURRENT_SHA="unknown"
+            fi
+          else
+            echo "⚠️ Could not retrieve current deployment SHA - assuming first deployment"
+            CURRENT_SHA="unknown"
+          fi
+
+          TARGET_REF="${{ inputs.target-ref }}"
+          echo "🎯 Target deployment ref: $TARGET_REF"
+
+          # Resolve target ref to SHA if it's not already a SHA
+          if [[ "$TARGET_REF" =~ ^[a-fA-F0-9]{40}$ ]]; then
+            TARGET_SHA="$TARGET_REF"
+            echo "✅ Target ref is already a full SHA"
+          elif [[ "$TARGET_REF" =~ ^[a-fA-F0-9]{7,39}$ ]]; then
+            TARGET_SHA="$TARGET_REF"
+            echo "✅ Target ref is a short SHA, will resolve on server"
+          else
+            TARGET_SHA="$TARGET_REF"
+            echo "✅ Target ref is a branch/tag name, will resolve on server"
+          fi
+
+          # Set outputs with proper validation
+          echo "previous_sha=${CURRENT_SHA}" >> $GITHUB_OUTPUT
 
           if [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "${{ inputs.force-deploy }}" != "true" ]; then
             echo "⚠️ Repository is already at target commit - no deployment needed"
