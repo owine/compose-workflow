@@ -50,14 +50,6 @@ on:
         type: string
         default: 'push'
 
-permissions:
-  # Required for uploading SARIF results to GitHub Security tab
-  security-events: write
-  # Required for accessing repository contents
-  contents: read
-  # Required for workflow run information
-  actions: read
-
 jobs:
   scanning:
     name: GitGuardian scan

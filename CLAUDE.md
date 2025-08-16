@@ -61,6 +61,41 @@ Calling repositories must have the following secrets configured:
 - `SSH_USER` - SSH username for deployment server
 - `SSH_HOST` - SSH hostname for deployment server
 
+### Required Permissions
+
+Calling repositories must grant the following permissions when using the reusable workflows:
+
+```yaml
+permissions:
+  # Required for SARIF uploads to GitHub Security tab (container scanning)
+  security-events: write
+  # Required for accessing repository contents
+  contents: read
+  # Required for workflow run information
+  actions: read
+```
+
+Example workflow call with permissions:
+```yaml
+name: Lint and Security Scan
+on: [push, pull_request]
+
+permissions:
+  security-events: write
+  contents: read
+  actions: read
+
+jobs:
+  lint:
+    uses: owine/compose-workflow/.github/workflows/lint.yml@main
+    with:
+      stacks: '["stack1", "stack2"]'
+      webhook-url: "op://Docker/discord/webhook"
+      repo-name: "My Repository"
+      target-repository: ${{ github.repository }}
+    secrets: inherit
+```
+
 ### Repository Structure Requirements
 
 For the workflows to function properly, calling repositories must have:
