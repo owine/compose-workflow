@@ -53,10 +53,168 @@ jobs:
       running_containers: ${{ steps.health.outputs.running_containers }}
       success_rate: ${{ steps.health.outputs.success_rate }}
     steps:
+      - name: Validate and sanitize inputs
+        run: |
+          # Validate stacks parameter is valid JSON
+          echo '${{ inputs.stacks }}' | jq -r '.[]' >/dev/null || {
+            echo "::error::Invalid stacks JSON format: ${{ inputs.stacks }}"
+            exit 1
+          }
+          
+          # Validate stack names contain only safe characters
+          INVALID_STACKS=""
+          echo '${{ inputs.stacks }}' | jq -r '.[]' | while read -r stack; do
+            if [[ ! "$stack" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+              echo "::error::Invalid stack name: $stack. Only alphanumeric, underscore, and hyphen allowed."
+              exit 1
+            fi
+            # Check stack name length
+            if [ ${#stack} -gt 50 ]; then
+              echo "::error::Stack name too long: $stack (max 50 characters)"
+              exit 1
+            fi
+          done
+          
+          # Validate target-ref format
+          TARGET_REF="${{ inputs.target-ref }}"
+          if [[ ! "$TARGET_REF" =~ ^[a-fA-F0-9]{7,40}$|^[a-zA-Z0-9_/-]+$ ]]; then
+            echo "::error::Invalid target-ref format: $TARGET_REF"
+            echo "::error::Expected: commit SHA (7-40 hex chars) or branch/tag name"
+            exit 1
+          fi
+          
+          # Validate and sanitize compose args
+          COMPOSE_ARGS="${{ inputs.args }}"
+          if [[ -n "$COMPOSE_ARGS" ]]; then
+            # Check for dangerous characters and patterns
+            if [[ "$COMPOSE_ARGS" =~ [;&|`$\\] ]]; then
+              echo "::error::Compose args contain potentially dangerous characters: $COMPOSE_ARGS"
+              echo "::error::Prohibited characters: ; & | \` $ \\"
+              exit 1
+            fi
+            # Check for suspicious patterns
+            if [[ "$COMPOSE_ARGS" =~ (rm|kill|shutdown|reboot|format|dd|>|<|sudo|su) ]]; then
+              echo "::error::Compose args contain prohibited commands: $COMPOSE_ARGS"
+              exit 1
+            fi
+            # Validate against known docker compose options
+            if [[ ! "$COMPOSE_ARGS" =~ ^[a-zA-Z0-9 _.-]*$ ]]; then
+              echo "::error::Compose args contain invalid characters: $COMPOSE_ARGS"
+              exit 1
+            fi
+          fi
+          
+          # Validate webhook URL format
+          WEBHOOK_URL="${{ inputs.webhook-url }}"
+          if [[ ! "$WEBHOOK_URL" =~ ^op://[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$ ]]; then
+            echo "::error::Invalid webhook URL format: $WEBHOOK_URL"
+            echo "::error::Expected format: op://vault/item/field"
+            exit 1
+          fi
+          
+          # Validate repo name
+          REPO_NAME="${{ inputs.repo-name }}"
+          if [[ ! "$REPO_NAME" =~ ^[a-zA-Z0-9_-]+$ ]] || [ ${#REPO_NAME} -gt 100 ]; then
+            echo "::error::Invalid repo name: $REPO_NAME"
+            echo "::error::Must be alphanumeric with hyphens/underscores, max 100 chars"
+            exit 1
+          fi
+          
+          echo "✅ All input validation passed"
+
+      - name: Setup retry mechanism
+        run: |
+          # Create retry function for bash commands
+          cat > /tmp/retry.sh << 'EOF'
+          #!/bin/bash
+          retry() {
+            local max_attempts=$1
+            local delay=$2
+            local command="${@:3}"
+            local attempt=1
+            
+            while [ $attempt -le $max_attempts ]; do
+              echo "Attempt $attempt of $max_attempts: $command"
+              if eval "$command"; then
+                echo "✅ Command succeeded on attempt $attempt"
+                return 0
+              else
+                echo "❌ Command failed on attempt $attempt"
+                if [ $attempt -lt $max_attempts ]; then
+                  echo "⏳ Waiting ${delay}s before retry..."
+                  sleep $delay
+                  delay=$((delay * 2))  # Exponential backoff
+                fi
+                attempt=$((attempt + 1))
+              fi
+            done
+            
+            echo "💥 Command failed after $max_attempts attempts"
+            return 1
+          }
+          
+          # Create SSH retry function with specific error handling
+          ssh_retry() {
+            local max_attempts=$1
+            local delay=$2
+            local ssh_cmd="${@:3}"
+            local attempt=1
+            
+            while [ $attempt -le $max_attempts ]; do
+              echo "SSH Attempt $attempt of $max_attempts"
+              if eval "$ssh_cmd"; then
+                echo "✅ SSH command succeeded on attempt $attempt"
+                return 0
+              else
+                local exit_code=$?
+                echo "❌ SSH command failed on attempt $attempt (exit code: $exit_code)"
+                
+                # Check for specific SSH errors
+                case $exit_code in
+                  255) echo "SSH connection error - network/auth issue" ;;
+                  1) echo "General SSH error" ;;
+                  *) echo "Unknown error code: $exit_code" ;;
+                esac
+                
+                if [ $attempt -lt $max_attempts ]; then
+                  echo "⏳ Waiting ${delay}s before SSH retry..."
+                  sleep $delay
+                fi
+                attempt=$((attempt + 1))
+              fi
+            done
+            
+            echo "💥 SSH command failed after $max_attempts attempts"
+            return 1
+          }
+          EOF
+          chmod +x /tmp/retry.sh
+
       - name: Configure 1Password Service Account
         uses: 1password/load-secrets-action/configure@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Cache Tailscale state
+        uses: actions/cache@ab5e6d0c87105b4c9c2047343972218f562e4319  # v4.0.1
+        with:
+          path: |
+            ~/.cache/tailscale
+            /var/lib/tailscale
+          key: tailscale-${{ runner.os }}-${{ github.repository_owner }}
+          restore-keys: |
+            tailscale-${{ runner.os }}-
+
+      - name: Cache deployment tools
+        uses: actions/cache@ab5e6d0c87105b4c9c2047343972218f562e4319  # v4.0.1
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/docker
+            /tmp/retry.sh
+          key: deploy-tools-${{ runner.os }}-${{ hashFiles('scripts/testing/*.sh') }}
+          restore-keys: |
+            deploy-tools-${{ runner.os }}-
 
       - name: Load Tailscale credentials
         id: load-tailscale-credentials
@@ -82,11 +240,40 @@ jobs:
         with:
           unset-previous: true
 
+      - name: Optimize SSH connections
+        run: |
+          # Configure SSH connection multiplexing for better performance
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << EOF
+          Host deployment-server
+            HostName ${{ secrets.SSH_HOST }}
+            User ${{ secrets.SSH_USER }}
+            ControlMaster auto
+            ControlPath ~/.ssh/%r@%h:%p
+            ControlPersist 300
+            ServerAliveInterval 30
+            ServerAliveCountMax 3
+            Compression yes
+            TCPKeepAlive yes
+          EOF
+          
+          # Pre-establish SSH connection for multiplexing
+          echo "🔗 Pre-establishing SSH connection for multiplexing..."
+          ssh -o "StrictHostKeyChecking no" deployment-server -O check 2>/dev/null || \
+          ssh -o "StrictHostKeyChecking no" deployment-server -O forward -N &
+          
+          # Give the connection a moment to establish
+          sleep 2
+          
+          echo "✅ SSH connection optimization configured"
+
       - name: Store current deployment for rollback
         id: backup
         run: |
           echo "::group::Preparing deployment backup"
-          CURRENT_SHA=$(ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD')
+          # Use retry mechanism for SSH connection
+          source /tmp/retry.sh
+          CURRENT_SHA=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD'")
           TARGET_SHA="${{ inputs.target-ref }}"
 
           echo "Current deployed SHA: $CURRENT_SHA"
@@ -111,6 +298,13 @@ jobs:
         continue-on-error: true
         run: |
           echo "::group::Deploying all stacks"
+          
+          # Source retry functions
+          source /tmp/retry.sh
+          
+          # Set error handling
+          set -e
+          trap 'echo "❌ Deployment failed at line $LINENO"' ERR
 
           # Parse inputs outside SSH context
           STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
@@ -120,8 +314,16 @@ jobs:
           COMPOSE_ARGS="${{ inputs.args || '' }}"
 
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$HAS_DOCKGE" "$TARGET_REF" "$COMPOSE_ARGS" << 'EOF'
+          # Use retry mechanism and optimized deployment
+          ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s $STACKS \"$HAS_DOCKGE\" \"$TARGET_REF\" \"$COMPOSE_ARGS\"" << 'EOF'
             set -e
+            
+            # Performance optimizations
+            export DOCKER_BUILDKIT=1
+            export COMPOSE_DOCKER_CLI_BUILD=1
+            
+            # Enable parallel image pulls
+            export COMPOSE_PARALLEL_LIMIT=8
 
             # Get arguments passed to script (excluding sensitive OP_TOKEN)
             # Arguments: stack1 stack2 stack3 ... HAS_DOCKGE TARGET_REF [COMPOSE_ARGS]
@@ -278,6 +480,13 @@ jobs:
         if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
         run: |
           echo "::group::Health checking all services"
+          
+          # Source retry functions
+          source /tmp/retry.sh
+          
+          # Set error handling
+          set -e
+          trap 'echo "❌ Health check failed at line $LINENO"' ERR
 
           # Parse inputs outside SSH context
           STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
@@ -285,7 +494,8 @@ jobs:
           HAS_DOCKGE="${{ inputs.has-dockge }}"
 
           # Execute health check and capture structured output
-          HEALTH_RESULT=$(ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS "$HAS_DOCKGE" << 'EOF'
+          # Use retry mechanism for health check
+          HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS \"$HAS_DOCKGE\"" << 'EOF'
             set -e
 
             # Get arguments passed to script (excluding sensitive OP_TOKEN)
@@ -307,8 +517,64 @@ jobs:
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
-            echo "⏳ Waiting for services to stabilize..."
-            sleep 15
+            # Enhanced health check with exponential backoff
+            echo "🔍 Starting enhanced health check with exponential backoff..."
+            
+            # Health check function with retry logic
+            health_check_with_retry() {
+              local stack=$1
+              local max_attempts=6
+              local wait_time=5
+              local attempt=1
+              
+              echo "🔍 Health checking $stack with retry logic..."
+              
+              while [ $attempt -le $max_attempts ]; do
+                echo "  Attempt $attempt/$max_attempts for $stack (wait: ${wait_time}s)"
+                
+                cd "/opt/compose/$stack" || {
+                  echo "❌ $stack: Directory not found"
+                  return 1
+                }
+                
+                # Get container status
+                local running_count
+                local total_count
+                local exited_count
+                local restarting_count
+                
+                running_count=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
+                total_count=$(op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+                exited_count=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=exited" 2>/dev/null | wc -l | tr -d " " || echo "0")
+                restarting_count=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=restarting" 2>/dev/null | wc -l | tr -d " " || echo "0")
+                
+                echo "  $stack status: $running_count/$total_count running, $exited_count exited, $restarting_count restarting"
+                
+                # Check if all services are running
+                if [ "$running_count" -eq "$total_count" ] && [ "$total_count" -gt 0 ]; then
+                  echo "✅ $stack: All $running_count services healthy"
+                  return 0
+                elif [ "$running_count" -gt 0 ] && [ "$restarting_count" -eq 0 ]; then
+                  echo "⚠️ $stack: $running_count/$total_count running (degraded but stable)"
+                  return 2  # Degraded but acceptable
+                elif [ $attempt -eq $max_attempts ]; then
+                  echo "❌ $stack: Failed after $max_attempts attempts ($running_count/$total_count running)"
+                  return 1
+                else
+                  echo "  $stack: Not ready yet, waiting ${wait_time}s..."
+                  sleep $wait_time
+                  wait_time=$((wait_time * 2))  # Exponential backoff
+                  if [ $wait_time -gt 120 ]; then
+                    wait_time=120  # Cap at 2 minutes
+                  fi
+                fi
+                
+                attempt=$((attempt + 1))
+              done
+              
+              echo "❌ $stack: Health check failed after $max_attempts attempts"
+              return 1
+            }
 
             FAILED_STACKS=""
             DEGRADED_STACKS=""
@@ -388,37 +654,29 @@ jobs:
             # Set trap for cleanup on exit
             trap cleanup_health_logs EXIT
 
-            # Health check each stack in parallel for speed
-            echo "🔍 Starting parallel health checks..."
-            HEALTH_PIDS=""
-
-            # Start all health checks in parallel
+            # Enhanced health checks with sequential retry logic
+            echo "🔍 Starting enhanced health checks with retry logic..."
+            
+            # Check each stack with the new enhanced health check
             for STACK in $STACKS; do
-              echo "Starting health check for $STACK..."
-              health_check_stack "$STACK" &
-              HEALTH_PIDS="$HEALTH_PIDS $!"
-              echo "Started health check of $STACK (PID: $!)"
-            done
-
-            # Wait for all health checks to complete
-            echo "⏳ Waiting for all health checks to complete..."
-            wait
-
-            # Check health check results from log files
-            for STACK in $STACKS; do
-              if [ -f "/tmp/health_${STACK}.log" ]; then
-                # Check the exit code stored in the log file
-                if grep -q "✅.*$STACK.*healthy" "/tmp/health_${STACK}.log"; then
+              echo ""
+              echo "🔍 Checking stack: $STACK"
+              
+              health_check_with_retry "$STACK"
+              case $? in
+                0)
+                  echo "✅ $STACK: Healthy"
                   HEALTHY_STACKS="$HEALTHY_STACKS $STACK"
-                elif grep -q "⚠️.*$STACK.*degraded\|running" "/tmp/health_${STACK}.log"; then
+                  ;;
+                2)
+                  echo "⚠️ $STACK: Degraded but stable"
                   DEGRADED_STACKS="$DEGRADED_STACKS $STACK"
-                else
+                  ;;
+                *)
+                  echo "❌ $STACK: Failed health check"
                   FAILED_STACKS="$FAILED_STACKS $STACK"
-                fi
-              else
-                # No log file means the health check failed completely
-                FAILED_STACKS="$FAILED_STACKS $STACK"
-              fi
+                  ;;
+              esac
             done
 
             # Calculate container statistics from all stacks
@@ -681,6 +939,18 @@ jobs:
             echo "🎉 All stacks rolled back successfully!"
           EOF
           echo "::endgroup::"
+
+      - name: Cleanup SSH connections
+        if: always()
+        run: |
+          # Close SSH connection multiplexing
+          echo "🧹 Cleaning up SSH connections..."
+          ssh -o "StrictHostKeyChecking no" deployment-server -O exit 2>/dev/null || true
+          
+          # Clean up SSH control sockets
+          rm -f ~/.ssh/%r@%h:%p 2>/dev/null || true
+          
+          echo "✅ SSH cleanup completed"
 
       - name: Report Deployment Status
         if: always()
