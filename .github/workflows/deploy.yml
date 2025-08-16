@@ -195,19 +195,15 @@ jobs:
           EOF
           chmod +x /tmp/retry.sh
 
-      - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
-        with:
-          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-
       - name: Cache Tailscale state
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
         with:
           path: |
             ~/.cache/tailscale
             /var/lib/tailscale
-          key: tailscale-${{ runner.os }}-${{ github.repository_owner }}
+          key: tailscale-${{ runner.os }}-${{ github.repository }}-${{ github.run_id }}
           restore-keys: |
+            tailscale-${{ runner.os }}-${{ github.repository }}-
             tailscale-${{ runner.os }}-
 
       - name: Cache deployment tools
@@ -216,10 +212,15 @@ jobs:
           path: |
             ~/.cache/pip
             ~/.cache/docker
-            /tmp/retry.sh
-          key: deploy-tools-${{ runner.os }}-${{ hashFiles('scripts/testing/*.sh') }}
+            ~/.ssh
+          key: deploy-tools-${{ runner.os }}-${{ hashFiles('.github/workflows/deploy.yml') }}
           restore-keys: |
             deploy-tools-${{ runner.os }}-
+
+      - name: Configure 1Password Service Account
+        uses: 1password/load-secrets-action/configure@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0  # v2.0.0
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load Tailscale credentials
         id: load-tailscale-credentials
