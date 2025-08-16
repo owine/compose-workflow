@@ -77,7 +77,10 @@ jobs:
 
           # Validate target-ref format
           TARGET_REF="${{ inputs.target-ref }}"
-          if [[ ! "$TARGET_REF" =~ ^[a-fA-F0-9]{7,40}$|^[a-zA-Z0-9_/-]+$ ]]; then
+          # Check if it's a valid commit SHA (7-40 hex chars) or branch/tag name
+          if [[ "$TARGET_REF" =~ ^[a-fA-F0-9]{7,40}$ ]] || [[ "$TARGET_REF" =~ ^[a-zA-Z0-9_-]+$ ]] || [[ "$TARGET_REF" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$ ]]; then
+            echo "✅ Target-ref format valid: $TARGET_REF"
+          else
             echo "::error::Invalid target-ref format: $TARGET_REF"
             echo "::error::Expected: commit SHA (7-40 hex chars) or branch/tag name"
             exit 1
