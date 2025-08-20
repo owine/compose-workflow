@@ -226,7 +226,6 @@ jobs:
         id: load-tailscale-credentials
         uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
         with:
-          export-env: false
           unset-previous: true
         env:
           TAILSCALE_OAUTH_CLIENT_ID: "op://Docker/tailscale-oauth/client_id"
@@ -1057,7 +1056,6 @@ jobs:
         id: op-load-discord
         uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
         with:
-          export-env: false
           unset-previous: true
         env:
           DISCORD_WEBHOOK: ${{ inputs.webhook-url }}
@@ -1080,3 +1078,8 @@ jobs:
           color: ${{ needs.deploy.outputs.deployment_needed != 'true' && 0x808080 || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x00ff00 || needs.deploy.outputs.degraded_stacks != '' && 0xff9900 || 0xff0000 }}
           username: "GitHub Actions"
           avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+
+      - name: Unload Discord webhook
+        uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
+        with:
+          unset-previous: true
