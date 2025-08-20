@@ -73,7 +73,7 @@ jobs:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           GITGUARDIAN_API_KEY: "op://Docker/gitguardian/api_key"
 
-          - name: GitGuardian scan
+      - name: GitGuardian scan
         uses: GitGuardian/ggshield-action@69380a64a54eb293ae6f22d4364ae745b77f937c # v1.42.0
         env:
           GITHUB_PUSH_BEFORE_SHA: ${{ inputs.github-event-before }}
