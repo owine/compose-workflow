@@ -86,6 +86,11 @@ jobs:
           GITHUB_DEFAULT_BRANCH: ${{ inputs.github-default-branch }}
           GITGUARDIAN_API_KEY: ${{ steps.op-load-secret.outputs.GITGUARDIAN_API_KEY }}
 
+      - name: Unload GitGuardian credentials
+        uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
+        with:
+          unset-previous: true
+
   lint:
     strategy:
       matrix:
