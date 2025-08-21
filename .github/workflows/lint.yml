@@ -75,7 +75,6 @@ jobs:
         with:
           unset-previous: true
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           GITGUARDIAN_API_KEY: "op://Docker/gitguardian/api_key"
 
       - name: GitGuardian scan
