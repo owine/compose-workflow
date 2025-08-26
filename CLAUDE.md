@@ -16,7 +16,12 @@ This repository provides two main reusable workflows:
 
 #### 1. Lint Workflow (`/.github/workflows/lint.yml`)
 - **Purpose**: Validates Docker Compose files and detects secrets
-- **Features**: GitGuardian scanning, YAML linting, Docker Compose validation, Discord notifications
+- **Features**: 
+  - GitGuardian scanning for secret detection (push events only)
+  - YAML linting with yamllint
+  - Docker Compose validation
+  - Parallel execution of all validation tasks
+  - Discord notifications with detailed status
 - **Key Input Parameters**: 
   - `stacks`: JSON array of stack names to lint
   - `webhook-url`: 1Password reference to Discord webhook
@@ -28,28 +33,42 @@ This repository provides two main reusable workflows:
 #### 2. Deploy Workflow (`/.github/workflows/deploy.yml`)  
 - **Purpose**: Handles deployment, health checks, rollback, and cleanup with comprehensive monitoring
 - **Features**: 
+  - Input validation and sanitization for security
+  - Enhanced error handling with retry logic and exponential backoff
   - Parallel stack deployment with detailed logging
-  - Comprehensive health checking with service status monitoring
-  - Automatic rollback on failure
-  - Docker image cleanup
-  - Tailscale integration for secure connections
-  - Discord notifications with rich deployment status information
+  - Stack-specific health checking with accurate service counts
+  - Automatic rollback on failure with SHA tracking
+  - Docker image cleanup after successful deployment
+  - SSH connection optimization with multiplexing
+  - Tailscale integration with cached state
+  - Rich Discord notifications with deployment metrics
 - **Key Input Parameters**:
   - `stacks`: JSON array of stack names to deploy
   - `webhook-url`: 1Password reference to Discord webhook  
   - `repo-name`: Repository name for notifications
-  - `target-ref`: Git reference to deploy
+  - `target-ref`: Git reference to deploy (SHA or branch/tag)
   - `has-dockge`: Boolean for Dockge deployment
   - `force-deploy`: Force deployment even if at target commit
   - `args`: Additional docker compose up arguments
+
+### Recent Improvements
+
+1. **Input Validation & Sanitization**: Comprehensive validation of all workflow inputs to prevent injection attacks
+2. **Enhanced Error Handling**: Retry logic with exponential backoff for network operations
+3. **Local Testing Capabilities**: Scripts for testing workflows locally (`scripts/testing/`)
+4. **Enhanced Health Checks**: Dynamic retry logic with stack-specific service counting
+5. **Caching Strategies**: Optimized caching for Tailscale state and deployment tools
+6. **SSH Optimization**: Connection multiplexing and retry mechanisms
+7. **Parallel Execution**: All lint jobs (GitGuardian, YAML lint) run concurrently
 
 ### Benefits of Centralization
 
 1. **Reduced Duplication**: Single workflow definitions shared across repositories
 2. **Consistent Behavior**: Standardized deployment patterns and error handling  
 3. **Centralized Maintenance**: Updates apply to all environments simultaneously
-4. **Enhanced Reliability**: Automatic rollback, health checking, and comprehensive monitoring
+4. **Enhanced Reliability**: Automatic rollback, health checking, comprehensive monitoring
 5. **Security Integration**: GitGuardian scanning, 1Password secret management, Tailscale networking
+6. **Performance Optimization**: Parallel execution, caching, SSH multiplexing
 
 ## Workflow Configuration
 
@@ -61,40 +80,15 @@ Calling repositories must have the following secrets configured:
 - `SSH_USER` - SSH username for deployment server
 - `SSH_HOST` - SSH hostname for deployment server
 
-### Required Permissions
+### Permissions Note for Private Repositories
 
-Calling repositories must grant the following permissions when using the reusable workflows:
+**Important**: Private repositories have limitations with certain GitHub Actions permissions. Container security scanning features have been removed from the lint workflow as private repositories cannot use the `security-events: write` permission required for SARIF uploads.
 
-```yaml
-permissions:
-  # Required for SARIF uploads to GitHub Security tab (container scanning)
-  security-events: write
-  # Required for accessing repository contents
-  contents: read
-  # Required for workflow run information
-  actions: read
-```
-
-Example workflow call with permissions:
-```yaml
-name: Lint and Security Scan
-on: [push, pull_request]
-
-permissions:
-  security-events: write
-  contents: read
-  actions: read
-
-jobs:
-  lint:
-    uses: owine/compose-workflow/.github/workflows/lint.yml@main
-    with:
-      stacks: '["stack1", "stack2"]'
-      webhook-url: "op://Docker/discord/webhook"
-      repo-name: "My Repository"
-      target-repository: ${{ github.repository }}
-    secrets: inherit
-```
+For private repositories, the workflows focus on:
+- GitGuardian secret detection
+- YAML syntax validation
+- Docker Compose configuration validation
+- Deployment automation with health checks
 
 ### Repository Structure Requirements
 
@@ -133,11 +127,17 @@ actionlint .github/workflows/deploy.yml
 # Validate workflow YAML formatting
 yamllint --strict .github/workflows/lint.yml
 yamllint --strict .github/workflows/deploy.yml
+
+# Test workflows locally
+./scripts/testing/test-workflow.sh
+./scripts/testing/validate-compose.sh
 ```
 
 ### Testing Workflows
 
-For testing these workflows, calling repositories should implement them with proper parameters and secrets configured.
+The repository includes testing scripts in `scripts/testing/`:
+- `test-workflow.sh` - Test workflow inputs and validation
+- `validate-compose.sh` - Validate Docker Compose files
 
 ### Deployment Validation
 
@@ -153,25 +153,28 @@ docker compose -f stack/compose.yaml config
 
 The lint workflow (`lint.yml`) provides:
 
-1. **GitGuardian Scanning** - Secret detection with 1Password integration (push events only)
-2. **YAML Linting** - Validates compose file formatting using yamllint  
-3. **Docker Compose Config** - Validates syntax and configuration
-4. **Matrix Strategy** - Tests each stack independently
-5. **Discord Notifications** - Reports results with detailed status information
-6. **Multi-repository Support** - Can checkout and lint any target repository
+1. **Parallel Execution** - GitGuardian and YAML linting run simultaneously
+2. **GitGuardian Scanning** - Secret detection with 1Password integration (push events only)
+3. **YAML Linting** - Validates compose file formatting using yamllint  
+4. **Docker Compose Config** - Validates syntax and configuration
+5. **Matrix Strategy** - Tests each stack independently
+6. **Discord Notifications** - Reports results with detailed status information
+7. **Multi-repository Support** - Can checkout and lint any target repository
 
 ### Deploy Pipeline Features  
 
 The deploy workflow (`deploy.yml`) provides:
 
-1. **Smart Deployment Logic** - Skips deployment if repository is already at target commit
-2. **Parallel Stack Deployment** - Deploy all stacks concurrently with detailed logging
-3. **Comprehensive Health Checks** - Verify all services are running with container status monitoring
-4. **Automatic Rollback** - Roll back to previous commit on failure
-5. **Docker Image Cleanup** - Remove unused images after successful deployment
-6. **Tailscale Integration** - Secure connection to deployment servers
-7. **Rich Discord Notifications** - Comprehensive deployment status with health metrics
-8. **Force Deployment Option** - Override same-commit detection when needed
+1. **Input Validation** - Comprehensive validation of all inputs for security
+2. **Smart Deployment** - Skips if already at target commit (unless forced)
+3. **Retry Mechanisms** - Automatic retry with exponential backoff for SSH operations
+4. **Parallel Stack Deployment** - Deploy all stacks concurrently with detailed logging
+5. **Stack-Specific Health Checks** - Accurate per-stack service counting and status
+6. **Automatic Rollback** - Roll back to previous commit on failure
+7. **Docker Image Cleanup** - Remove unused images after successful deployment
+8. **SSH Optimization** - Connection multiplexing for better performance
+9. **Caching** - Optimized caching for Tailscale and deployment tools
+10. **Rich Discord Notifications** - Comprehensive deployment status with health metrics
 
 ## Security Integration
 
@@ -184,11 +187,32 @@ The workflows integrate with 1Password for secure secret management:
 - Service account tokens provide CI/CD access to secrets
 - Secrets are loaded at runtime, never stored in repositories
 
+### Input Security
+
+- Comprehensive input validation prevents injection attacks
+- Stack names validated against safe character sets
+- Target refs validated for proper format
+- Webhook URLs validated for 1Password format
+- Repository names sanitized
+
 ### Network Security
 
 - **Tailscale Integration** - Secure zero-trust networking for deployment connections
-- **SSH Key Management** - Secure SSH connections to deployment servers
+- **SSH Key Management** - Secure SSH connections with retry logic
 - **1Password Integration** - Centralized secret management with vault isolation
+- **Connection Multiplexing** - Optimized SSH connections with ControlMaster
+
+## Cache Configuration
+
+### Tailscale Cache
+- **Key**: `tailscale-${{ runner.os }}-${{ github.repository_owner }}-${{ github.run_number }}`
+- **Paths**: `~/.cache/tailscale`, `/var/lib/tailscale`
+- **Restore Keys**: Hierarchical fallback for cache hits
+
+### Deployment Tools Cache
+- **Key**: `deploy-tools-${{ runner.os }}-v1`
+- **Paths**: `~/.cache/pip`, `~/.cache/docker`, `~/.ssh`
+- **Version**: Simple version-based key for reliability
 
 ## Workflow Maintenance
 
@@ -197,9 +221,10 @@ The workflows integrate with 1Password for secure secret management:
 When updating the reusable workflows in this repository:
 
 1. **Test workflow syntax** - Use `actionlint` to validate workflow files
-2. **Update documentation** - Reflect changes in `README.md` and `CLAUDE.md`
-3. **Version workflows** - Consider using tags for major workflow changes
-4. **Test with target repositories** - Verify changes work across calling repositories
+2. **Run local tests** - Use testing scripts in `scripts/testing/`
+3. **Update documentation** - Reflect changes in `README.md` and `CLAUDE.md`
+4. **Version workflows** - Consider using tags for major workflow changes
+5. **Test with target repositories** - Verify changes work across calling repositories
 
 ### Version Management
 
@@ -212,9 +237,10 @@ When updating the reusable workflows in this repository:
 When adding new features to the workflows:
 
 1. **Add input parameters** - Define new inputs in workflow files
-2. **Update parameter documentation** - Document new parameters in README.md
-3. **Test thoroughly** - Verify new features work across different repository configurations
-4. **Maintain backward compatibility** - Ensure existing implementations continue to work
+2. **Validate inputs** - Add validation logic for security
+3. **Update parameter documentation** - Document new parameters in README.md
+4. **Test thoroughly** - Verify new features work across different repository configurations
+5. **Maintain backward compatibility** - Ensure existing implementations continue to work
 
 ## Repository Structure
 
@@ -225,6 +251,11 @@ This repository contains:
 │   └── workflows/
 │       ├── lint.yml           # Reusable lint workflow
 │       └── deploy.yml         # Reusable deploy workflow  
+├── scripts/
+│   └── testing/
+│       ├── test-workflow.sh   # Workflow testing script
+│       ├── validate-compose.sh # Compose validation script
+│       └── README.md          # Testing documentation
 ├── CLAUDE.md                  # This file - Claude Code guidance
 ├── README.md                  # Repository documentation
 └── renovate.json              # Renovate configuration for dependency updates
@@ -258,6 +289,7 @@ The repository uses Renovate for automated dependency updates:
 2. Check Tailscale OAuth credentials in 1Password
 3. Ensure deployment server is accessible via Tailscale
 4. Verify SSH key authentication is working
+5. Check SSH retry logic in logs for connection details
 
 #### Discord Notification Failures
 
@@ -271,13 +303,15 @@ The repository uses Renovate for automated dependency updates:
 
 #### Health Check Failures
 
-**Symptoms**: Deployment succeeds but health checks fail
+**Symptoms**: Deployment succeeds but health checks fail or show incorrect counts
 
 **Solutions**:
-1. Increase health check timeout in workflow
-2. Verify services have proper health check configurations
-3. Check Docker Compose service dependencies
-4. Review container logs for startup issues
+1. Verify stack-specific compose files are being used (`-f compose.yaml`)
+2. Check health check retry logic settings (attempts and wait times)
+3. Verify services have proper health check configurations
+4. Check Docker Compose service dependencies
+5. Review container logs for startup issues
+6. Ensure health checks are using stack-specific paths
 
 ### Workflow Debugging
 
@@ -302,6 +336,30 @@ Monitor workflow outputs for troubleshooting:
     echo "Health Status: ${{ needs.deploy.outputs.health_status }}"
     echo "Healthy Stacks: ${{ needs.deploy.outputs.healthy_stacks }}"
 ```
+
+#### SSH Connection Issues
+
+Check SSH multiplexing and retry logic:
+- Review `/tmp/retry.sh` execution in logs
+- Check SSH ControlMaster configuration
+- Verify connection persistence settings
+
+## Performance Optimization
+
+### Parallel Execution
+- GitGuardian scanning and YAML linting run concurrently
+- Stack deployments execute in parallel
+- Matrix strategy for independent stack validation
+
+### Caching Strategy
+- Tailscale state cached per repository owner
+- Deployment tools cached with version key
+- SSH connections multiplexed for reuse
+
+### Retry Logic
+- SSH operations retry with exponential backoff
+- Health checks use dynamic retry timing
+- Deployment operations have configurable timeouts
 
 # important-instruction-reminders
 Do what has been asked; nothing more, nothing less.
