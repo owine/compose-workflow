@@ -127,7 +127,7 @@ jobs:
           else
             echo "❌ YAML linting failed for ${{ matrix.stack }}"
           fi
-          
+
           if [ $DOCKER_EXIT -eq 0 ]; then
             echo "✅ Docker Compose validation passed for ${{ matrix.stack }}"
           else
