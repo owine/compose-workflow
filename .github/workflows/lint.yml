@@ -78,7 +78,7 @@ jobs:
           GITGUARDIAN_API_KEY: "op://Docker/gitguardian/api_key"
 
       - name: GitGuardian scan
-        uses: GitGuardian/ggshield-action@69380a64a54eb293ae6f22d4364ae745b77f937c # v1.42.0
+        uses: GitGuardian/ggshield-action@0935c02957f6fd78bc52166570e4e345c539120f # v1.43.0
         env:
           GITHUB_PUSH_BEFORE_SHA: ${{ inputs.github-event-before }}
           GITHUB_PUSH_BASE_SHA: ${{ inputs.github-event-base }}
