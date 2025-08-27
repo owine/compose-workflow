@@ -575,10 +575,10 @@ jobs:
                 local exited_count
                 local restarting_count
 
-                running_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f ./$stack/compose.yaml ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
-                total_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f ./$stack/compose.yaml config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
-                exited_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f ./$stack/compose.yaml ps --services --filter "status=exited" 2>/dev/null | wc -l | tr -d " " || echo "0")
-                restarting_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f ./$stack/compose.yaml ps --services --filter "status=restarting" 2>/dev/null | wc -l | tr -d " " || echo "0")
+                running_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
+                total_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+                exited_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=exited" 2>/dev/null | wc -l | tr -d " " || echo "0")
+                restarting_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=restarting" 2>/dev/null | wc -l | tr -d " " || echo "0")
 
                 echo "  $stack status: $running_count/$total_count running, $exited_count exited, $restarting_count restarting"
 
