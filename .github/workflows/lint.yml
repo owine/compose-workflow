@@ -110,17 +110,17 @@ jobs:
           # Run YAML and Docker Compose linting in parallel
           yamllint --strict --config-file .yamllint ./${{ matrix.stack }}/compose.yaml &
           YAML_PID=$!
-          
+
           docker compose -f ./${{ matrix.stack }}/compose.yaml config &
           DOCKER_PID=$!
-          
+
           # Wait for both processes and capture exit codes
           wait $YAML_PID
           YAML_EXIT=$?
-          
+
           wait $DOCKER_PID
           DOCKER_EXIT=$?
-          
+
           # Report results
           if [ $YAML_EXIT -eq 0 ]; then
             echo "✅ YAML linting passed for ${{ matrix.stack }}"
@@ -133,7 +133,7 @@ jobs:
           else
             echo "❌ Docker Compose validation failed for ${{ matrix.stack }}"
           fi
-          
+
           # Exit with error if any linting failed
           if [ $YAML_EXIT -ne 0 ] || [ $DOCKER_EXIT -ne 0 ]; then
             exit 1
