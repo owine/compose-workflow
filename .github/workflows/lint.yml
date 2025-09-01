@@ -53,7 +53,7 @@ on:
 jobs:
   scanning:
     name: GitGuardian scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     if: ${{ inputs.event-name == 'push' }}
     steps:
@@ -96,7 +96,7 @@ jobs:
       matrix:
         stack: ${{ fromJson(inputs.stacks) }}
       fail-fast: false
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Checkout target repository
@@ -150,7 +150,7 @@ jobs:
 
   lint-summary:
     name: Lint Summary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [scanning, lint]
     if: always()
     steps:
@@ -169,7 +169,7 @@ jobs:
 
   notify:
     name: Discord Notification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [scanning, lint, lint-summary]
     if: always()
     steps:

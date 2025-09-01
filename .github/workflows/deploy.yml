@@ -36,7 +36,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     timeout-minutes: 40
     outputs:
@@ -1031,7 +1031,7 @@ jobs:
 
   notify:
     name: Discord Notification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [deploy]
     if: always()
     steps:
