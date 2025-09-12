@@ -254,7 +254,7 @@ jobs:
             HostName ${{ secrets.SSH_HOST }}
             User ${{ secrets.SSH_USER }}
             ControlMaster auto
-            ControlPath ~/.ssh/%r@%h:%p
+            ControlPath ~/.ssh/sockets/%r@%h:%p
             ControlPersist 300
             ServerAliveInterval 30
             ServerAliveCountMax 3
@@ -262,7 +262,8 @@ jobs:
             TCPKeepAlive yes
           EOF
 
-          # Pre-establish SSH connection for multiplexing
+          # Create control socket directory and pre-establish SSH connection
+          mkdir -p ~/.ssh/sockets
           echo "🔗 Pre-establishing SSH connection for multiplexing..."
           ssh -o "StrictHostKeyChecking no" deployment-server -O check 2>/dev/null || \
           ssh -o "StrictHostKeyChecking no" deployment-server -O forward -N &
@@ -980,7 +981,7 @@ jobs:
           ssh -o "StrictHostKeyChecking no" deployment-server -O exit 2>/dev/null || true
 
           # Clean up SSH control sockets
-          rm -f ~/.ssh/%r@%h:%p 2>/dev/null || true
+          rm -f ~/.ssh/sockets/* 2>/dev/null || true
 
           echo "✅ SSH cleanup completed"
 
