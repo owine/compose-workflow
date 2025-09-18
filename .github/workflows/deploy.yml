@@ -100,8 +100,8 @@ jobs:
               echo "::error::Compose args contain prohibited commands: $COMPOSE_ARGS"
               exit 1
             fi
-            # Validate against known docker compose options
-            if [[ "$COMPOSE_ARGS" =~ ^[a-zA-Z0-9_.-]+$ ]] || [[ "$COMPOSE_ARGS" =~ ^[a-zA-Z0-9_.-]+[[:space:]][a-zA-Z0-9_.-]+$ ]]; then
+            # Validate against known docker compose options - allow hyphens, spaces, and equals for arguments
+            if [[ "$COMPOSE_ARGS" =~ ^[a-zA-Z0-9[:space:]_=.-]+$ ]]; then
               echo "✅ Compose args format valid: $COMPOSE_ARGS"
             else
               echo "::error::Compose args contain invalid characters: $COMPOSE_ARGS"
