@@ -33,12 +33,22 @@ on:
         required: false
         type: boolean
         default: false
+      health-check-timeout:
+        description: "Health check timeout in seconds (default: 180)"
+        required: false
+        type: number
+        default: 180
+      critical-services:
+        description: "JSON array of critical service names that should trigger early exit on failure"
+        required: false
+        type: string
+        default: '[]'
 
 jobs:
   deploy:
     runs-on: ubuntu-24.04
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    timeout-minutes: 40
+    timeout-minutes: 40  # Overall job timeout
     outputs:
       previous_sha: ${{ steps.backup.outputs.previous_sha }}
       deployment_needed: ${{ steps.backup.outputs.deployment_needed }}
@@ -346,6 +356,8 @@ jobs:
           HAS_DOCKGE="${{ inputs.has-dockge }}"
           TARGET_REF="${{ inputs.target-ref }}"
           COMPOSE_ARGS="${{ inputs.args || '' }}"
+          HEALTH_CHECK_TIMEOUT="${{ inputs.health-check-timeout }}"
+          CRITICAL_SERVICES='${{ inputs.critical-services }}'
 
 
           # Use retry mechanism and optimized deployment
@@ -439,6 +451,67 @@ jobs:
               done
             }
 
+            # Pre-deployment validation function
+            validate_all_stacks() {
+              echo "🔍 Pre-deployment validation of all stacks..."
+              local validation_failed=false
+
+              for STACK in $STACKS; do
+                echo "  Validating $STACK..."
+
+                # Check if stack directory exists
+                if [ ! -d "/opt/compose/$STACK" ]; then
+                  echo "❌ $STACK: Directory /opt/compose/$STACK not found"
+                  validation_failed=true
+                  continue
+                fi
+
+                cd "/opt/compose/$STACK" || {
+                  echo "❌ $STACK: Cannot access directory"
+                  validation_failed=true
+                  continue
+                }
+
+                # Check if compose.yaml exists
+                if [ ! -f "compose.yaml" ]; then
+                  echo "❌ $STACK: compose.yaml not found"
+                  validation_failed=true
+                  continue
+                fi
+
+                # Validate 1Password environment access and Docker Compose config
+                if ! timeout 30 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services >/dev/null 2>&1; then
+                  echo "❌ $STACK: Environment validation failed (1Password or compose config error)"
+                  validation_failed=true
+                  continue
+                fi
+
+                # Quick syntax validation
+                if ! timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --quiet 2>/dev/null; then
+                  echo "❌ $STACK: Docker Compose syntax validation failed"
+                  validation_failed=true
+                  continue
+                fi
+
+                echo "✅ $STACK: Pre-deployment validation passed"
+              done
+
+              if [ "$validation_failed" = true ]; then
+                echo "❌ Pre-deployment validation failed for one or more stacks"
+                echo "   Stopping deployment to prevent extended failures"
+                return 1
+              fi
+
+              echo "✅ All stacks passed pre-deployment validation"
+              return 0
+            }
+
+            # Run pre-deployment validation
+            if ! validate_all_stacks; then
+              echo "DEPLOYMENT_STATUS=failed_validation" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+
             # Set trap for cleanup on exit
             trap cleanup_deploy_logs EXIT
 
@@ -458,23 +531,55 @@ jobs:
             echo "⏳ Waiting for all deployments to complete..."
             FAILED_STACKS=""
 
-            # Wait for all background jobs
-            wait
-
-            # Check deployment results from log files
+            # Enhanced parallel job monitoring with better error propagation
+            echo "⏳ Monitoring parallel deployments..."
             DEPLOYED_STACKS=""
-            for STACK in $STACKS; do
-              if [ -f "/tmp/deploy_${STACK}.log" ]; then
-                DEPLOYED_STACKS="$DEPLOYED_STACKS $STACK"
-                if grep -q "❌.*$STACK" "/tmp/deploy_${STACK}.log"; then
-                  FAILED_STACKS="$FAILED_STACKS $STACK"
-                fi
+            SUCCESSFUL_STACKS=""
+            DEPLOYMENT_ERRORS=""
+
+            # Wait for jobs individually to capture exit codes
+            for PID in $PIDS; do
+              if wait "$PID"; then
+                echo "✅ Deployment process $PID completed successfully"
+              else
+                EXIT_CODE=$?
+                echo "❌ Deployment process $PID failed with exit code $EXIT_CODE"
+                DEPLOYMENT_ERRORS="$DEPLOYMENT_ERRORS PID:$PID:$EXIT_CODE"
               fi
             done
 
-            # Display all deployment logs
+            # Enhanced result analysis from log files
+            for STACK in $STACKS; do
+              if [ -f "/tmp/deploy_${STACK}.log" ]; then
+                DEPLOYED_STACKS="$DEPLOYED_STACKS $STACK"
+
+                # More comprehensive error detection
+                if grep -q "❌.*$STACK\|CRITICAL.*$STACK\|Failed.*$STACK\|Error.*$STACK" "/tmp/deploy_${STACK}.log"; then
+                  FAILED_STACKS="$FAILED_STACKS $STACK"
+                  # Extract specific error for reporting
+                  STACK_ERROR=$(grep -E "❌.*$STACK|CRITICAL.*$STACK|Failed.*$STACK|Error.*$STACK" "/tmp/deploy_${STACK}.log" | head -1)
+                  echo "🔍 $STACK Error: $STACK_ERROR"
+                elif grep -q "✅.*$STACK\|Successfully.*$STACK" "/tmp/deploy_${STACK}.log"; then
+                  SUCCESSFUL_STACKS="$SUCCESSFUL_STACKS $STACK"
+                fi
+              else
+                echo "⚠️ $STACK: No deployment log found - possible early failure"
+                FAILED_STACKS="$FAILED_STACKS $STACK"
+              fi
+            done
+
+            # Summary of deployment results
             echo ""
-            echo "📋 Deployment Results:"
+            echo "📊 Deployment Summary:"
+            echo "  Successful: $(echo $SUCCESSFUL_STACKS | wc -w | tr -d ' ') stacks"
+            echo "  Failed: $(echo $FAILED_STACKS | wc -w | tr -d ' ') stacks"
+            if [ -n "$DEPLOYMENT_ERRORS" ]; then
+              echo "  Process errors: $DEPLOYMENT_ERRORS"
+            fi
+
+            # Display deployment logs with enhanced formatting
+            echo ""
+            echo "📋 Detailed Deployment Results:"
             echo "════════════════════════════════════════════════════════════════"
             for STACK in $STACKS; do
               if [ -f "/tmp/deploy_${STACK}.log" ]; then
@@ -555,54 +660,108 @@ jobs:
             echo "🔍 Starting enhanced health check with exponential backoff..."
 
             # Health check function with retry logic
+            # Pre-validate 1Password environment file access
+            validate_environment() {
+              echo "🔐 Validating 1Password environment access..."
+              if ! op run --env-file=/opt/compose/compose.env -- echo "Environment validation successful" >/dev/null 2>&1; then
+                echo "❌ CRITICAL: Failed to load environment variables from 1Password"
+                echo "   This indicates missing 1Password items or authentication issues"
+                echo "   Stopping deployment to prevent extended failure loops"
+                return 1
+              fi
+              echo "✅ 1Password environment validation passed"
+              return 0
+            }
+
             health_check_with_retry() {
               local stack=$1
-              local max_attempts=6
-              local wait_time=5
+              # Use configurable timeout with fallback to defaults
+              local timeout_seconds=${HEALTH_CHECK_TIMEOUT:-180}
+              local max_attempts=4  # Reduced from 6
+              local wait_time=3     # Reduced initial wait from 5s
               local attempt=1
+              local fast_fail_threshold=2  # Fast fail after 2 attempts if no progress
+              local start_time=$(date +%s)
 
-              echo "🔍 Health checking $stack with retry logic..."
+              echo "🕰️ Health check timeout configured: ${timeout_seconds}s"
+
+              echo "🔍 Health checking $stack with optimized retry logic..."
+
+              # Pre-validate environment access to fail fast
+              if ! validate_environment; then
+                return 1
+              fi
+
+              cd "/opt/compose/$stack" || {
+                echo "❌ $stack: Directory not found"
+                return 1
+              }
+
+              local previous_running=0
+              local no_progress_count=0
 
               while [ $attempt -le $max_attempts ]; do
                 echo "  Attempt $attempt/$max_attempts for $stack (wait: ${wait_time}s)"
 
-                cd "/opt/compose/$stack" || {
-                  echo "❌ $stack: Directory not found"
+                # Get container status with error handling
+                local running_count total_count exited_count restarting_count
+
+                # Check overall timeout
+                local current_time=$(date +%s)
+                local elapsed=$((current_time - start_time))
+                if [ $elapsed -gt $timeout_seconds ]; then
+                  echo "❌ $stack: Health check timed out after ${elapsed}s (limit: ${timeout_seconds}s)"
                   return 1
-                }
+                fi
 
-                # Get container status
-                local running_count
-                local total_count
-                local exited_count
-                local restarting_count
+                # Use timeout to prevent hanging on 1Password errors
+                if ! timeout 30 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services >/dev/null 2>&1; then
+                  echo "❌ $stack: Environment or compose config error (timeout/1Password failure)"
+                  return 1
+                fi
 
-                running_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
-                total_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
-                exited_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=exited" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
-                restarting_count=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=restarting" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+                running_count=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+                total_count=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+                exited_count=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=exited" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+                restarting_count=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=restarting" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
 
                 echo "  $stack status: $running_count/$total_count running, $exited_count exited, $restarting_count restarting"
 
-                # Check if all services are running
+                # Fast fail logic: if no progress after 2 attempts and containers are failing
+                if [ $attempt -ge $fast_fail_threshold ] && [ "$running_count" -eq "$previous_running" ] && [ "$exited_count" -gt 0 ]; then
+                  no_progress_count=$((no_progress_count + 1))
+                  if [ $no_progress_count -ge 2 ]; then
+                    echo "❌ $stack: Fast fail - no progress and containers failing (attempt $attempt)"
+                    return 1
+                  fi
+                else
+                  no_progress_count=0
+                fi
+
+                # Success condition
                 if [ "$running_count" -eq "$total_count" ] && [ "$total_count" -gt 0 ]; then
                   echo "✅ $stack: All $running_count services healthy"
                   return 0
-                elif [ "$running_count" -gt 0 ] && [ "$restarting_count" -eq 0 ]; then
+                # Degraded but stable condition
+                elif [ "$running_count" -gt 0 ] && [ "$restarting_count" -eq 0 ] && [ "$exited_count" -eq 0 ]; then
                   echo "⚠️ $stack: $running_count/$total_count running (degraded but stable)"
                   return 2  # Degraded but acceptable
+                # Final attempt failure
                 elif [ $attempt -eq $max_attempts ]; then
                   echo "❌ $stack: Failed after $max_attempts attempts ($running_count/$total_count running)"
                   return 1
+                # Continue with shorter, smarter waits
                 else
                   echo "  $stack: Not ready yet, waiting ${wait_time}s..."
                   sleep $wait_time
-                  wait_time=$((wait_time * 2))  # Exponential backoff
-                  if [ $wait_time -gt 120 ]; then
-                    wait_time=120  # Cap at 2 minutes
+                  # More aggressive exponential backoff with lower cap
+                  wait_time=$((wait_time * 2))
+                  if [ $wait_time -gt 20 ]; then  # Cap at 20s instead of 120s
+                    wait_time=20
                   fi
                 fi
 
+                previous_running=$running_count
                 attempt=$((attempt + 1))
               done
 
@@ -688,8 +847,28 @@ jobs:
             # Set trap for cleanup on exit
             trap cleanup_health_logs EXIT
 
-            # Enhanced health checks with sequential retry logic
+            # Parse critical services list
+            CRITICAL_SERVICES_ARRAY=""
+            if [ -n "$CRITICAL_SERVICES" ] && [ "$CRITICAL_SERVICES" != "[]" ]; then
+              # Convert JSON array to bash array (simple approach)
+              CRITICAL_SERVICES_ARRAY=$(echo "$CRITICAL_SERVICES" | sed 's/\[\|\]\|"//g' | tr ',' ' ')
+              echo "🚨 Critical services configured: $CRITICAL_SERVICES_ARRAY"
+            fi
+
+            # Function to check if a stack/service is critical
+            is_critical_service() {
+              local service=$1
+              for critical in $CRITICAL_SERVICES_ARRAY; do
+                if [ "$service" = "$critical" ]; then
+                  return 0
+                fi
+              done
+              return 1
+            }
+
+            # Enhanced health checks with sequential retry logic and early exit
             echo "🔍 Starting enhanced health checks with retry logic..."
+            CRITICAL_FAILURE=false
 
             # Check each stack with the new enhanced health check
             for STACK in $STACKS; do
@@ -697,7 +876,9 @@ jobs:
               echo "🔍 Checking stack: $STACK"
 
               health_check_with_retry "$STACK"
-              case $? in
+              HEALTH_RESULT=$?
+
+              case $HEALTH_RESULT in
                 0)
                   echo "✅ $STACK: Healthy"
                   HEALTHY_STACKS="$HEALTHY_STACKS $STACK"
@@ -705,13 +886,40 @@ jobs:
                 2)
                   echo "⚠️ $STACK: Degraded but stable"
                   DEGRADED_STACKS="$DEGRADED_STACKS $STACK"
+                  # Check if degraded stack is critical
+                  if is_critical_service "$STACK"; then
+                    echo "🚨 CRITICAL SERVICE DEGRADED: $STACK"
+                    echo "   Continuing monitoring but flagging for attention"
+                  fi
                   ;;
                 *)
                   echo "❌ $STACK: Failed health check"
                   FAILED_STACKS="$FAILED_STACKS $STACK"
+                  # Check if failed stack is critical - trigger early exit
+                  if is_critical_service "$STACK"; then
+                    echo "🚨 CRITICAL SERVICE FAILURE: $STACK"
+                    echo "   This is a critical service failure - triggering early exit"
+                    echo "   Remaining stacks will not be health checked"
+                    CRITICAL_FAILURE=true
+                    break
+                  fi
                   ;;
               esac
             done
+
+            # Handle critical service failure
+            if [ "$CRITICAL_FAILURE" = true ]; then
+              echo ""
+              echo "❌ CRITICAL SERVICE FAILURE DETECTED"
+              echo "   Deployment marked as failed due to critical service failure"
+              echo "   Health check terminated early to prevent extended failure cycles"
+              # Set outputs for early termination
+              echo "health_status=failed_critical" >> "$GITHUB_OUTPUT"
+              echo "failed_stacks=$FAILED_STACKS" >> "$GITHUB_OUTPUT"
+              echo "healthy_stacks=$HEALTHY_STACKS" >> "$GITHUB_OUTPUT"
+              echo "degraded_stacks=$DEGRADED_STACKS" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
 
             # Calculate container statistics from all stacks
             for STACK in $STACKS; do
