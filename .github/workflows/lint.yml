@@ -129,6 +129,9 @@ jobs:
 
       - name: Run parallel linting
         run: |
+          # Set pipefail to capture exit codes correctly from pipelines
+          set -o pipefail
+
           # Create temporary files for capturing output
           YAML_OUTPUT=$(mktemp)
           DOCKER_OUTPUT=$(mktemp)
@@ -138,10 +141,10 @@ jobs:
           echo ""
 
           # Run YAML and Docker Compose linting in parallel with output capture
-          (yamllint --strict --config-file .yamllint ./${{ matrix.stack }}/compose.yaml 2>&1 | tee "$YAML_OUTPUT") &
+          (set -o pipefail; yamllint --strict --config-file .yamllint ./${{ matrix.stack }}/compose.yaml 2>&1 | tee "$YAML_OUTPUT") &
           YAML_PID=$!
 
-          (docker compose -f ./${{ matrix.stack }}/compose.yaml config 2>&1 | tee "$DOCKER_OUTPUT") &
+          (set -o pipefail; docker compose -f ./${{ matrix.stack }}/compose.yaml config 2>&1 | tee "$DOCKER_OUTPUT") &
           DOCKER_PID=$!
 
           # Wait for both processes and capture exit codes
