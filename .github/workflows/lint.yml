@@ -149,9 +149,38 @@ jobs:
 
           # Create temporary .env with placeholders to suppress environment variable warnings
           TEMP_ENV=$(mktemp)
-          # Extract environment variable references from compose file and create placeholders
+          # Extract environment variable references from compose file and create realistic placeholders
           grep -oE '\$\{[^}]+\}' ./${{ matrix.stack }}/compose.yaml | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
-            echo "${var}=placeholder_value" >> "$TEMP_ENV"
+            # Use realistic placeholder values based on common variable patterns
+            case "$var" in
+              *PATH*|*DIR*)
+                echo "${var}=/tmp/placeholder" >> "$TEMP_ENV"
+                ;;
+              *DOMAIN*)
+                echo "${var}=example.com" >> "$TEMP_ENV"
+                ;;
+              *PORT*)
+                echo "${var}=8080" >> "$TEMP_ENV"
+                ;;
+              *KEY*|*SECRET*|*TOKEN*|*PASS*)
+                echo "${var}=placeholder-secret-value" >> "$TEMP_ENV"
+                ;;
+              *URL*|*HOST*)
+                echo "${var}=http://localhost:8080" >> "$TEMP_ENV"
+                ;;
+              UID|PUID)
+                echo "${var}=1000" >> "$TEMP_ENV"
+                ;;
+              GID|PGID)
+                echo "${var}=1000" >> "$TEMP_ENV"
+                ;;
+              TZ)
+                echo "${var}=UTC" >> "$TEMP_ENV"
+                ;;
+              *)
+                echo "${var}=placeholder_value" >> "$TEMP_ENV"
+                ;;
+            esac
           done 2>/dev/null || true
 
           (set -o pipefail; docker compose --env-file "$TEMP_ENV" -f ./${{ matrix.stack }}/compose.yaml config 2>&1 | tee "$DOCKER_OUTPUT") &
@@ -353,9 +382,38 @@ jobs:
 
             # Create temporary .env with placeholders to suppress environment variable warnings
             TEMP_ENV=$(mktemp)
-            # Extract environment variable references and create placeholders
+            # Extract environment variable references and create realistic placeholders
             grep -oE '\$\{[^}]+\}' "./$stack/compose.yaml" 2>/dev/null | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
-              echo "${var}=placeholder_value" >> "$TEMP_ENV"
+              # Use realistic placeholder values based on common variable patterns
+              case "$var" in
+                *PATH*|*DIR*)
+                  echo "${var}=/tmp/placeholder" >> "$TEMP_ENV"
+                  ;;
+                *DOMAIN*)
+                  echo "${var}=example.com" >> "$TEMP_ENV"
+                  ;;
+                *PORT*)
+                  echo "${var}=8080" >> "$TEMP_ENV"
+                  ;;
+                *KEY*|*SECRET*|*TOKEN*|*PASS*)
+                  echo "${var}=placeholder-secret-value" >> "$TEMP_ENV"
+                  ;;
+                *URL*|*HOST*)
+                  echo "${var}=http://localhost:8080" >> "$TEMP_ENV"
+                  ;;
+                UID|PUID)
+                  echo "${var}=1000" >> "$TEMP_ENV"
+                  ;;
+                GID|PGID)
+                  echo "${var}=1000" >> "$TEMP_ENV"
+                  ;;
+                TZ)
+                  echo "${var}=UTC" >> "$TEMP_ENV"
+                  ;;
+                *)
+                  echo "${var}=placeholder_value" >> "$TEMP_ENV"
+                  ;;
+              esac
             done 2>/dev/null || true
 
             if docker compose --env-file "$TEMP_ENV" -f "./$stack/compose.yaml" config >/dev/null 2>&1; then
@@ -411,7 +469,36 @@ jobs:
 
               TEMP_ENV=$(mktemp)
               grep -oE '\$\{[^}]+\}' "./$stack/compose.yaml" 2>/dev/null | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
-                echo "${var}=placeholder_value" >> "$TEMP_ENV"
+                # Use realistic placeholder values based on common variable patterns
+                case "$var" in
+                  *PATH*|*DIR*)
+                    echo "${var}=/tmp/placeholder" >> "$TEMP_ENV"
+                    ;;
+                  *DOMAIN*)
+                    echo "${var}=example.com" >> "$TEMP_ENV"
+                    ;;
+                  *PORT*)
+                    echo "${var}=8080" >> "$TEMP_ENV"
+                    ;;
+                  *KEY*|*SECRET*|*TOKEN*|*PASS*)
+                    echo "${var}=placeholder-secret-value" >> "$TEMP_ENV"
+                    ;;
+                  *URL*|*HOST*)
+                    echo "${var}=http://localhost:8080" >> "$TEMP_ENV"
+                    ;;
+                  UID|PUID)
+                    echo "${var}=1000" >> "$TEMP_ENV"
+                    ;;
+                  GID|PGID)
+                    echo "${var}=1000" >> "$TEMP_ENV"
+                    ;;
+                  TZ)
+                    echo "${var}=UTC" >> "$TEMP_ENV"
+                    ;;
+                  *)
+                    echo "${var}=placeholder_value" >> "$TEMP_ENV"
+                    ;;
+                esac
               done 2>/dev/null || true
 
               if ! docker compose --env-file "$TEMP_ENV" -f "./$stack/compose.yaml" config >/dev/null 2>&1; then
