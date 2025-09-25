@@ -78,6 +78,13 @@ jobs:
           GITGUARDIAN_API_KEY: "op://Docker/gitguardian/api_key"
 
       - name: GitGuardian scan
+        run: |
+          echo ""
+          echo "🔒 Starting GitGuardian security scanning..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+      - name: Run GitGuardian scan
         uses: GitGuardian/ggshield-action@0935c02957f6fd78bc52166570e4e345c539120f # v1.43.0
         env:
           GITHUB_PUSH_BEFORE_SHA: ${{ inputs.github-event-before }}
@@ -85,6 +92,21 @@ jobs:
           GITHUB_PULL_BASE_SHA: ${{ inputs.github-pull-base-sha }}
           GITHUB_DEFAULT_BRANCH: ${{ inputs.github-default-branch }}
           GITGUARDIAN_API_KEY: ${{ steps.op-load-secret.outputs.GITGUARDIAN_API_KEY }}
+
+      - name: GitGuardian scan complete
+        if: always()
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "🎉 GITGUARDIAN SECURITY SCAN: PASSED"
+            echo "   No secrets or security policy violations detected"
+          else
+            echo "💥 GITGUARDIAN SECURITY SCAN: FAILED"
+            echo "   Security issues detected - review output above for details"
+            echo "   Common issues: hardcoded secrets, API keys, passwords in code"
+          fi
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Unload GitGuardian credentials
         uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
@@ -107,11 +129,19 @@ jobs:
 
       - name: Run parallel linting
         run: |
-          # Run YAML and Docker Compose linting in parallel
-          yamllint --strict --config-file .yamllint ./${{ matrix.stack }}/compose.yaml &
+          # Create temporary files for capturing output
+          YAML_OUTPUT=$(mktemp)
+          DOCKER_OUTPUT=$(mktemp)
+
+          echo "🔍 Starting validation for stack: ${{ matrix.stack }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          # Run YAML and Docker Compose linting in parallel with output capture
+          (yamllint --strict --config-file .yamllint ./${{ matrix.stack }}/compose.yaml 2>&1 | tee "$YAML_OUTPUT") &
           YAML_PID=$!
 
-          docker compose -f ./${{ matrix.stack }}/compose.yaml config &
+          (docker compose -f ./${{ matrix.stack }}/compose.yaml config 2>&1 | tee "$DOCKER_OUTPUT") &
           DOCKER_PID=$!
 
           # Wait for both processes and capture exit codes
@@ -121,18 +151,55 @@ jobs:
           wait $DOCKER_PID
           DOCKER_EXIT=$?
 
-          # Report results
+          echo ""
+          echo "📋 VALIDATION RESULTS SUMMARY"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Report YAML linting results
+          echo ""
+          echo "📝 YAML LINTING (yamllint)"
+          echo "───────────────────────────────────────────────────────────────────────────────────"
           if [ $YAML_EXIT -eq 0 ]; then
-            echo "✅ YAML linting passed for ${{ matrix.stack }}"
+            echo "✅ PASSED - YAML syntax and formatting is valid"
           else
-            echo "❌ YAML linting failed for ${{ matrix.stack }}"
+            echo "❌ FAILED - YAML validation errors detected:"
+            echo ""
+            cat "$YAML_OUTPUT" | sed 's/^/    /'
           fi
 
+          echo ""
+
+          # Report Docker Compose validation results
+          echo "🐳 DOCKER COMPOSE VALIDATION (docker compose config)"
+          echo "───────────────────────────────────────────────────────────────────────────────────"
           if [ $DOCKER_EXIT -eq 0 ]; then
-            echo "✅ Docker Compose validation passed for ${{ matrix.stack }}"
+            echo "✅ PASSED - Docker Compose configuration is valid"
           else
-            echo "❌ Docker Compose validation failed for ${{ matrix.stack }}"
+            echo "❌ FAILED - Docker Compose configuration errors detected:"
+            echo ""
+            cat "$DOCKER_OUTPUT" | sed 's/^/    /'
           fi
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Final status summary
+          if [ $YAML_EXIT -eq 0 ] && [ $DOCKER_EXIT -eq 0 ]; then
+            echo "🎉 OVERALL STATUS: ALL VALIDATION CHECKS PASSED"
+            echo "   Stack '${{ matrix.stack }}' is ready for deployment"
+          else
+            echo "💥 OVERALL STATUS: VALIDATION FAILED"
+            echo "   Stack '${{ matrix.stack }}' has configuration issues that must be resolved"
+            echo ""
+            echo "   Failed checks:"
+            [ $YAML_EXIT -ne 0 ] && echo "   • YAML linting (yamllint)"
+            [ $DOCKER_EXIT -ne 0 ] && echo "   • Docker Compose validation (docker compose config)"
+          fi
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Cleanup temporary files
+          rm -f "$YAML_OUTPUT" "$DOCKER_OUTPUT"
 
           # Exit with error if any linting failed
           if [ $YAML_EXIT -ne 0 ] || [ $DOCKER_EXIT -ne 0 ]; then
@@ -142,9 +209,19 @@ jobs:
       - name: Report lint status
         if: always()
         run: |
-          echo "::group::Lint Results for ${{ matrix.stack }}"
-          echo "Stack: ${{ matrix.stack }}"
-          echo "Status: $([ ${{ job.status }} == 'success' ] && echo '✅ PASSED' || echo '❌ FAILED')"
+          echo "::group::📊 Final Status for Stack: ${{ matrix.stack }}"
+          echo ""
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "🎉 STACK VALIDATION: PASSED"
+            echo "   Stack '${{ matrix.stack }}' passed all validation checks"
+            echo "   ✅ YAML linting (yamllint)"
+            echo "   ✅ Docker Compose validation (docker compose config)"
+          else
+            echo "💥 STACK VALIDATION: FAILED"
+            echo "   Stack '${{ matrix.stack }}' has validation issues"
+            echo "   See detailed error output above for resolution steps"
+          fi
+          echo ""
           echo "::endgroup::"
 
 
@@ -156,14 +233,72 @@ jobs:
     steps:
       - name: Check results
         run: |
-          echo "Scanning result: ${{ needs.scanning.result }}"
-          echo "Lint result: ${{ needs.lint.result }}"
+          echo ""
+          echo "🔍 OVERALL VALIDATION SUMMARY"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
 
-          if [[ "${{ needs.scanning.result }}" == "success" || "${{ needs.scanning.result }}" == "skipped" ]] && [[ "${{ needs.lint.result }}" == "success" ]]; then
-            echo "✅ All lint checks passed"
+          # GitGuardian Scanning Results
+          echo "🔒 GITGUARDIAN SECURITY SCANNING"
+          echo "───────────────────────────────────────────────────────────────────────────────────"
+          case "${{ needs.scanning.result }}" in
+            "success")
+              echo "✅ PASSED - No secrets detected in code changes"
+              SCANNING_OK=true
+              ;;
+            "skipped")
+              echo "⏭️  SKIPPED - Security scanning only runs on push events"
+              SCANNING_OK=true
+              ;;
+            "failure")
+              echo "❌ FAILED - Security issues detected (secrets or policy violations)"
+              SCANNING_OK=false
+              ;;
+            *)
+              echo "❓ UNKNOWN - Unexpected scanning result: ${{ needs.scanning.result }}"
+              SCANNING_OK=false
+              ;;
+          esac
+
+          echo ""
+
+          # Lint Results
+          echo "📋 CODE QUALITY VALIDATION"
+          echo "───────────────────────────────────────────────────────────────────────────────────"
+          case "${{ needs.lint.result }}" in
+            "success")
+              echo "✅ PASSED - All YAML and Docker Compose validations successful"
+              echo "   • YAML syntax and formatting: Valid"
+              echo "   • Docker Compose configuration: Valid"
+              LINT_OK=true
+              ;;
+            "failure")
+              echo "❌ FAILED - One or more validation checks failed"
+              echo "   • Check individual stack results above for specific error details"
+              echo "   • Common issues: YAML syntax errors, Docker Compose configuration problems"
+              LINT_OK=false
+              ;;
+            *)
+              echo "❓ UNKNOWN - Unexpected lint result: ${{ needs.lint.result }}"
+              LINT_OK=false
+              ;;
+          esac
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Final determination
+          if [[ "$SCANNING_OK" == "true" && "$LINT_OK" == "true" ]]; then
+            echo "🎉 FINAL STATUS: ALL VALIDATION CHECKS PASSED"
+            echo "   Repository is ready for deployment"
             exit 0
           else
-            echo "❌ One or more lint checks failed"
+            echo "💥 FINAL STATUS: VALIDATION FAILED"
+            echo "   Issues must be resolved before deployment"
+            echo ""
+            echo "   Failed components:"
+            [[ "$SCANNING_OK" != "true" ]] && echo "   • Security scanning (GitGuardian)"
+            [[ "$LINT_OK" != "true" ]] && echo "   • Code quality validation (YAML/Docker Compose)"
             exit 1
           fi
 
