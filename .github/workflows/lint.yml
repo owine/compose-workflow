@@ -143,45 +143,53 @@ jobs:
           echo "📄 File: ./${{ matrix.stack }}/compose.yaml"
           echo ""
 
+          # Function to create temporary environment file with placeholder values
+          create_temp_env() {
+            local compose_file="$1"
+            local temp_env_file="$2"
+
+            # Extract environment variable references from compose file and create realistic placeholders
+            grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
+              # Use realistic placeholder values based on common variable patterns
+              case "$var" in
+                *PATH*|*DIR*)
+                  echo "${var}=/tmp/placeholder" >> "$temp_env_file"
+                  ;;
+                *DOMAIN*)
+                  echo "${var}=example.com" >> "$temp_env_file"
+                  ;;
+                *PORT*)
+                  echo "${var}=8080" >> "$temp_env_file"
+                  ;;
+                *KEY*|*SECRET*|*TOKEN*|*PASS*)
+                  echo "${var}=placeholder-secret-value" >> "$temp_env_file"
+                  ;;
+                *URL*|*HOST*)
+                  echo "${var}=http://localhost:8080" >> "$temp_env_file"
+                  ;;
+                UID|PUID)
+                  echo "${var}=1000" >> "$temp_env_file"
+                  ;;
+                GID|PGID)
+                  echo "${var}=1000" >> "$temp_env_file"
+                  ;;
+                TZ)
+                  echo "${var}=UTC" >> "$temp_env_file"
+                  ;;
+                *)
+                  echo "${var}=placeholder_value" >> "$temp_env_file"
+                  ;;
+              esac
+            done 2>/dev/null || true
+          }
+
           # Run YAML and Docker Compose linting in parallel with output capture
           (set -o pipefail; yamllint --strict --config-file .yamllint ./${{ matrix.stack }}/compose.yaml 2>&1 | tee "$YAML_OUTPUT") &
           YAML_PID=$!
 
           # Create temporary .env with placeholders to suppress environment variable warnings
           TEMP_ENV=$(mktemp)
-          # Extract environment variable references from compose file and create realistic placeholders
-          grep -oE '\$\{[^}]+\}' ./${{ matrix.stack }}/compose.yaml | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
-            # Use realistic placeholder values based on common variable patterns
-            case "$var" in
-              *PATH*|*DIR*)
-                echo "${var}=/tmp/placeholder" >> "$TEMP_ENV"
-                ;;
-              *DOMAIN*)
-                echo "${var}=example.com" >> "$TEMP_ENV"
-                ;;
-              *PORT*)
-                echo "${var}=8080" >> "$TEMP_ENV"
-                ;;
-              *KEY*|*SECRET*|*TOKEN*|*PASS*)
-                echo "${var}=placeholder-secret-value" >> "$TEMP_ENV"
-                ;;
-              *URL*|*HOST*)
-                echo "${var}=http://localhost:8080" >> "$TEMP_ENV"
-                ;;
-              UID|PUID)
-                echo "${var}=1000" >> "$TEMP_ENV"
-                ;;
-              GID|PGID)
-                echo "${var}=1000" >> "$TEMP_ENV"
-                ;;
-              TZ)
-                echo "${var}=UTC" >> "$TEMP_ENV"
-                ;;
-              *)
-                echo "${var}=placeholder_value" >> "$TEMP_ENV"
-                ;;
-            esac
-          done 2>/dev/null || true
+          create_temp_env "./${{ matrix.stack }}/compose.yaml" "$TEMP_ENV"
 
           (set -o pipefail; docker compose --env-file "$TEMP_ENV" -f ./${{ matrix.stack }}/compose.yaml config 2>&1 | tee "$DOCKER_OUTPUT") &
           DOCKER_PID=$!
@@ -278,7 +286,7 @@ jobs:
       - name: Report lint status
         if: always()
         run: |
-          echo "::group::📊 Final Status for Stack: ${{ matrix.stack }}"
+          echo "📊 Final Status for Stack: ${{ matrix.stack }}"
           echo ""
           if [[ "${{ job.status }}" == "success" ]]; then
             echo "🎉 STACK VALIDATION: PASSED"
@@ -290,8 +298,6 @@ jobs:
             echo "   Stack '${{ matrix.stack }}' has validation issues"
             echo "   See detailed error output above for resolution steps"
           fi
-          echo ""
-          echo "::endgroup::"
 
 
   lint-summary:
@@ -382,39 +388,7 @@ jobs:
 
             # Create temporary .env with placeholders to suppress environment variable warnings
             TEMP_ENV=$(mktemp)
-            # Extract environment variable references and create realistic placeholders
-            grep -oE '\$\{[^}]+\}' "./$stack/compose.yaml" 2>/dev/null | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
-              # Use realistic placeholder values based on common variable patterns
-              case "$var" in
-                *PATH*|*DIR*)
-                  echo "${var}=/tmp/placeholder" >> "$TEMP_ENV"
-                  ;;
-                *DOMAIN*)
-                  echo "${var}=example.com" >> "$TEMP_ENV"
-                  ;;
-                *PORT*)
-                  echo "${var}=8080" >> "$TEMP_ENV"
-                  ;;
-                *KEY*|*SECRET*|*TOKEN*|*PASS*)
-                  echo "${var}=placeholder-secret-value" >> "$TEMP_ENV"
-                  ;;
-                *URL*|*HOST*)
-                  echo "${var}=http://localhost:8080" >> "$TEMP_ENV"
-                  ;;
-                UID|PUID)
-                  echo "${var}=1000" >> "$TEMP_ENV"
-                  ;;
-                GID|PGID)
-                  echo "${var}=1000" >> "$TEMP_ENV"
-                  ;;
-                TZ)
-                  echo "${var}=UTC" >> "$TEMP_ENV"
-                  ;;
-                *)
-                  echo "${var}=placeholder_value" >> "$TEMP_ENV"
-                  ;;
-              esac
-            done 2>/dev/null || true
+            create_temp_env "./$stack/compose.yaml" "$TEMP_ENV"
 
             if docker compose --env-file "$TEMP_ENV" -f "./$stack/compose.yaml" config >/dev/null 2>&1; then
               echo "   ✅ PASSED - Docker Compose validation successful"
@@ -468,38 +442,7 @@ jobs:
               fi
 
               TEMP_ENV=$(mktemp)
-              grep -oE '\$\{[^}]+\}' "./$stack/compose.yaml" 2>/dev/null | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
-                # Use realistic placeholder values based on common variable patterns
-                case "$var" in
-                  *PATH*|*DIR*)
-                    echo "${var}=/tmp/placeholder" >> "$TEMP_ENV"
-                    ;;
-                  *DOMAIN*)
-                    echo "${var}=example.com" >> "$TEMP_ENV"
-                    ;;
-                  *PORT*)
-                    echo "${var}=8080" >> "$TEMP_ENV"
-                    ;;
-                  *KEY*|*SECRET*|*TOKEN*|*PASS*)
-                    echo "${var}=placeholder-secret-value" >> "$TEMP_ENV"
-                    ;;
-                  *URL*|*HOST*)
-                    echo "${var}=http://localhost:8080" >> "$TEMP_ENV"
-                    ;;
-                  UID|PUID)
-                    echo "${var}=1000" >> "$TEMP_ENV"
-                    ;;
-                  GID|PGID)
-                    echo "${var}=1000" >> "$TEMP_ENV"
-                    ;;
-                  TZ)
-                    echo "${var}=UTC" >> "$TEMP_ENV"
-                    ;;
-                  *)
-                    echo "${var}=placeholder_value" >> "$TEMP_ENV"
-                    ;;
-                esac
-              done 2>/dev/null || true
+              create_temp_env "./$stack/compose.yaml" "$TEMP_ENV"
 
               if ! docker compose --env-file "$TEMP_ENV" -f "./$stack/compose.yaml" config >/dev/null 2>&1; then
                 FAILED_CHECKS+=("Docker Compose validation")
@@ -557,36 +500,35 @@ jobs:
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
           status: ${{ needs.lint-summary.result == 'success' && 'success' || 'failure' }}
-          title: "🔍 ${{ inputs.repo-name }} Validation"
+          title: "🔍 ${{ inputs.repo-name }} • ${{ needs.lint-summary.result == 'success' && 'Validation Passed' || 'Validation Failed' }}"
           description: |
-            ${{ needs.lint-summary.result == 'success' && '✅ **VALIDATION PASSED**' || '❌ **VALIDATION FAILED**' }}
+            ${{ needs.lint-summary.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
 
-            **Security:** GitGuardian ${{ needs.scanning.result == 'success' && '✅' || needs.scanning.result == 'skipped' && '⏭️' || '❌' }} **Quality:** Linting ${{ needs.lint.result == 'success' && '✅' || '❌' }}
+            **🔒 Security Scan:** ${{ needs.scanning.result == 'success' && '✅ No secrets detected' || needs.scanning.result == 'skipped' && '⏭️ Skipped (PR/manual)' || '❌ Issues found' }}
+            **📋 Code Quality:** ${{ needs.lint.result == 'success' && '✅ All stacks valid' || '❌ Issues detected' }}
 
-            ${{ github.event_name == 'pull_request' && '🔀 **Pull Request**' || github.event_name == 'workflow_dispatch' && '🔧 **Manual Trigger**' || format('📝 **Push to {0}**', github.ref_name) }}
-            **Stacks:** ${{ join(fromJson(inputs.stacks), ', ') }}
+            **📂 Validated Stacks:** `${{ join(fromJson(inputs.stacks), '`, `') }}`
+
+            ${{ github.event_name == 'pull_request' && '🔀 **Pull Request Validation**' || github.event_name == 'workflow_dispatch' && '🔧 **Manual Validation**' || format('📝 **Push to `{0}`**', github.ref_name) }}
 
             ${{ needs.lint.result == 'failure' && '
-
-            🚨 **Validation Issues Detected:**
-            • Check individual stack results in the workflow logs
-            • Common fixes: YAML formatting, Docker Compose syntax
-            • Run locally: `yamllint --strict stack/compose.yaml`
-            • View detailed errors in the **Lint Summary** job
-
-            📋 **Action Required:** Fix validation errors before deployment' || '' }}
+            **🚨 Action Required:**
+            • Review stack validation errors in workflow logs
+            • Fix YAML formatting and Docker Compose syntax
+            • Test locally: `yamllint --strict stack/compose.yaml`
+            • Check the **Lint Summary** job for detailed errors' || '' }}
 
             ${{ needs.scanning.result == 'failure' && '
+            **🛡️ Security Alert:**
+            • GitGuardian detected potential secrets
+            • Review the **Security Scanning** job for details
+            • Remove exposed secrets before proceeding
+            • **This blocks deployment until resolved**' || '' }}
 
-            🔒 **Security Issues Detected:**
-            • GitGuardian found potential secrets in code changes
-            • Review the **GitGuardian Security Scanning** job for details
-            • Remove any exposed secrets before proceeding
-
-            🛡️ **Action Required:** Address security issues immediately' || '' }}
-          color: ${{ needs.lint-summary.result == 'success' && 0x00ff00 || 0xff0000 }}
-          username: "GitHub Actions"
-          avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+            ${{ needs.lint-summary.result == 'success' && '🚀 **Ready for deployment**' || '⚠️ **Deployment blocked until issues resolved**' }}
+          color: ${{ needs.lint-summary.result == 'success' && 0x28a745 || needs.scanning.result == 'failure' && 0xdc3545 || 0xfd7e14 }}
+          username: "Compose Lint"
+          avatar_url: "https://cdn-icons-png.flaticon.com/512/2103/2103633.png"
 
       - name: Unload Discord webhook
         uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
