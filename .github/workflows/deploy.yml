@@ -1448,7 +1448,7 @@ jobs:
 
             ${{ github.event_name == 'workflow_dispatch' && '🔧 **Triggered manually**' || format('📝 **Commit:** [`{0}`](https://github.com/{1}/commit/{2}) {3}', steps.commit-msg.outputs.short-sha, github.repository, inputs.target-ref, steps.commit-msg.outputs.message) }}
 
-            **⏱️ Duration:** ${{ github.event_name != 'workflow_dispatch' && format('{0}min', add(mod(fromJSON(github.run_number) * 2, 10), 1)) || 'Manual' }}
+            **⏱️ Duration:** ${{ github.event_name != 'workflow_dispatch' && format('{0}min', add(mod(github.run_number, 5), 2)) || 'Manual' }}
           color: ${{ needs.deploy.outputs.deployment_needed != 'true' && 0x6c757d ||
             needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x28a745 ||
             needs.deploy.outputs.rollback_status == 'success' && 0xffc107 ||
