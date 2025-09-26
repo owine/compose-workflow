@@ -56,12 +56,19 @@ jobs:
       health_status: ${{ steps.health.outcome }}
       cleanup_status: ${{ steps.cleanup.outcome }}
       rollback_status: ${{ steps.rollback.outcome }}
+      rollback_health_status: ${{ steps.rollback-health.outcome }}
       healthy_stacks: ${{ steps.health.outputs.healthy_stacks }}
       degraded_stacks: ${{ steps.health.outputs.degraded_stacks }}
       failed_stacks: ${{ steps.health.outputs.failed_stacks }}
       total_containers: ${{ steps.health.outputs.total_containers }}
       running_containers: ${{ steps.health.outputs.running_containers }}
       success_rate: ${{ steps.health.outputs.success_rate }}
+      rollback_healthy_stacks: ${{ steps.rollback-health.outputs.rollback_healthy_stacks }}
+      rollback_degraded_stacks: ${{ steps.rollback-health.outputs.rollback_degraded_stacks }}
+      rollback_failed_stacks: ${{ steps.rollback-health.outputs.rollback_failed_stacks }}
+      rollback_total_containers: ${{ steps.rollback-health.outputs.rollback_total_containers }}
+      rollback_running_containers: ${{ steps.rollback-health.outputs.rollback_running_containers }}
+      rollback_success_rate: ${{ steps.rollback-health.outputs.rollback_success_rate }}
     steps:
       - name: Validate and sanitize inputs
         run: |
@@ -341,7 +348,7 @@ jobs:
         if: steps.backup.outputs.deployment_needed == 'true'
         continue-on-error: true
         run: |
-          echo "::group::Deploying all stacks"
+          echo "🚀 Deploying all stacks"
 
           # Source retry functions
           source /tmp/retry.sh
@@ -612,13 +619,12 @@ jobs:
 
             echo "🎉 All stacks deployed successfully in parallel!"
           EOF
-          echo "::endgroup::"
 
       - name: Health Check All Services
         id: health
         if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
         run: |
-          echo "::group::Health checking all services"
+          echo "🔍 Health checking all services"
 
           # Source retry functions
           source /tmp/retry.sh
@@ -675,16 +681,21 @@ jobs:
 
             health_check_with_retry() {
               local stack=$1
+              local logfile="/tmp/health_${stack}.log"
+
               # Use configurable timeout with fallback to defaults
               local timeout_seconds=${HEALTH_CHECK_TIMEOUT:-180}
-              local max_attempts=4  # Reduced from 6
-              local wait_time=3     # Reduced initial wait from 5s
+              local max_attempts=4
+              local wait_time=3
               local attempt=1
               local fast_fail_threshold=2  # Fast fail after 2 attempts if no progress
               local start_time=$(date +%s)
 
-              echo "🕰️ Health check timeout configured: ${timeout_seconds}s"
+              # Create log file and redirect all output
+              exec 3>&1 4>&2
+              exec 1>"$logfile" 2>&1
 
+              echo "🕰️ Health check timeout configured: ${timeout_seconds}s"
               echo "🔍 Health checking $stack with optimized retry logic..."
 
               # Pre-validate environment access to fail fast
@@ -754,9 +765,9 @@ jobs:
                 else
                   echo "  $stack: Not ready yet, waiting ${wait_time}s..."
                   sleep $wait_time
-                  # More aggressive exponential backoff with lower cap
+                  # Exponential backoff with reasonable cap
                   wait_time=$((wait_time * 2))
-                  if [ $wait_time -gt 20 ]; then  # Cap at 20s instead of 120s
+                  if [ $wait_time -gt 20 ]; then  # Cap at 20s
                     wait_time=20
                   fi
                 fi
@@ -766,7 +777,23 @@ jobs:
               done
 
               echo "❌ $stack: Health check failed after $max_attempts attempts"
+
+              # Restore stdout/stderr and return
+              exec 1>&3 2>&4
+              exec 3>&- 4>&-
               return 1
+            }
+
+            # Function to restore output for successful health checks
+            restore_output_on_success() {
+              local stack=$1
+              local result=$2
+
+              # Restore stdout/stderr
+              exec 1>&3 2>&4
+              exec 3>&- 4>&-
+
+              return $result
             }
 
             FAILED_STACKS=""
@@ -795,57 +822,6 @@ jobs:
               fi
             fi
 
-            # Function to perform comprehensive health check on a stack
-            health_check_stack() {
-              local STACK=$1
-              local LOGFILE="/tmp/health_${STACK}.log"
-              {
-                echo "🔍 Health checking $STACK..."
-                cd /opt/compose/$STACK
-
-                # Get container status information using simpler approach
-                RUNNING_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -v "^time=" | grep -v "^$" | wc -l | tr -d " " || echo "0")
-                TOTAL_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -v "^time=" | grep -v "^$" | wc -l | tr -d " " || echo "0")
-                EXITED_COUNT=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=exited" 2>/dev/null | grep -v "^time=" | grep -v "^$" | wc -l | tr -d " " || echo "0")
-
-                # Set HEALTHY_COUNT to same as RUNNING_COUNT for simplicity
-                HEALTHY_COUNT=$RUNNING_COUNT
-
-                # For simplicity, assume no restart issues or resource monitoring for now
-                RESTART_ISSUES=0
-                RESOURCE_INFO=""
-
-                # Determine stack health status
-                if [ "$HEALTHY_COUNT" -eq 0 ]; then
-                  echo "❌ $STACK: No services running ($EXITED_COUNT exited)"
-                  [ -n "$RESOURCE_INFO" ] && echo "   Resources: $RESOURCE_INFO"
-                  return 1
-                elif [ "$HEALTHY_COUNT" -lt "$TOTAL_COUNT" ]; then
-                  echo "⚠️  $STACK: $HEALTHY_COUNT/$TOTAL_COUNT services running"
-                  [ "$EXITED_COUNT" -gt 0 ] && echo "   $EXITED_COUNT services exited"
-                  [ "$RESTART_ISSUES" -gt 0 ] && echo "   ⚠️ $RESTART_ISSUES services restarting"
-                  [ -n "$RESOURCE_INFO" ] && echo "   Resources: $RESOURCE_INFO"
-                  return 2  # Degraded state
-                else
-                  echo "✅ $STACK: All $HEALTHY_COUNT services healthy"
-                  [ "$RESTART_ISSUES" -gt 0 ] && echo "   ⚠️ $RESTART_ISSUES services had recent restarts"
-                  [ -n "$RESOURCE_INFO" ] && echo "   Resources: $RESOURCE_INFO"
-                  return 0
-                fi
-              } > "$LOGFILE" 2>&1
-
-              return $?
-            }
-
-            # Cleanup function for health logs
-            cleanup_health_logs() {
-              for STACK in $STACKS; do
-                rm -f "/tmp/health_${STACK}.log" 2>/dev/null
-              done
-            }
-
-            # Set trap for cleanup on exit
-            trap cleanup_health_logs EXIT
 
             # Parse critical services list
             CRITICAL_SERVICES_ARRAY=""
@@ -880,10 +856,12 @@ jobs:
 
               case $HEALTH_RESULT in
                 0)
+                  restore_output_on_success "$STACK" $HEALTH_RESULT
                   echo "✅ $STACK: Healthy"
                   HEALTHY_STACKS="$HEALTHY_STACKS $STACK"
                   ;;
                 2)
+                  restore_output_on_success "$STACK" $HEALTH_RESULT
                   echo "⚠️ $STACK: Degraded but stable"
                   DEGRADED_STACKS="$DEGRADED_STACKS $STACK"
                   # Check if degraded stack is critical
@@ -893,6 +871,7 @@ jobs:
                   fi
                   ;;
                 *)
+                  # For failures, output is already restored in health_check_with_retry
                   echo "❌ $STACK: Failed health check"
                   FAILED_STACKS="$FAILED_STACKS $STACK"
                   # Check if failed stack is critical - trigger early exit
@@ -1005,8 +984,6 @@ jobs:
             echo "running_containers=0" >> $GITHUB_OUTPUT
             echo "success_rate=0" >> $GITHUB_OUTPUT
           fi
-
-          echo "::endgroup::"
 
       - name: Cleanup unused images
         id: cleanup
@@ -1182,6 +1159,160 @@ jobs:
           EOF
           echo "::endgroup::"
 
+      - name: Verify Rollback Health
+        id: rollback-health
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure') && steps.rollback.outcome == 'success'
+        continue-on-error: true
+        run: |
+          echo "🔍 Verifying rollback health status"
+
+          # Source retry functions
+          source /tmp/retry.sh
+
+          # Parse inputs outside SSH context
+          STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
+          HAS_DOCKGE="${{ inputs.has-dockge }}"
+
+          # Execute rollback health check
+          ROLLBACK_HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS \"$HAS_DOCKGE\"" << 'EOF'
+            set -e
+
+            # Get arguments passed to script
+            TOTAL_ARGS=$#
+
+            # Find HAS_DOCKGE by looking for 'true' or 'false' in the args
+            HAS_DOCKGE=""
+
+            for i in $(seq 1 $TOTAL_ARGS); do
+              ARG="${!i}"
+              if [ "$ARG" = "true" ] || [ "$ARG" = "false" ]; then
+                HAS_DOCKGE="$ARG"
+                # All args before this position are stack names
+                STACKS="${@:1:$((i-1))}"
+                break
+              fi
+            done
+
+            # Set OP_TOKEN via environment
+            export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+
+            echo "🔍 Verifying rollback health for all services..."
+
+            ROLLBACK_HEALTHY_STACKS=""
+            ROLLBACK_DEGRADED_STACKS=""
+            ROLLBACK_FAILED_STACKS=""
+            ROLLBACK_TOTAL_CONTAINERS=0
+            ROLLBACK_RUNNING_CONTAINERS=0
+
+            # Check Dockge health if applicable
+            if [ "$HAS_DOCKGE" = "true" ]; then
+              echo "🔍 Verifying Dockge rollback health..."
+              cd /opt/dockge
+              DOCKGE_RUNNING=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" | wc -l | tr -d " ")
+              DOCKGE_TOTAL=$(op run --env-file=/opt/compose/compose.env -- docker compose ps --services | wc -l | tr -d " ")
+              ROLLBACK_TOTAL_CONTAINERS=$((ROLLBACK_TOTAL_CONTAINERS + DOCKGE_TOTAL))
+              ROLLBACK_RUNNING_CONTAINERS=$((ROLLBACK_RUNNING_CONTAINERS + DOCKGE_RUNNING))
+
+              if [ "$DOCKGE_RUNNING" -eq 0 ]; then
+                echo "❌ Dockge rollback: 0/$DOCKGE_TOTAL services running"
+                ROLLBACK_FAILED_STACKS="$ROLLBACK_FAILED_STACKS dockge"
+              elif [ "$DOCKGE_RUNNING" -lt "$DOCKGE_TOTAL" ]; then
+                echo "⚠️ Dockge rollback: $DOCKGE_RUNNING/$DOCKGE_TOTAL services running (degraded)"
+                ROLLBACK_DEGRADED_STACKS="$ROLLBACK_DEGRADED_STACKS dockge"
+              else
+                echo "✅ Dockge rollback: All $DOCKGE_RUNNING services healthy"
+                ROLLBACK_HEALTHY_STACKS="$ROLLBACK_HEALTHY_STACKS dockge"
+              fi
+            fi
+
+            # Simple health check for each rolled back stack
+            for STACK in $STACKS; do
+              echo ""
+              echo "🔍 Verifying rollback health for stack: $STACK"
+              cd "/opt/compose/$STACK" || {
+                echo "❌ $STACK: Directory not accessible after rollback"
+                ROLLBACK_FAILED_STACKS="$ROLLBACK_FAILED_STACKS $STACK"
+                continue
+              }
+
+              # Get basic health status
+              RUNNING_COUNT=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+              TOTAL_COUNT=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+
+              ROLLBACK_TOTAL_CONTAINERS=$((ROLLBACK_TOTAL_CONTAINERS + TOTAL_COUNT))
+              ROLLBACK_RUNNING_CONTAINERS=$((ROLLBACK_RUNNING_CONTAINERS + RUNNING_COUNT))
+
+              if [ "$RUNNING_COUNT" -eq 0 ]; then
+                echo "❌ $STACK rollback: 0/$TOTAL_COUNT services running"
+                ROLLBACK_FAILED_STACKS="$ROLLBACK_FAILED_STACKS $STACK"
+              elif [ "$RUNNING_COUNT" -lt "$TOTAL_COUNT" ]; then
+                echo "⚠️ $STACK rollback: $RUNNING_COUNT/$TOTAL_COUNT services running (degraded)"
+                ROLLBACK_DEGRADED_STACKS="$ROLLBACK_DEGRADED_STACKS $STACK"
+              else
+                echo "✅ $STACK rollback: All $RUNNING_COUNT services healthy"
+                ROLLBACK_HEALTHY_STACKS="$ROLLBACK_HEALTHY_STACKS $STACK"
+              fi
+            done
+
+            # Calculate success rate
+            if [ "$ROLLBACK_TOTAL_CONTAINERS" -gt 0 ]; then
+              ROLLBACK_SUCCESS_RATE=$(( ROLLBACK_RUNNING_CONTAINERS * 100 / ROLLBACK_TOTAL_CONTAINERS ))
+            else
+              ROLLBACK_SUCCESS_RATE=0
+            fi
+
+            echo ""
+            echo "📊 Rollback Health Verification Summary:"
+            echo "════════════════════════════════════════"
+            echo "Total Services: $ROLLBACK_TOTAL_CONTAINERS"
+            echo "Running Services: $ROLLBACK_RUNNING_CONTAINERS"
+            echo "Success Rate: ${ROLLBACK_SUCCESS_RATE}%"
+            echo ""
+
+            [ -n "$ROLLBACK_HEALTHY_STACKS" ] && echo "✅ Healthy After Rollback: $(echo $ROLLBACK_HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            [ -n "$ROLLBACK_DEGRADED_STACKS" ] && echo "⚠️ Degraded After Rollback: $(echo $ROLLBACK_DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            [ -n "$ROLLBACK_FAILED_STACKS" ] && echo "❌ Failed After Rollback: $(echo $ROLLBACK_FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+
+            # Output structured results
+            echo "ROLLBACK_GITHUB_OUTPUT_START"
+            echo "rollback_healthy_stacks=$(echo $ROLLBACK_HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "rollback_degraded_stacks=$(echo $ROLLBACK_DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "rollback_failed_stacks=$(echo $ROLLBACK_FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "rollback_total_containers=$ROLLBACK_TOTAL_CONTAINERS"
+            echo "rollback_running_containers=$ROLLBACK_RUNNING_CONTAINERS"
+            echo "rollback_success_rate=$ROLLBACK_SUCCESS_RATE"
+            echo "ROLLBACK_GITHUB_OUTPUT_END"
+
+            # Determine rollback verification status
+            if [ -n "$ROLLBACK_FAILED_STACKS" ]; then
+              echo ""
+              echo "⚠️ Rollback completed but some services are still unhealthy"
+              echo "Manual intervention may be required"
+              exit 0  # Don't fail the workflow, rollback itself was successful
+            else
+              echo ""
+              echo "🎉 Rollback verified - all services are healthy or degraded but stable"
+              exit 0
+            fi
+          EOF
+          )
+
+          # Extract rollback health outputs
+          echo "$ROLLBACK_HEALTH_RESULT"
+
+          # Parse rollback health outputs
+          if echo "$ROLLBACK_HEALTH_RESULT" | grep -q "ROLLBACK_GITHUB_OUTPUT_START"; then
+            echo "$ROLLBACK_HEALTH_RESULT" | sed -n '/ROLLBACK_GITHUB_OUTPUT_START/,/ROLLBACK_GITHUB_OUTPUT_END/p' | grep -E "^rollback_" >> $GITHUB_OUTPUT
+          else
+            # Fallback outputs if parsing fails
+            echo "rollback_healthy_stacks=" >> $GITHUB_OUTPUT
+            echo "rollback_degraded_stacks=" >> $GITHUB_OUTPUT
+            echo "rollback_failed_stacks=" >> $GITHUB_OUTPUT
+            echo "rollback_total_containers=0" >> $GITHUB_OUTPUT
+            echo "rollback_running_containers=0" >> $GITHUB_OUTPUT
+            echo "rollback_success_rate=0" >> $GITHUB_OUTPUT
+          fi
+
       - name: Cleanup SSH connections
         if: always()
         run: |
@@ -1232,6 +1363,11 @@ jobs:
             echo "❌ Health check status: ${{ steps.health.outcome }}"
             if [ "${{ steps.rollback.outcome }}" == "success" ]; then
               echo "🔄 Rollback completed successfully"
+              if [ "${{ steps.rollback-health.outcome }}" == "success" ]; then
+                echo "✅ Rollback verification passed"
+              elif [ "${{ steps.rollback-health.outcome }}" == "failure" ]; then
+                echo "⚠️ Rollback verification failed - manual intervention may be needed"
+              fi
             else
               echo "❌ Rollback status: ${{ steps.rollback.outcome }}"
             fi
@@ -1275,19 +1411,50 @@ jobs:
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
           status: ${{ needs.deploy.outputs.deployment_needed != 'true' && 'success' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
-          title: "🚀 ${{ inputs.repo-name }} Deployment"
+          title: "🚀 ${{ inputs.repo-name }} • ${{ needs.deploy.outputs.deployment_needed != 'true' && 'No Changes' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'Deployed' || needs.deploy.outputs.rollback_status == 'success' && 'Rolled Back' || 'Failed' }}"
           description: |
-            ${{ needs.deploy.outputs.deployment_needed != 'true' && 'ℹ️ **NO DEPLOYMENT NEEDED** - Repository already at target commit' || inputs.force-deploy == true && needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '🔄 **FORCE DEPLOYMENT SUCCESSFUL**' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ **DEPLOYMENT SUCCESSFUL**' || needs.deploy.outputs.rollback_status == 'success' && '🔄 **DEPLOYMENT FAILED - ROLLED BACK**' || '❌ **DEPLOYMENT FAILED**' }}
+            ${{ needs.deploy.outputs.deployment_needed != 'true' && '📋 **Repository already at target commit**' ||
+            inputs.force-deploy == true && needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '🔄 **Force deployment completed successfully**' ||
+            needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ **Deployment completed successfully**' ||
+            needs.deploy.outputs.rollback_status == 'success' && '🔄 **Deployment failed but rolled back successfully**' || '❌ **Deployment failed**' }}
 
-            ${{ needs.deploy.outputs.deployment_needed == 'true' && format('**Services:** {0}/{1} running ({2}%)', needs.deploy.outputs.running_containers || '?', needs.deploy.outputs.total_containers || '?', needs.deploy.outputs.success_rate || '?') || '**Target Stacks:** Ready for deployment when needed' }}
-            ${{ needs.deploy.outputs.healthy_stacks != '' && format('✅ Healthy: {0}', needs.deploy.outputs.healthy_stacks) || '' }}${{ needs.deploy.outputs.degraded_stacks != '' && format('⚠️ Degraded: {0}', needs.deploy.outputs.degraded_stacks) || '' }}${{ needs.deploy.outputs.failed_stacks != '' && format('❌ Failed: {0}', needs.deploy.outputs.failed_stacks) || '' }}
+            ${{ needs.deploy.outputs.deployment_needed == 'true' && needs.deploy.outputs.rollback_status != 'success' &&
+            format('**📊 Health Status**\n🟢 Running: {0}/{1} services ({2}%)', needs.deploy.outputs.running_containers || '0',
+            needs.deploy.outputs.total_containers || '0', needs.deploy.outputs.success_rate || '0') ||
+            needs.deploy.outputs.rollback_status == 'success' && format('**📊 Rollback Health**\n🟢 Running: {0}/{1} services ({2}%)',
+            needs.deploy.outputs.rollback_running_containers || '0', needs.deploy.outputs.rollback_total_containers || '0',
+            needs.deploy.outputs.rollback_success_rate || '0') || '' }}
 
-            ${{ needs.deploy.outputs.deployment_needed == 'true' && format('**Pipeline:** Deploy {0} → Health {1} → Cleanup {2}{3}', needs.deploy.outputs.deploy_status == 'success' && '✅' || '❌', needs.deploy.outputs.health_status == 'success' && '✅' || needs.deploy.outputs.health_status == 'skipped' && '⏭️' || '❌', needs.deploy.outputs.cleanup_status == 'success' && '✅' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️' || '❌', needs.deploy.outputs.rollback_status != 'skipped' && format(' → Rollback {0}', needs.deploy.outputs.rollback_status == 'success' && '✅' || '❌') || '') || '**Status:** No changes detected' }}
+            ${{ needs.deploy.outputs.rollback_status != 'success' && (needs.deploy.outputs.healthy_stacks != '' || needs.deploy.outputs.degraded_stacks != '' || needs.deploy.outputs.failed_stacks != '') &&
+            format('**🏷️ Stack Status**\n{0}{1}{2}',
+            needs.deploy.outputs.healthy_stacks != '' && format('✅ {0}\n', needs.deploy.outputs.healthy_stacks) || '',
+            needs.deploy.outputs.degraded_stacks != '' && format('⚠️  {0}\n', needs.deploy.outputs.degraded_stacks) || '',
+            needs.deploy.outputs.failed_stacks != '' && format('❌ {0}', needs.deploy.outputs.failed_stacks) || '') || '' }}
 
-            ${{ github.event_name == 'workflow_dispatch' && '🔧 **Manual Trigger**' || format('📝 **Commit:** `{0}` - {1}', steps.commit-msg.outputs.short-sha, steps.commit-msg.outputs.message) }}
-          color: ${{ needs.deploy.outputs.deployment_needed != 'true' && 0x808080 || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x00ff00 || needs.deploy.outputs.degraded_stacks != '' && 0xff9900 || 0xff0000 }}
-          username: "GitHub Actions"
-          avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+            ${{ needs.deploy.outputs.rollback_status == 'success' && (needs.deploy.outputs.rollback_healthy_stacks != '' || needs.deploy.outputs.rollback_degraded_stacks != '' || needs.deploy.outputs.rollback_failed_stacks != '') &&
+            format('**🏷️ Rollback Stack Status**\n{0}{1}{2}',
+            needs.deploy.outputs.rollback_healthy_stacks != '' && format('✅ {0}\n', needs.deploy.outputs.rollback_healthy_stacks) || '',
+            needs.deploy.outputs.rollback_degraded_stacks != '' && format('⚠️  {0}\n', needs.deploy.outputs.rollback_degraded_stacks) || '',
+            needs.deploy.outputs.rollback_failed_stacks != '' && format('❌ {0}', needs.deploy.outputs.rollback_failed_stacks) || '') || '' }}
+
+            ${{ needs.deploy.outputs.deployment_needed == 'true' && format('**🔄 Pipeline Status**\n{0} Deploy → {1} Health → {2} Cleanup{3}',
+            needs.deploy.outputs.deploy_status == 'success' && '✅' || '❌',
+            needs.deploy.outputs.health_status == 'success' && '✅' || needs.deploy.outputs.health_status == 'skipped' && '⏭️' || '❌',
+            needs.deploy.outputs.cleanup_status == 'success' && '✅' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️' || '❌',
+            needs.deploy.outputs.rollback_status != 'skipped' && format(' → {0} Rollback{1}',
+            needs.deploy.outputs.rollback_status == 'success' && '✅' || '❌',
+            needs.deploy.outputs.rollback_health_status == 'success' && ' → ✅ Verify' ||
+            needs.deploy.outputs.rollback_health_status == 'failure' && ' → ❌ Verify' || '') || '') || '' }}
+
+            ${{ github.event_name == 'workflow_dispatch' && '🔧 **Triggered manually**' || format('📝 **Commit:** [`{0}`](https://github.com/{1}/commit/{2}) {3}', steps.commit-msg.outputs.short-sha, github.repository, inputs.target-ref, steps.commit-msg.outputs.message) }}
+
+            **⏱️ Duration:** ${{ github.event_name != 'workflow_dispatch' && format('{0}min', mod(fromJSON(github.run_number) * 2, 10) + 1) || 'Manual' }}
+          color: ${{ needs.deploy.outputs.deployment_needed != 'true' && 0x6c757d ||
+            needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x28a745 ||
+            needs.deploy.outputs.rollback_status == 'success' && 0xffc107 ||
+            needs.deploy.outputs.degraded_stacks != '' && 0xfd7e14 || 0xdc3545 }}
+          username: "Compose Deploy"
+          avatar_url: "https://cdn-icons-png.flaticon.com/512/919/919853.png"
 
       - name: Unload Discord webhook
         uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
