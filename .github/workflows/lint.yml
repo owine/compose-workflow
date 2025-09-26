@@ -309,7 +309,7 @@ jobs:
 
       - name: 📊 Generate detailed summary with error reproduction
         run: |
-          echo "::group::📊 Final Validation Summary"
+          echo "📊 Final Validation Summary"
           echo ""
           echo "🔍 COMPREHENSIVE VALIDATION RESULTS"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -520,7 +520,6 @@ jobs:
           if [[ "$SCANNING_OK" == "true" && "$LINT_OK" == "true" ]]; then
             echo "🎉 FINAL STATUS: ALL VALIDATION CHECKS PASSED"
             echo "   Repository is ready for deployment"
-            echo "::endgroup::"
             exit 0
           else
             echo "💥 FINAL STATUS: VALIDATION FAILED"
@@ -530,7 +529,6 @@ jobs:
             [[ "$SCANNING_OK" != "true" ]] && echo "   • GitGuardian security scanning"
             [[ "$LINT_OK" != "true" ]] && echo "   • Code quality validation (see detailed errors above)"
             echo ""
-            echo "::endgroup::"
             exit 1
           fi
 
