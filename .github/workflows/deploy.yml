@@ -914,7 +914,11 @@ jobs:
             echo "════════════════════════"
             echo "Total Services: $TOTAL_CONTAINERS"
             echo "Running Services: $RUNNING_CONTAINERS"
-            echo "Success Rate: $(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))%"
+            if [ "$TOTAL_CONTAINERS" -gt 0 ]; then
+              echo "Success Rate: $(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))%"
+            else
+              echo "Success Rate: 0%"
+            fi
             echo ""
 
             # Display results by category
@@ -949,7 +953,11 @@ jobs:
             echo "failed_stacks=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
             echo "total_containers=$TOTAL_CONTAINERS"
             echo "running_containers=$RUNNING_CONTAINERS"
-            echo "success_rate=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))"
+            if [ "$TOTAL_CONTAINERS" -gt 0 ]; then
+              echo "success_rate=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))"
+            else
+              echo "success_rate=0"
+            fi
             echo "GITHUB_OUTPUT_END"
 
             # Determine final health status
