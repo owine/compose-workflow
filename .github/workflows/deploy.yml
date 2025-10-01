@@ -973,19 +973,21 @@ jobs:
             echo "════════════════════════════════════════════════════════════════"
 
             # Write results to temp file for reliable capture
-            TEMP_OUTPUT="/tmp/health_check_output_$$"
-            echo "healthy_stacks=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" > "$TEMP_OUTPUT"
-            echo "degraded_stacks=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" >> "$TEMP_OUTPUT"
-            echo "failed_stacks=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" >> "$TEMP_OUTPUT"
-            echo "total_containers=$TOTAL_CONTAINERS" >> "$TEMP_OUTPUT"
-            echo "running_containers=$RUNNING_CONTAINERS" >> "$TEMP_OUTPUT"
-            if [ "$TOTAL_CONTAINERS" -gt 0 ]; then
-              echo "success_rate=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))" >> "$TEMP_OUTPUT"
-            else
-              echo "success_rate=0" >> "$TEMP_OUTPUT"
-            fi
+            TEMP_OUTPUT="/tmp/github_health_check_outputs.txt"
+            cat > "$TEMP_OUTPUT" << OUTPUTS
+healthy_stacks=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')
+degraded_stacks=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')
+failed_stacks=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')
+total_containers=$TOTAL_CONTAINERS
+running_containers=$RUNNING_CONTAINERS
+success_rate=$(if [ "$TOTAL_CONTAINERS" -gt 0 ]; then echo $(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS )); else echo 0; fi)
+OUTPUTS
 
-            # Output for verification
+            echo "📝 Wrote health check outputs to $TEMP_OUTPUT"
+            echo "Contents:"
+            cat "$TEMP_OUTPUT"
+
+            # Also output in parseable format
             echo "GITHUB_OUTPUT_START"
             cat "$TEMP_OUTPUT"
             echo "GITHUB_OUTPUT_END"
@@ -1016,7 +1018,7 @@ jobs:
           else
             echo "⚠️  GITHUB_OUTPUT_START marker not found, attempting to read from temp file..."
             # Try to read from temp file on remote server
-            TEMP_FILE_CONTENT=$(ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cat /tmp/health_check_output_* 2>/dev/null | head -20' || echo "")
+            TEMP_FILE_CONTENT=$(ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cat /tmp/github_health_check_outputs.txt 2>/dev/null' || echo "")
 
             if [ -n "$TEMP_FILE_CONTENT" ]; then
               echo "✅ Successfully read outputs from temp file"
