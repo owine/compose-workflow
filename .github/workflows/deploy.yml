@@ -854,15 +854,23 @@ jobs:
               health_check_with_retry "$STACK"
               HEALTH_RESULT=$?
 
+              # Count services for this stack
+              STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+              STACK_TOTAL=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+
+              # Accumulate totals
+              TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_TOTAL))
+              RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
+
               case $HEALTH_RESULT in
                 0)
                   restore_output_on_success "$STACK" $HEALTH_RESULT
-                  echo "✅ $STACK: Healthy"
+                  echo "✅ $STACK: Healthy ($STACK_RUNNING/$STACK_TOTAL services)"
                   HEALTHY_STACKS="$HEALTHY_STACKS $STACK"
                   ;;
                 2)
                   restore_output_on_success "$STACK" $HEALTH_RESULT
-                  echo "⚠️ $STACK: Degraded but stable"
+                  echo "⚠️ $STACK: Degraded but stable ($STACK_RUNNING/$STACK_TOTAL services)"
                   DEGRADED_STACKS="$DEGRADED_STACKS $STACK"
                   # Check if degraded stack is critical
                   if is_critical_service "$STACK"; then
@@ -872,7 +880,7 @@ jobs:
                   ;;
                 *)
                   # For failures, output is already restored in health_check_with_retry
-                  echo "❌ $STACK: Failed health check"
+                  echo "❌ $STACK: Failed health check ($STACK_RUNNING/$STACK_TOTAL services)"
                   FAILED_STACKS="$FAILED_STACKS $STACK"
                   # Check if failed stack is critical - trigger early exit
                   if is_critical_service "$STACK"; then
@@ -900,25 +908,8 @@ jobs:
               exit 1
             fi
 
-            # Calculate container statistics from all stacks
-            echo "🔢 DEBUG: STACKS variable = '$STACKS'"
-            echo "🔢 DEBUG: Length of STACKS = ${#STACKS}"
-            echo "🔢 Calculating statistics for stacks: $STACKS"
-
-            if [ -z "$STACKS" ]; then
-              echo "⚠️  WARNING: STACKS variable is empty!"
-            else
-              for STACK in $STACKS; do
-                echo "  Counting services in $STACK..."
-                STACK_CONTAINERS=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
-                STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
-                echo "  $STACK: $STACK_RUNNING/$STACK_CONTAINERS services"
-                TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_CONTAINERS))
-                RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
-              done
-            fi
-
-            echo "📊 Final totals: $RUNNING_CONTAINERS/$TOTAL_CONTAINERS services"
+            # Service counts accumulated during health checks
+            echo "📊 Final service count: $RUNNING_CONTAINERS/$TOTAL_CONTAINERS across all stacks"
 
             # Display comprehensive health check results
             echo ""
