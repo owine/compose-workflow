@@ -854,9 +854,11 @@ jobs:
               health_check_with_retry "$STACK"
               HEALTH_RESULT=$?
 
-              # Count services for this stack
+              # Count services for this stack (disable exit on error for counting)
+              set +e
               STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
               STACK_TOTAL=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+              set -e
 
               # Accumulate totals
               TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_TOTAL))
