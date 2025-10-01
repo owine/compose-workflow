@@ -902,8 +902,8 @@ jobs:
 
             # Calculate container statistics from all stacks
             for STACK in $STACKS; do
-              STACK_CONTAINERS=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
-              STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
+              STACK_CONTAINERS=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+              STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
               TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_CONTAINERS))
               RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
             done
