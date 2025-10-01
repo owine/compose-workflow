@@ -974,14 +974,18 @@ jobs:
 
             # Write results to temp file for reliable capture
             TEMP_OUTPUT="/tmp/github_health_check_outputs.txt"
-            cat > "$TEMP_OUTPUT" << OUTPUTS
-healthy_stacks=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')
-degraded_stacks=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')
-failed_stacks=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')
-total_containers=$TOTAL_CONTAINERS
-running_containers=$RUNNING_CONTAINERS
-success_rate=$(if [ "$TOTAL_CONTAINERS" -gt 0 ]; then echo $(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS )); else echo 0; fi)
-OUTPUTS
+            {
+              echo "healthy_stacks=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+              echo "degraded_stacks=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+              echo "failed_stacks=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+              echo "total_containers=$TOTAL_CONTAINERS"
+              echo "running_containers=$RUNNING_CONTAINERS"
+              if [ "$TOTAL_CONTAINERS" -gt 0 ]; then
+                echo "success_rate=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))"
+              else
+                echo "success_rate=0"
+              fi
+            } > "$TEMP_OUTPUT"
 
             echo "📝 Wrote health check outputs to $TEMP_OUTPUT"
             echo "Contents:"
