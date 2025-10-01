@@ -892,11 +892,6 @@ jobs:
             # Count services across all stacks after health checks complete
             echo ""
             echo "📊 Counting services across all stacks..."
-            # Still keep exit on error disabled for counting
-            echo "DEBUG: STACKS variable = '$STACKS'"
-            echo "DEBUG: STACKS length = ${#STACKS}"
-            echo "DEBUG: Number of args = $#"
-            echo "DEBUG: All args = $@"
 
             if [ -z "$STACKS" ]; then
               echo "ERROR: STACKS variable is empty! Cannot count services."
@@ -912,7 +907,6 @@ jobs:
               echo "Discovered stacks: $STACKS"
             fi
 
-            # Exit on error already disabled above - continue with counting
             for STACK in $STACKS; do
               STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
               STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
@@ -921,8 +915,7 @@ jobs:
               RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
             done
 
-            # IMMEDIATELY write outputs to temp file before any other processing
-            # This ensures we capture counts even if script exits early
+            # Write outputs to temp file to ensure capture even if script exits early
             TEMP_OUTPUT="/tmp/github_health_check_outputs.txt"
             echo "healthy_stacks=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" > "$TEMP_OUTPUT"
             echo "degraded_stacks=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" >> "$TEMP_OUTPUT"
@@ -934,10 +927,6 @@ jobs:
             else
               echo "success_rate=0" >> "$TEMP_OUTPUT"
             fi
-            echo "✅ Wrote outputs to temp file immediately after counting"
-
-            # Keep exit on error disabled for output section
-            echo "🔍 DEBUG: About to check critical failure status (CRITICAL_FAILURE=$CRITICAL_FAILURE)"
 
             # Handle critical service failure
             if [ "$CRITICAL_FAILURE" = true ]; then
