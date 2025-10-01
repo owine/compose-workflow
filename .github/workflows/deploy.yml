@@ -889,6 +889,25 @@ jobs:
             # Count services across all stacks after health checks complete
             echo ""
             echo "📊 Counting services across all stacks..."
+            echo "DEBUG: STACKS variable = '$STACKS'"
+            echo "DEBUG: STACKS length = ${#STACKS}"
+            echo "DEBUG: Number of args = $#"
+            echo "DEBUG: All args = $@"
+
+            if [ -z "$STACKS" ]; then
+              echo "ERROR: STACKS variable is empty! Cannot count services."
+              echo "Will attempt to discover stacks from filesystem..."
+              DISCOVERED_STACKS=""
+              for dir in /opt/compose/*/; do
+                if [ -d "$dir" ] && [ -f "$dir/compose.yaml" ]; then
+                  STACK_NAME=$(basename "$dir")
+                  DISCOVERED_STACKS="$DISCOVERED_STACKS $STACK_NAME"
+                fi
+              done
+              STACKS=$(echo "$DISCOVERED_STACKS" | xargs)
+              echo "Discovered stacks: $STACKS"
+            fi
+
             set +e  # Disable exit on error for counting
             for STACK in $STACKS; do
               STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
