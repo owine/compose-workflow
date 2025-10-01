@@ -916,9 +916,23 @@ jobs:
               TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_TOTAL))
               RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
             done
-            # Keep exit on error disabled for output section to prevent unexpected exits
-            # set -e will be re-enabled after outputs are written
 
+            # IMMEDIATELY write outputs to temp file before any other processing
+            # This ensures we capture counts even if script exits early
+            TEMP_OUTPUT="/tmp/github_health_check_outputs.txt"
+            echo "healthy_stacks=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" > "$TEMP_OUTPUT"
+            echo "degraded_stacks=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" >> "$TEMP_OUTPUT"
+            echo "failed_stacks=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" >> "$TEMP_OUTPUT"
+            echo "total_containers=$TOTAL_CONTAINERS" >> "$TEMP_OUTPUT"
+            echo "running_containers=$RUNNING_CONTAINERS" >> "$TEMP_OUTPUT"
+            if [ "$TOTAL_CONTAINERS" -gt 0 ]; then
+              echo "success_rate=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))" >> "$TEMP_OUTPUT"
+            else
+              echo "success_rate=0" >> "$TEMP_OUTPUT"
+            fi
+            echo "✅ Wrote outputs to temp file immediately after counting"
+
+            # Keep exit on error disabled for output section
             echo "🔍 DEBUG: About to check critical failure status (CRITICAL_FAILURE=$CRITICAL_FAILURE)"
 
             # Handle critical service failure
@@ -975,26 +989,7 @@ jobs:
             done
             echo "════════════════════════════════════════════════════════════════"
 
-            # Write results to temp file for reliable capture
-            TEMP_OUTPUT="/tmp/github_health_check_outputs.txt"
-            {
-              echo "healthy_stacks=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
-              echo "degraded_stacks=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
-              echo "failed_stacks=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
-              echo "total_containers=$TOTAL_CONTAINERS"
-              echo "running_containers=$RUNNING_CONTAINERS"
-              if [ "$TOTAL_CONTAINERS" -gt 0 ]; then
-                echo "success_rate=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))"
-              else
-                echo "success_rate=0"
-              fi
-            } > "$TEMP_OUTPUT"
-
-            echo "📝 Wrote health check outputs to $TEMP_OUTPUT"
-            echo "Contents:"
-            cat "$TEMP_OUTPUT"
-
-            # Also output in parseable format
+            # Output results in parseable format (temp file already written earlier)
             echo "GITHUB_OUTPUT_START"
             cat "$TEMP_OUTPUT"
             echo "GITHUB_OUTPUT_END"
