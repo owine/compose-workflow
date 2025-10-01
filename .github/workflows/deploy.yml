@@ -972,18 +972,22 @@ jobs:
             done
             echo "════════════════════════════════════════════════════════════════"
 
-            # Output structured results for GitHub Actions
-            echo "GITHUB_OUTPUT_START"
-            echo "healthy_stacks=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
-            echo "degraded_stacks=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
-            echo "failed_stacks=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
-            echo "total_containers=$TOTAL_CONTAINERS"
-            echo "running_containers=$RUNNING_CONTAINERS"
+            # Write results to temp file for reliable capture
+            TEMP_OUTPUT="/tmp/health_check_output_$$"
+            echo "healthy_stacks=$(echo $HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" > "$TEMP_OUTPUT"
+            echo "degraded_stacks=$(echo $DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" >> "$TEMP_OUTPUT"
+            echo "failed_stacks=$(echo $FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')" >> "$TEMP_OUTPUT"
+            echo "total_containers=$TOTAL_CONTAINERS" >> "$TEMP_OUTPUT"
+            echo "running_containers=$RUNNING_CONTAINERS" >> "$TEMP_OUTPUT"
             if [ "$TOTAL_CONTAINERS" -gt 0 ]; then
-              echo "success_rate=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))"
+              echo "success_rate=$(( RUNNING_CONTAINERS * 100 / TOTAL_CONTAINERS ))" >> "$TEMP_OUTPUT"
             else
-              echo "success_rate=0"
+              echo "success_rate=0" >> "$TEMP_OUTPUT"
             fi
+
+            # Output for verification
+            echo "GITHUB_OUTPUT_START"
+            cat "$TEMP_OUTPUT"
             echo "GITHUB_OUTPUT_END"
 
             # Determine final health status
@@ -1010,13 +1014,23 @@ jobs:
           if echo "$HEALTH_RESULT" | grep -q "GITHUB_OUTPUT_START"; then
             echo "$HEALTH_RESULT" | sed -n '/GITHUB_OUTPUT_START/,/GITHUB_OUTPUT_END/p' | grep -E "^(healthy_stacks|degraded_stacks|failed_stacks|total_containers|running_containers|success_rate)=" >> $GITHUB_OUTPUT
           else
-            # Fallback outputs if parsing fails
-            echo "healthy_stacks=" >> $GITHUB_OUTPUT
-            echo "degraded_stacks=" >> $GITHUB_OUTPUT
-            echo "failed_stacks=" >> $GITHUB_OUTPUT
-            echo "total_containers=0" >> $GITHUB_OUTPUT
-            echo "running_containers=0" >> $GITHUB_OUTPUT
-            echo "success_rate=0" >> $GITHUB_OUTPUT
+            echo "⚠️  GITHUB_OUTPUT_START marker not found, attempting to read from temp file..."
+            # Try to read from temp file on remote server
+            TEMP_FILE_CONTENT=$(ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cat /tmp/health_check_output_* 2>/dev/null | head -20' || echo "")
+
+            if [ -n "$TEMP_FILE_CONTENT" ]; then
+              echo "✅ Successfully read outputs from temp file"
+              echo "$TEMP_FILE_CONTENT" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Could not read temp file, using fallback outputs"
+              # Fallback outputs if parsing fails
+              echo "healthy_stacks=" >> $GITHUB_OUTPUT
+              echo "degraded_stacks=" >> $GITHUB_OUTPUT
+              echo "failed_stacks=" >> $GITHUB_OUTPUT
+              echo "total_containers=0" >> $GITHUB_OUTPUT
+              echo "running_containers=0" >> $GITHUB_OUTPUT
+              echo "success_rate=0" >> $GITHUB_OUTPUT
+            fi
           fi
 
       - name: Cleanup unused images
