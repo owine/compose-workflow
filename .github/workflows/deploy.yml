@@ -916,7 +916,10 @@ jobs:
               TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_TOTAL))
               RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
             done
-            set -e  # Re-enable exit on error
+            # Keep exit on error disabled for output section to prevent unexpected exits
+            # set -e will be re-enabled after outputs are written
+
+            echo "🔍 DEBUG: About to check critical failure status (CRITICAL_FAILURE=$CRITICAL_FAILURE)"
 
             # Handle critical service failure
             if [ "$CRITICAL_FAILURE" = true ]; then
@@ -995,6 +998,8 @@ jobs:
             echo "GITHUB_OUTPUT_START"
             cat "$TEMP_OUTPUT"
             echo "GITHUB_OUTPUT_END"
+
+            set -e  # Re-enable exit on error after outputs are written
 
             # Determine final health status
             if [ -n "$FAILED_STACKS" ]; then
