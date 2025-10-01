@@ -846,6 +846,9 @@ jobs:
             echo "🔍 Starting enhanced health checks with retry logic..."
             CRITICAL_FAILURE=false
 
+            # Disable exit on error for health checks to ensure we reach output section
+            set +e
+
             # Check each stack with the new enhanced health check
             for STACK in $STACKS; do
               echo ""
@@ -889,6 +892,7 @@ jobs:
             # Count services across all stacks after health checks complete
             echo ""
             echo "📊 Counting services across all stacks..."
+            # Still keep exit on error disabled for counting
             echo "DEBUG: STACKS variable = '$STACKS'"
             echo "DEBUG: STACKS length = ${#STACKS}"
             echo "DEBUG: Number of args = $#"
@@ -908,7 +912,7 @@ jobs:
               echo "Discovered stacks: $STACKS"
             fi
 
-            set +e  # Disable exit on error for counting
+            # Exit on error already disabled above - continue with counting
             for STACK in $STACKS; do
               STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
               STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
