@@ -901,12 +901,16 @@ jobs:
             fi
 
             # Calculate container statistics from all stacks
+            echo "🔢 Calculating statistics for stacks: $STACKS"
             for STACK in $STACKS; do
+              echo "  Counting services in $STACK..."
               STACK_CONTAINERS=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
               STACK_RUNNING=$(cd /opt/compose/$STACK && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | wc -l | tr -d " " || echo "0")
+              echo "  $STACK: $STACK_RUNNING/$STACK_CONTAINERS services"
               TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_CONTAINERS))
               RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
             done
+            echo "📊 Final totals: $RUNNING_CONTAINERS/$TOTAL_CONTAINERS services"
 
             # Display comprehensive health check results
             echo ""
