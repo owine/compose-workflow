@@ -1466,25 +1466,34 @@ jobs:
             needs.deploy.outputs.rollback_status == 'success' && '🔄 **Deployment failed but rolled back successfully**' || '❌ **Deployment failed**' }}
 
             ${{ needs.deploy.outputs.deployment_needed == 'true' && needs.deploy.outputs.rollback_status != 'success' &&
-            format('**📊 Health Status**\n🟢 Running: {0}/{1} services ({2}%)', needs.deploy.outputs.running_containers || '0',
+            format('**📊 Health Status**
+            🟢 Running: {0}/{1} services ({2}%)', needs.deploy.outputs.running_containers || '0',
             needs.deploy.outputs.total_containers || '0', needs.deploy.outputs.success_rate || '0') ||
-            needs.deploy.outputs.rollback_status == 'success' && format('**📊 Rollback Health**\n🟢 Running: {0}/{1} services ({2}%)',
+            needs.deploy.outputs.rollback_status == 'success' && format('**📊 Rollback Health**
+            🟢 Running: {0}/{1} services ({2}%)',
             needs.deploy.outputs.rollback_running_containers || '0', needs.deploy.outputs.rollback_total_containers || '0',
             needs.deploy.outputs.rollback_success_rate || '0') || '' }}
 
             ${{ needs.deploy.outputs.rollback_status != 'success' && (needs.deploy.outputs.healthy_stacks != '' || needs.deploy.outputs.degraded_stacks != '' || needs.deploy.outputs.failed_stacks != '') &&
-            format('**🏷️ Stack Status**\n{0}{1}{2}',
-            needs.deploy.outputs.healthy_stacks != '' && format('✅ {0}\n', needs.deploy.outputs.healthy_stacks) || '',
-            needs.deploy.outputs.degraded_stacks != '' && format('⚠️  {0}\n', needs.deploy.outputs.degraded_stacks) || '',
+            format('**🏷️ Stack Status**
+            {0}{1}{2}',
+            needs.deploy.outputs.healthy_stacks != '' && format('✅ {0}
+            ', needs.deploy.outputs.healthy_stacks) || '',
+            needs.deploy.outputs.degraded_stacks != '' && format('⚠️  {0}
+            ', needs.deploy.outputs.degraded_stacks) || '',
             needs.deploy.outputs.failed_stacks != '' && format('❌ {0}', needs.deploy.outputs.failed_stacks) || '') || '' }}
 
             ${{ needs.deploy.outputs.rollback_status == 'success' && (needs.deploy.outputs.rollback_healthy_stacks != '' || needs.deploy.outputs.rollback_degraded_stacks != '' || needs.deploy.outputs.rollback_failed_stacks != '') &&
-            format('**🏷️ Rollback Stack Status**\n{0}{1}{2}',
-            needs.deploy.outputs.rollback_healthy_stacks != '' && format('✅ {0}\n', needs.deploy.outputs.rollback_healthy_stacks) || '',
-            needs.deploy.outputs.rollback_degraded_stacks != '' && format('⚠️  {0}\n', needs.deploy.outputs.rollback_degraded_stacks) || '',
+            format('**🏷️ Rollback Stack Status**
+            {0}{1}{2}',
+            needs.deploy.outputs.rollback_healthy_stacks != '' && format('✅ {0}
+            ', needs.deploy.outputs.rollback_healthy_stacks) || '',
+            needs.deploy.outputs.rollback_degraded_stacks != '' && format('⚠️  {0}
+            ', needs.deploy.outputs.rollback_degraded_stacks) || '',
             needs.deploy.outputs.rollback_failed_stacks != '' && format('❌ {0}', needs.deploy.outputs.rollback_failed_stacks) || '') || '' }}
 
-            ${{ needs.deploy.outputs.deployment_needed == 'true' && format('**🔄 Pipeline Status**\n{0} Deploy → {1} Health → {2} Cleanup{3}',
+            ${{ needs.deploy.outputs.deployment_needed == 'true' && format('**🔄 Pipeline Status**
+            {0} Deploy → {1} Health → {2} Cleanup{3}',
             needs.deploy.outputs.deploy_status == 'success' && '✅' || '❌',
             needs.deploy.outputs.health_status == 'success' && '✅' || needs.deploy.outputs.health_status == 'skipped' && '⏭️' || '❌',
             needs.deploy.outputs.cleanup_status == 'success' && '✅' || needs.deploy.outputs.cleanup_status == 'skipped' && '⏭️' || '❌',
