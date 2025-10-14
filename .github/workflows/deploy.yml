@@ -212,17 +212,6 @@ jobs:
           EOF
           chmod +x /tmp/retry.sh
 
-      - name: Cache Tailscale state
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
-        with:
-          path: |
-            ~/.cache/tailscale
-            /var/lib/tailscale
-          key: tailscale-${{ runner.os }}-${{ github.repository_owner }}-${{ github.run_number }}
-          restore-keys: |
-            tailscale-${{ runner.os }}-${{ github.repository_owner }}-
-            tailscale-${{ runner.os }}-
-
       - name: Cache deployment tools
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
@@ -249,14 +238,12 @@ jobs:
           TAILSCALE_OAUTH_SECRET: "op://Docker/tailscale-oauth/secret"
 
       - name: Connect to Tailnet
-        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade  # v3.3.0
+        uses: tailscale/github-action@2976a889fced77bb9d364be5297d56cbd6f178d8  # v4.0.0
         with:
           oauth-client-id: ${{ steps.load-tailscale-credentials.outputs.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ steps.load-tailscale-credentials.outputs.TAILSCALE_OAUTH_SECRET }}
           tags: tag:ci
-          targets: ${{ secrets.SSH_HOST }}
-          use-cache: true
-          version: latest
+          ping: ${{ secrets.SSH_HOST }}
 
       - name: Unload Tailscale credentials
         uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
