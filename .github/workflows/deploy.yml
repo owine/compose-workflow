@@ -654,6 +654,7 @@ jobs:
                   fi
                 else
                   # Fallback: Log-based error detection if exit code file is missing
+                  echo "⚠️ $STACK: Exit code file missing - using less reliable log-based detection"
                   if grep -q "❌.*$STACK\|CRITICAL.*$STACK\|Failed.*$STACK\|Error.*$STACK" "/tmp/deploy_${STACK}.log"; then
                     FAILED_STACKS="$FAILED_STACKS $STACK"
                     # Extract specific error for reporting
@@ -661,6 +662,9 @@ jobs:
                     echo "🔍 $STACK Error: $STACK_ERROR"
                   elif grep -q "✅.*$STACK\|Successfully.*$STACK" "/tmp/deploy_${STACK}.log"; then
                     SUCCESSFUL_STACKS="$SUCCESSFUL_STACKS $STACK"
+                  else
+                    echo "⚠️ $STACK: No clear success/failure indicator in logs - treating as potential failure"
+                    FAILED_STACKS="$FAILED_STACKS $STACK"
                   fi
                 fi
               else
@@ -918,18 +922,23 @@ jobs:
 
 
             # Parse critical services list
+            # Note: CRITICAL_SERVICES contains stack names (not individual Docker service names)
+            # This matches stacks that are considered critical for the deployment
+            # Example: ["portainer", "dockge"] identifies these stacks as critical
             CRITICAL_SERVICES_ARRAY=()
             if [ -n "$CRITICAL_SERVICES" ] && [ "$CRITICAL_SERVICES" != "[]" ]; then
               # Convert JSON array to bash array using jq for robust parsing and preserve spaces/special characters
               readarray -t CRITICAL_SERVICES_ARRAY < <(echo "$CRITICAL_SERVICES" | jq -r '.[]')
-              echo "🚨 Critical services configured: ${CRITICAL_SERVICES_ARRAY[*]}"
+              echo "🚨 Critical stacks configured: ${CRITICAL_SERVICES_ARRAY[*]}"
             fi
 
-            # Function to check if a stack/service is critical
+            # Function to check if a stack is critical
+            # Parameter: stack name to check
+            # Returns: 0 if critical, 1 if not critical
             is_critical_service() {
-              local service=$1
+              local stack_name=$1
               for critical in "${CRITICAL_SERVICES_ARRAY[@]}"; do
-                if [ "$service" = "$critical" ]; then
+                if [ "$stack_name" = "$critical" ]; then
                   return 0
                 fi
               done
@@ -1229,11 +1238,13 @@ jobs:
             fi
 
             # Use null character as delimiter to support stack names with spaces and special characters
+            # Note: Null delimiter is used only within this SSH script execution
+            # The rollback-health step will convert it to space-delimited before passing between workflow steps
             ROLLBACK_STACKS=$(printf "%s\0" "${ROLLBACK_STACKS_ARRAY[@]}")
             echo "📋 Stacks to rollback: ${ROLLBACK_STACKS_ARRAY[*]}"
 
             # Output discovered stacks for rollback-health step (null-delimited)
-            # Using simple echo for easier parsing on runner
+            # Will be converted to space-delimited in rollback-health step for compatibility
             echo "DISCOVERED_ROLLBACK_STACKS=$ROLLBACK_STACKS"
 
             # Deploy Dockge first if needed
@@ -1420,8 +1431,21 @@ jobs:
                 echo "✅ Rollback process $PID for stack $STACK_NAME completed successfully"
               else
                 EXIT_CODE=$?
-                echo "❌ Rollback process $PID for stack $STACK_NAME failed with exit code $EXIT_CODE"
-                ROLLBACK_ERRORS="$ROLLBACK_ERRORS STACK:$STACK_NAME:PID:$PID:$EXIT_CODE"
+                # Check if process was terminated by signal (exit code > 128)
+                if [ "$EXIT_CODE" -gt 128 ]; then
+                  SIGNAL_NUM=$((EXIT_CODE - 128))
+                  # Try to get signal name (works on most systems)
+                  if command -v kill >/dev/null 2>&1; then
+                    SIGNAL_NAME=$(kill -l $SIGNAL_NUM 2>/dev/null || echo "SIG$SIGNAL_NUM")
+                  else
+                    SIGNAL_NAME="SIG$SIGNAL_NUM"
+                  fi
+                  echo "❌ Rollback process $PID for stack $STACK_NAME was terminated by signal $SIGNAL_NUM ($SIGNAL_NAME)"
+                  ROLLBACK_ERRORS="$ROLLBACK_ERRORS STACK:$STACK_NAME:PID:$PID:TERMINATED_BY_SIGNAL:$SIGNAL_NUM:$SIGNAL_NAME"
+                else
+                  echo "❌ Rollback process $PID for stack $STACK_NAME failed with exit code $EXIT_CODE"
+                  ROLLBACK_ERRORS="$ROLLBACK_ERRORS STACK:$STACK_NAME:PID:$PID:EXIT_CODE:$EXIT_CODE"
+                fi
               fi
             done
 
@@ -1445,6 +1469,7 @@ jobs:
                   fi
                 else
                   # Fallback: Log-based error detection if exit code file is missing
+                  echo "⚠️ $STACK: Exit code file missing - using less reliable log-based detection"
                   if grep -q "❌.*$STACK\|CRITICAL.*$STACK\|Failed.*$STACK\|Error.*$STACK" "/tmp/rollback_${STACK}.log"; then
                     FAILED_ROLLBACKS="$FAILED_ROLLBACKS $STACK"
                     # Extract specific error for reporting
@@ -1452,6 +1477,9 @@ jobs:
                     echo "🔍 $STACK Rollback Error: $STACK_ERROR"
                   elif grep -q "✅.*$STACK\|Successfully.*$STACK" "/tmp/rollback_${STACK}.log"; then
                     SUCCESSFUL_ROLLBACKS="$SUCCESSFUL_ROLLBACKS $STACK"
+                  else
+                    echo "⚠️ $STACK: No clear success/failure indicator in logs - treating as potential failure"
+                    FAILED_ROLLBACKS="$FAILED_ROLLBACKS $STACK"
                   fi
                 fi
               else
@@ -1470,19 +1498,22 @@ jobs:
             fi
 
             # Parse critical services list
+            # Note: CRITICAL_SERVICES contains stack names (not individual Docker service names)
+            # This matches stacks that are considered critical for the deployment
+            # Example: ["portainer", "dockge"] identifies these stacks as critical
             CRITICAL_SERVICES_ARRAY=()
             CRITICAL_FAILURE=false
             if [ -n "$CRITICAL_SERVICES" ] && [ "$CRITICAL_SERVICES" != "[]" ]; then
               # Convert JSON array to bash array using jq for robust parsing and preserve spaces/special characters
               readarray -t CRITICAL_SERVICES_ARRAY < <(echo "$CRITICAL_SERVICES" | jq -r '.[]')
-              echo "🚨 Critical services configured: ${CRITICAL_SERVICES_ARRAY[*]}"
+              echo "🚨 Critical stacks configured: ${CRITICAL_SERVICES_ARRAY[*]}"
 
-              # Check if any failed stack is critical
+              # Check if any failed rollback stack is critical
               for FAILED_STACK in $FAILED_ROLLBACKS; do
-                for CRITICAL in "${CRITICAL_SERVICES_ARRAY[@]}"; do
-                  if [ "$FAILED_STACK" = "$CRITICAL" ]; then
-                    echo "🚨 CRITICAL SERVICE ROLLBACK FAILED: $FAILED_STACK"
-                    echo "   This is a critical service - system may be in unsafe state"
+                for CRITICAL_STACK in "${CRITICAL_SERVICES_ARRAY[@]}"; do
+                  if [ "$FAILED_STACK" = "$CRITICAL_STACK" ]; then
+                    echo "🚨 CRITICAL STACK ROLLBACK FAILED: $FAILED_STACK"
+                    echo "   This is a critical stack - system may be in unsafe state"
                     CRITICAL_FAILURE=true
                   fi
                 done
@@ -1606,6 +1637,7 @@ jobs:
             # Set configurable timeout for health check commands (default: 15 seconds)
             HEALTH_CHECK_CMD_TIMEOUT=${{ inputs.health-check-command-timeout }}
             if [ -z "$HEALTH_CHECK_CMD_TIMEOUT" ]; then
+              echo "ℹ️ HEALTH_CHECK_CMD_TIMEOUT not provided, using default 15 seconds"
               HEALTH_CHECK_CMD_TIMEOUT=15
             fi
 
