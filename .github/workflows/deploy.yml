@@ -403,14 +403,35 @@ jobs:
             if [ "$HAS_DOCKGE" = "true" ]; then
               echo "🚀 Deploying Dockge..."
               cd /opt/dockge
-              op run --env-file=/opt/compose/compose.env -- docker compose pull
-              op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS
+
+              # Add timeout protection for Dockge operations
+              if ! timeout 300 op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                echo "❌ Dockge image pull timed out after 300s"
+                exit 1
+              fi
+
+              if ! timeout 120 op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                echo "❌ Dockge startup timed out after 120s"
+                exit 1
+              fi
+
               echo "✅ Dockge deployed successfully"
             fi
 
             echo "Updating repository to $TARGET_REF..."
-            git -C /opt/compose/ fetch
-            git -C /opt/compose/ checkout $TARGET_REF
+
+            # Add timeout protection to git operations
+            if ! timeout 60 git -C /opt/compose/ fetch; then
+              echo "❌ Git fetch timed out after 60s"
+              exit 1
+            fi
+
+            if ! timeout 30 git -C /opt/compose/ checkout $TARGET_REF; then
+              echo "❌ Git checkout timed out after 30s"
+              exit 1
+            fi
+
+            echo "✅ Repository updated to $TARGET_REF"
 
             # Shared function to deploy or rollback a single stack
             # This eliminates code duplication between deploy and rollback operations
@@ -429,14 +450,16 @@ jobs:
                 cd /opt/compose/$STACK
 
                 echo "  Pulling images for $STACK..."
-                if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-                  echo "❌ Failed to pull images for $STACK during $OPERATION"
+                # Add timeout protection (5 minutes for image pull)
+                if ! timeout 300 op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                  echo "❌ Failed to pull images for $STACK during $OPERATION (timeout or error)"
                   return 1
                 fi
 
                 echo "  Starting services for $STACK..."
-                if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
-                  echo "❌ Failed to start services for $STACK during $OPERATION"
+                # Add timeout protection (2 minutes for service startup)
+                if ! timeout 120 op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                  echo "❌ Failed to start services for $STACK during $OPERATION (timeout or error)"
                   return 1
                 fi
 
@@ -1064,6 +1087,7 @@ jobs:
           HAS_DOCKGE="${{ inputs.has-dockge }}"
           PREVIOUS_SHA="${{ steps.backup.outputs.previous_sha }}"
           COMPOSE_ARGS="${{ inputs.args || '' }}"
+          CRITICAL_SERVICES='${{ inputs.critical-services }}'
 
           # Validate PREVIOUS_SHA before attempting rollback
           if [ "$PREVIOUS_SHA" = "unknown" ] || [ -z "$PREVIOUS_SHA" ]; then
@@ -1085,20 +1109,32 @@ jobs:
           source /tmp/retry.sh
 
           # Use retry mechanism for SSH connection (same as deploy) and capture output
-          ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$HAS_DOCKGE\" \"$PREVIOUS_SHA\" \"$COMPOSE_ARGS\"" << 'EOF'
+          ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$HAS_DOCKGE\" \"$PREVIOUS_SHA\" \"$COMPOSE_ARGS\" \"$CRITICAL_SERVICES\"" << 'EOF'
             set -e
 
             # Get arguments passed to script (excluding sensitive OP_TOKEN)
             HAS_DOCKGE="$1"
             PREVIOUS_SHA="$2"
             COMPOSE_ARGS="$3"
+            CRITICAL_SERVICES="$4"
 
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
             echo "🔄 Rolling back to $PREVIOUS_SHA..."
-            git -C /opt/compose/ fetch
-            git -C /opt/compose/ checkout $PREVIOUS_SHA
+
+            # Add timeout protection to git operations
+            if ! timeout 60 git -C /opt/compose/ fetch; then
+              echo "❌ Git fetch timed out after 60s"
+              exit 1
+            fi
+
+            if ! timeout 30 git -C /opt/compose/ checkout $PREVIOUS_SHA; then
+              echo "❌ Git checkout timed out after 30s"
+              exit 1
+            fi
+
+            echo "✅ Repository rolled back to $PREVIOUS_SHA"
 
             # Dynamically discover stacks based on the previous commit's structure
             echo "🔍 Discovering stacks in previous commit..."
@@ -1128,8 +1164,18 @@ jobs:
             if [ "$HAS_DOCKGE" = "true" ]; then
               echo "🔄 Rolling back Dockge..."
               cd /opt/dockge
-              op run --env-file=/opt/compose/compose.env -- docker compose pull
-              op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS
+
+              # Add timeout protection for Dockge operations
+              if ! timeout 300 op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                echo "❌ Dockge image pull timed out after 300s"
+                exit 1
+              fi
+
+              if ! timeout 120 op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                echo "❌ Dockge startup timed out after 120s"
+                exit 1
+              fi
+
               echo "✅ Dockge rolled back successfully"
             fi
 
@@ -1150,14 +1196,16 @@ jobs:
                 cd /opt/compose/$STACK
 
                 echo "  Pulling images for $STACK..."
-                if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-                  echo "❌ Failed to pull images for $STACK during $OPERATION"
+                # Add timeout protection (5 minutes for image pull)
+                if ! timeout 300 op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                  echo "❌ Failed to pull images for $STACK during $OPERATION (timeout or error)"
                   return 1
                 fi
 
                 echo "  Starting services for $STACK..."
-                if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
-                  echo "❌ Failed to start services for $STACK during $OPERATION"
+                # Add timeout protection (2 minutes for service startup)
+                if ! timeout 120 op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                  echo "❌ Failed to start services for $STACK during $OPERATION (timeout or error)"
                   return 1
                 fi
 
@@ -1184,8 +1232,69 @@ jobs:
               done
             }
 
+            # Pre-rollback validation function
+            validate_all_rollback_stacks() {
+              echo "🔍 Pre-rollback validation of all stacks..."
+              local validation_failed=false
+
+              for STACK in $ROLLBACK_STACKS; do
+                echo "  Validating $STACK..."
+
+                # Check if stack directory exists
+                if [ ! -d "/opt/compose/$STACK" ]; then
+                  echo "❌ $STACK: Directory /opt/compose/$STACK not found"
+                  validation_failed=true
+                  continue
+                fi
+
+                cd "/opt/compose/$STACK" || {
+                  echo "❌ $STACK: Cannot access directory"
+                  validation_failed=true
+                  continue
+                }
+
+                # Check if compose.yaml exists
+                if [ ! -f "compose.yaml" ]; then
+                  echo "❌ $STACK: compose.yaml not found"
+                  validation_failed=true
+                  continue
+                fi
+
+                # Validate 1Password environment access and Docker Compose config
+                if ! timeout 30 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services >/dev/null 2>&1; then
+                  echo "❌ $STACK: Environment validation failed (1Password or compose config error)"
+                  validation_failed=true
+                  continue
+                fi
+
+                # Quick syntax validation
+                if ! timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --quiet 2>/dev/null; then
+                  echo "❌ $STACK: Docker Compose syntax validation failed"
+                  validation_failed=true
+                  continue
+                fi
+
+                echo "✅ $STACK: Pre-rollback validation passed"
+              done
+
+              if [ "$validation_failed" = true ]; then
+                echo "❌ Pre-rollback validation failed for one or more stacks"
+                echo "   Stopping rollback to prevent extended failures"
+                return 1
+              fi
+
+              echo "✅ All stacks passed pre-rollback validation"
+              return 0
+            }
+
             # Set trap for cleanup on exit
             trap cleanup_rollback_logs EXIT
+
+            # Run pre-rollback validation
+            if ! validate_all_rollback_stacks; then
+              echo "ROLLBACK_STATUS=failed_validation" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
 
             # Start all rollback deployments in parallel
             echo "🔄 Starting parallel rollback of all stacks..."
@@ -1248,6 +1357,26 @@ jobs:
               echo "  Process errors: $ROLLBACK_ERRORS"
             fi
 
+            # Parse critical services list
+            CRITICAL_SERVICES_ARRAY=""
+            CRITICAL_FAILURE=false
+            if [ -n "$CRITICAL_SERVICES" ] && [ "$CRITICAL_SERVICES" != "[]" ]; then
+              # Convert JSON array to bash array (simple approach)
+              CRITICAL_SERVICES_ARRAY=$(echo "$CRITICAL_SERVICES" | sed 's/\[\|\]\|"//g' | tr ',' ' ')
+              echo "🚨 Critical services configured: $CRITICAL_SERVICES_ARRAY"
+
+              # Check if any failed stack is critical
+              for FAILED_STACK in $FAILED_ROLLBACKS; do
+                for CRITICAL in $CRITICAL_SERVICES_ARRAY; do
+                  if [ "$FAILED_STACK" = "$CRITICAL" ]; then
+                    echo "🚨 CRITICAL SERVICE ROLLBACK FAILED: $FAILED_STACK"
+                    echo "   This is a critical service - system may be in unsafe state"
+                    CRITICAL_FAILURE=true
+                  fi
+                done
+              done
+            fi
+
             # Display all rollback logs
             echo ""
             echo "📋 Rollback Results:"
@@ -1276,6 +1405,13 @@ jobs:
             elif [ -z "$ROLLED_BACK_STACKS" ]; then
               echo "💥 No stacks were actually rolled back - check stack discovery!"
               exit 1
+            elif [ "$CRITICAL_FAILURE" = true ]; then
+              echo ""
+              echo "💥 CRITICAL SERVICE ROLLBACK FAILURE"
+              echo "   One or more critical services failed to rollback"
+              echo "   System may be in an unsafe state - manual intervention required"
+              echo "   Failed critical services:$FAILED_ROLLBACKS"
+              exit 1
             elif [ -n "$FAILED_ROLLBACKS" ]; then
               echo "💥 Rollbacks failed for:$FAILED_ROLLBACKS"
               exit 1
@@ -1302,7 +1438,7 @@ jobs:
 
       - name: Verify Rollback Health
         id: rollback-health
-        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure') && steps.rollback.outcome == 'success'
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure') && steps.rollback.conclusion != 'skipped'
         continue-on-error: true
         run: |
           echo "🔍 Verifying rollback health status"
