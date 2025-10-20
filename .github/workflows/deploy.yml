@@ -868,17 +868,17 @@ jobs:
 
 
             # Parse critical services list
-            CRITICAL_SERVICES_ARRAY=""
+            CRITICAL_SERVICES_ARRAY=()
             if [ -n "$CRITICAL_SERVICES" ] && [ "$CRITICAL_SERVICES" != "[]" ]; then
-              # Convert JSON array to bash array using jq for robust parsing
-              CRITICAL_SERVICES_ARRAY=$(echo "$CRITICAL_SERVICES" | jq -r '.[] | @sh' | tr -d "'" | tr '\n' ' ')
-              echo "🚨 Critical services configured: $CRITICAL_SERVICES_ARRAY"
+              # Convert JSON array to bash array using jq for robust parsing and preserve spaces/special characters
+              readarray -t CRITICAL_SERVICES_ARRAY < <(echo "$CRITICAL_SERVICES" | jq -r '.[]')
+              echo "🚨 Critical services configured: ${CRITICAL_SERVICES_ARRAY[*]}"
             fi
 
             # Function to check if a stack/service is critical
             is_critical_service() {
               local service=$1
-              for critical in $CRITICAL_SERVICES_ARRAY; do
+              for critical in "${CRITICAL_SERVICES_ARRAY[@]}"; do
                 if [ "$service" = "$critical" ]; then
                   return 0
                 fi
@@ -1174,9 +1174,8 @@ jobs:
             echo "📋 Stacks to rollback: $ROLLBACK_STACKS"
 
             # Output discovered stacks for rollback-health step (pipe-delimited)
-            echo "ROLLBACK_GITHUB_OUTPUT_START"
-            echo "discovered_rollback_stacks=$ROLLBACK_STACKS"
-            echo "ROLLBACK_GITHUB_OUTPUT_END"
+            # Using simple echo for easier parsing on runner
+            echo "DISCOVERED_ROLLBACK_STACKS=$ROLLBACK_STACKS"
 
             # Deploy Dockge first if needed
             if [ "$HAS_DOCKGE" = "true" ]; then
@@ -1326,14 +1325,19 @@ jobs:
             echo "🔄 Starting parallel rollback of all stacks..."
             ROLLBACK_PIDS=""
 
+            # Map each PID to its stack name for improved error reporting
+            declare -A ROLLBACK_PID_TO_STACK
+
             # Parse pipe-delimited stacks into array
             IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
 
             for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
               echo "🔄 Rolling back $STACK..."
               rollback_stack "$STACK" &
-              ROLLBACK_PIDS="$ROLLBACK_PIDS $!"
-              echo "Started rollback of $STACK (PID: $!)"
+              PID=$!
+              ROLLBACK_PIDS="$ROLLBACK_PIDS $PID"
+              ROLLBACK_PID_TO_STACK[$PID]=$STACK
+              echo "Started rollback of $STACK (PID: $PID)"
             done
 
             # Wait for all rollback deployments and collect results
@@ -1344,14 +1348,15 @@ jobs:
             # Enhanced parallel job monitoring with proper error propagation
             echo "⏳ Monitoring parallel rollback operations..."
 
-            # Wait for jobs individually to capture exit codes
+            # Wait for jobs individually to capture exit codes and report stack names
             for PID in $ROLLBACK_PIDS; do
+              STACK_NAME="${ROLLBACK_PID_TO_STACK[$PID]}"
               if wait "$PID"; then
-                echo "✅ Rollback process $PID completed successfully"
+                echo "✅ Rollback process $PID for stack $STACK_NAME completed successfully"
               else
                 EXIT_CODE=$?
-                echo "❌ Rollback process $PID failed with exit code $EXIT_CODE"
-                ROLLBACK_ERRORS="$ROLLBACK_ERRORS PID:$PID:$EXIT_CODE"
+                echo "❌ Rollback process $PID for stack $STACK_NAME failed with exit code $EXIT_CODE"
+                ROLLBACK_ERRORS="$ROLLBACK_ERRORS STACK:$STACK_NAME:PID:$PID:$EXIT_CODE"
               fi
             done
 
@@ -1400,16 +1405,16 @@ jobs:
             fi
 
             # Parse critical services list
-            CRITICAL_SERVICES_ARRAY=""
+            CRITICAL_SERVICES_ARRAY=()
             CRITICAL_FAILURE=false
             if [ -n "$CRITICAL_SERVICES" ] && [ "$CRITICAL_SERVICES" != "[]" ]; then
-              # Convert JSON array to bash array (simple approach)
-              CRITICAL_SERVICES_ARRAY=$(echo "$CRITICAL_SERVICES" | sed 's/\[\|\]\|"//g' | tr ',' ' ')
-              echo "🚨 Critical services configured: $CRITICAL_SERVICES_ARRAY"
+              # Convert JSON array to bash array using jq for robust parsing and preserve spaces/special characters
+              readarray -t CRITICAL_SERVICES_ARRAY < <(echo "$CRITICAL_SERVICES" | jq -r '.[]')
+              echo "🚨 Critical services configured: ${CRITICAL_SERVICES_ARRAY[*]}"
 
               # Check if any failed stack is critical
               for FAILED_STACK in $FAILED_ROLLBACKS; do
-                for CRITICAL in $CRITICAL_SERVICES_ARRAY; do
+                for CRITICAL in "${CRITICAL_SERVICES_ARRAY[@]}"; do
                   if [ "$FAILED_STACK" = "$CRITICAL" ]; then
                     echo "🚨 CRITICAL SERVICE ROLLBACK FAILED: $FAILED_STACK"
                     echo "   This is a critical service - system may be in unsafe state"
@@ -1468,9 +1473,9 @@ jobs:
           # Extract rollback result and discovered stacks
           echo "$ROLLBACK_RESULT"
 
-          # Parse discovered stacks output for rollback-health step
-          if echo "$ROLLBACK_RESULT" | grep -q "ROLLBACK_GITHUB_OUTPUT_START"; then
-            DISCOVERED_STACKS=$(echo "$ROLLBACK_RESULT" | sed -n '/ROLLBACK_GITHUB_OUTPUT_START/,/ROLLBACK_GITHUB_OUTPUT_END/p' | grep "discovered_rollback_stacks=" | cut -d'=' -f2-)
+          # Parse discovered stacks output for rollback-health step (simplified - no markers needed)
+          if echo "$ROLLBACK_RESULT" | grep -q "DISCOVERED_ROLLBACK_STACKS="; then
+            DISCOVERED_STACKS=$(echo "$ROLLBACK_RESULT" | grep "DISCOVERED_ROLLBACK_STACKS=" | cut -d'=' -f2-)
             echo "discovered_rollback_stacks=$DISCOVERED_STACKS" >> $GITHUB_OUTPUT
             echo "✅ Captured discovered rollback stacks: $DISCOVERED_STACKS"
           else
@@ -1531,8 +1536,11 @@ jobs:
             # Set OP_TOKEN via environment
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
-            # Set configurable timeout for health check commands
+            # Set configurable timeout for health check commands (default: 15 seconds)
             HEALTH_CHECK_CMD_TIMEOUT=${{ inputs.health-check-command-timeout }}
+            if [ -z "$HEALTH_CHECK_CMD_TIMEOUT" ]; then
+              HEALTH_CHECK_CMD_TIMEOUT=15
+            fi
 
             echo "🔍 Verifying rollback health for all services..."
 
@@ -1611,15 +1619,13 @@ jobs:
             [ -n "$ROLLBACK_DEGRADED_STACKS" ] && echo "⚠️ Degraded After Rollback: $(echo $ROLLBACK_DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
             [ -n "$ROLLBACK_FAILED_STACKS" ] && echo "❌ Failed After Rollback: $(echo $ROLLBACK_FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
 
-            # Output structured results
-            echo "ROLLBACK_GITHUB_OUTPUT_START"
-            echo "rollback_healthy_stacks=$(echo $ROLLBACK_HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
-            echo "rollback_degraded_stacks=$(echo $ROLLBACK_DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
-            echo "rollback_failed_stacks=$(echo $ROLLBACK_FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
-            echo "rollback_total_containers=$ROLLBACK_TOTAL_CONTAINERS"
-            echo "rollback_running_containers=$ROLLBACK_RUNNING_CONTAINERS"
-            echo "rollback_success_rate=$ROLLBACK_SUCCESS_RATE"
-            echo "ROLLBACK_GITHUB_OUTPUT_END"
+            # Output structured results (simplified - no markers needed)
+            echo "ROLLBACK_HEALTH_HEALTHY=$(echo $ROLLBACK_HEALTHY_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "ROLLBACK_HEALTH_DEGRADED=$(echo $ROLLBACK_DEGRADED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "ROLLBACK_HEALTH_FAILED=$(echo $ROLLBACK_FAILED_STACKS | tr ' ' ',' | sed 's/^,//' | sed 's/,/, /g')"
+            echo "ROLLBACK_HEALTH_TOTAL_CONTAINERS=$ROLLBACK_TOTAL_CONTAINERS"
+            echo "ROLLBACK_HEALTH_RUNNING_CONTAINERS=$ROLLBACK_RUNNING_CONTAINERS"
+            echo "ROLLBACK_HEALTH_SUCCESS_RATE=$ROLLBACK_SUCCESS_RATE"
 
             # Determine rollback verification status
             if [ -n "$ROLLBACK_FAILED_STACKS" ]; then
@@ -1638,9 +1644,22 @@ jobs:
           # Extract rollback health outputs
           echo "$ROLLBACK_HEALTH_RESULT"
 
-          # Parse rollback health outputs
-          if echo "$ROLLBACK_HEALTH_RESULT" | grep -q "ROLLBACK_GITHUB_OUTPUT_START"; then
-            echo "$ROLLBACK_HEALTH_RESULT" | sed -n '/ROLLBACK_GITHUB_OUTPUT_START/,/ROLLBACK_GITHUB_OUTPUT_END/p' | grep -E "^rollback_" >> $GITHUB_OUTPUT
+          # Parse rollback health outputs (simplified - direct variable extraction)
+          if echo "$ROLLBACK_HEALTH_RESULT" | grep -q "ROLLBACK_HEALTH_"; then
+            # Extract each output variable directly
+            HEALTHY=$(echo "$ROLLBACK_HEALTH_RESULT" | grep "ROLLBACK_HEALTH_HEALTHY=" | cut -d'=' -f2-)
+            DEGRADED=$(echo "$ROLLBACK_HEALTH_RESULT" | grep "ROLLBACK_HEALTH_DEGRADED=" | cut -d'=' -f2-)
+            FAILED=$(echo "$ROLLBACK_HEALTH_RESULT" | grep "ROLLBACK_HEALTH_FAILED=" | cut -d'=' -f2-)
+            TOTAL=$(echo "$ROLLBACK_HEALTH_RESULT" | grep "ROLLBACK_HEALTH_TOTAL_CONTAINERS=" | cut -d'=' -f2-)
+            RUNNING=$(echo "$ROLLBACK_HEALTH_RESULT" | grep "ROLLBACK_HEALTH_RUNNING_CONTAINERS=" | cut -d'=' -f2-)
+            RATE=$(echo "$ROLLBACK_HEALTH_RESULT" | grep "ROLLBACK_HEALTH_SUCCESS_RATE=" | cut -d'=' -f2-)
+
+            echo "rollback_healthy_stacks=${HEALTHY:-}" >> $GITHUB_OUTPUT
+            echo "rollback_degraded_stacks=${DEGRADED:-}" >> $GITHUB_OUTPUT
+            echo "rollback_failed_stacks=${FAILED:-}" >> $GITHUB_OUTPUT
+            echo "rollback_total_containers=${TOTAL:-0}" >> $GITHUB_OUTPUT
+            echo "rollback_running_containers=${RUNNING:-0}" >> $GITHUB_OUTPUT
+            echo "rollback_success_rate=${RATE:-0}" >> $GITHUB_OUTPUT
           else
             # Fallback outputs if parsing fails
             echo "rollback_healthy_stacks=" >> $GITHUB_OUTPUT
