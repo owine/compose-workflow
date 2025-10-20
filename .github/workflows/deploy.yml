@@ -1169,11 +1169,11 @@ jobs:
               exit 1
             fi
 
-            # Use pipe delimiter to support stack names with spaces
-            ROLLBACK_STACKS=$(IFS='|'; echo "${ROLLBACK_STACKS_ARRAY[*]}")
-            echo "📋 Stacks to rollback: $ROLLBACK_STACKS"
+            # Use null character as delimiter to support stack names with spaces and special characters
+            ROLLBACK_STACKS=$(printf "%s\0" "${ROLLBACK_STACKS_ARRAY[@]}")
+            echo "📋 Stacks to rollback: ${ROLLBACK_STACKS_ARRAY[*]}"
 
-            # Output discovered stacks for rollback-health step (pipe-delimited)
+            # Output discovered stacks for rollback-health step (null-delimited)
             # Using simple echo for easier parsing on runner
             echo "DISCOVERED_ROLLBACK_STACKS=$ROLLBACK_STACKS"
 
@@ -1248,8 +1248,8 @@ jobs:
 
             # Cleanup function for rollback logs
             cleanup_rollback_logs() {
-              # Parse pipe-delimited stacks into array
-              IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+              # Parse null-delimited stacks into array
+              readarray -d $'\0' -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
               for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
                 rm -f "/tmp/rollback_${STACK}.log" 2>/dev/null
               done
@@ -1260,8 +1260,8 @@ jobs:
               echo "🔍 Pre-rollback validation of all stacks..."
               local validation_failed=false
 
-              # Parse pipe-delimited stacks into array
-              IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+              # Parse null-delimited stacks into array
+              readarray -d $'\0' -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
               for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
                 echo "  Validating $STACK..."
 
@@ -1331,10 +1331,11 @@ jobs:
             ROLLBACK_PIDS=""
 
             # Map each PID to its stack name for improved error reporting
+            # Note: Requires Bash 4.0+ for associative arrays (GitHub Actions runners use Bash 5.x)
             declare -A ROLLBACK_PID_TO_STACK
 
-            # Parse pipe-delimited stacks into array
-            IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+            # Parse null-delimited stacks into array
+            readarray -d $'\0' -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
 
             for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
               echo "🔄 Rolling back $STACK..."
@@ -1368,8 +1369,8 @@ jobs:
             # Enhanced result analysis using exit code files (more robust than log parsing)
             ROLLED_BACK_STACKS=""
             SUCCESSFUL_ROLLBACKS=""
-            # Parse pipe-delimited stacks into array
-            IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+            # Parse null-delimited stacks into array
+            readarray -d $'\0' -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
             for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
               if [ -f "/tmp/rollback_${STACK}.log" ]; then
                 ROLLED_BACK_STACKS="$ROLLED_BACK_STACKS $STACK"
@@ -1433,8 +1434,8 @@ jobs:
             echo ""
             echo "📋 Rollback Results:"
             echo "════════════════════════════════════════════════════════════════"
-            # Parse pipe-delimited stacks into array
-            IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+            # Parse null-delimited stacks into array
+            readarray -d $'\0' -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
             for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
               if [ -f "/tmp/rollback_${STACK}.log" ]; then
                 echo ""
@@ -1508,8 +1509,9 @@ jobs:
           # This ensures we check the stacks that were actually rolled back (from previous commit)
           DISCOVERED_STACKS="${{ steps.rollback.outputs.discovered_rollback_stacks }}"
           if [ -n "$DISCOVERED_STACKS" ]; then
-            # Convert pipe-delimited stacks to space-delimited for SSH arguments
-            STACKS=$(echo "$DISCOVERED_STACKS" | tr '|' ' ')
+            # Convert null-delimited stacks to space-delimited for SSH arguments
+            readarray -d $'\0' -t STACKS_ARRAY <<< "$DISCOVERED_STACKS"
+            STACKS="${STACKS_ARRAY[*]}"
             echo "✅ Using discovered rollback stacks: $STACKS"
           else
             # Fallback to input stacks if discovery failed
@@ -1545,6 +1547,12 @@ jobs:
             # Set configurable timeout for health check commands (default: 15 seconds)
             HEALTH_CHECK_CMD_TIMEOUT=${{ inputs.health-check-command-timeout }}
             if [ -z "$HEALTH_CHECK_CMD_TIMEOUT" ]; then
+              HEALTH_CHECK_CMD_TIMEOUT=15
+            fi
+
+            # Validate that HEALTH_CHECK_CMD_TIMEOUT is an integer
+            if ! [[ "$HEALTH_CHECK_CMD_TIMEOUT" =~ ^[0-9]+$ ]]; then
+              echo "⚠️ HEALTH_CHECK_CMD_TIMEOUT ($HEALTH_CHECK_CMD_TIMEOUT) is not an integer, using default 15"
               HEALTH_CHECK_CMD_TIMEOUT=15
             fi
 
