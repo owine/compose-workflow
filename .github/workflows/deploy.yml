@@ -770,15 +770,15 @@ jobs:
                 fi
 
                 # Use timeout to prevent hanging on 1Password errors
-                if ! timeout 30 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services >/dev/null 2>&1; then
-                  echo "❌ $stack: Environment or compose config error (timeout/1Password failure)"
+                if ! timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services >/dev/null 2>&1; then
+                  echo "❌ $stack: Environment or compose config error (timeout: ${HEALTH_CHECK_CMD_TIMEOUT}s)"
                   return 1
                 fi
 
-                running_count=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
-                total_count=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
-                exited_count=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=exited" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
-                restarting_count=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=restarting" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+                running_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+                total_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+                exited_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=exited" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+                restarting_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=restarting" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
 
                 echo "  $stack status: $running_count/$total_count running, $exited_count exited, $restarting_count restarting"
 
@@ -1154,24 +1154,26 @@ jobs:
 
             # Dynamically discover stacks based on the previous commit's structure
             echo "🔍 Discovering stacks in previous commit..."
-            ROLLBACK_STACKS=""
+            ROLLBACK_STACKS_ARRAY=()
             cd /opt/compose
             for dir in */; do
               if [[ -d "$dir" && (-f "$dir/compose.yml" || -f "$dir/compose.yaml") ]]; then
                 STACK_NAME=$(basename "$dir")
-                ROLLBACK_STACKS="$ROLLBACK_STACKS $STACK_NAME"
+                ROLLBACK_STACKS_ARRAY+=("$STACK_NAME")
                 echo "  Found stack: $STACK_NAME"
               fi
             done
 
-            if [ -z "$ROLLBACK_STACKS" ]; then
+            if [ ${#ROLLBACK_STACKS_ARRAY[@]} -eq 0 ]; then
               echo "⚠️ No stacks found in previous commit - rollback cannot proceed"
               exit 1
             fi
 
-            echo "📋 Stacks to rollback:$ROLLBACK_STACKS"
+            # Use pipe delimiter to support stack names with spaces
+            ROLLBACK_STACKS=$(IFS='|'; echo "${ROLLBACK_STACKS_ARRAY[*]}")
+            echo "📋 Stacks to rollback: $ROLLBACK_STACKS"
 
-            # Output discovered stacks for rollback-health step
+            # Output discovered stacks for rollback-health step (pipe-delimited)
             echo "ROLLBACK_GITHUB_OUTPUT_START"
             echo "discovered_rollback_stacks=$ROLLBACK_STACKS"
             echo "ROLLBACK_GITHUB_OUTPUT_END"
@@ -1247,7 +1249,9 @@ jobs:
 
             # Cleanup function for rollback logs
             cleanup_rollback_logs() {
-              for STACK in $ROLLBACK_STACKS; do
+              # Parse pipe-delimited stacks into array
+              IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+              for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
                 rm -f "/tmp/rollback_${STACK}.log" 2>/dev/null
               done
             }
@@ -1257,7 +1261,9 @@ jobs:
               echo "🔍 Pre-rollback validation of all stacks..."
               local validation_failed=false
 
-              for STACK in $ROLLBACK_STACKS; do
+              # Parse pipe-delimited stacks into array
+              IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+              for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
                 echo "  Validating $STACK..."
 
                 # Check if stack directory exists
@@ -1320,7 +1326,10 @@ jobs:
             echo "🔄 Starting parallel rollback of all stacks..."
             ROLLBACK_PIDS=""
 
-            for STACK in $ROLLBACK_STACKS; do
+            # Parse pipe-delimited stacks into array
+            IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+
+            for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
               echo "🔄 Rolling back $STACK..."
               rollback_stack "$STACK" &
               ROLLBACK_PIDS="$ROLLBACK_PIDS $!"
@@ -1349,7 +1358,9 @@ jobs:
             # Enhanced result analysis using exit code files (more robust than log parsing)
             ROLLED_BACK_STACKS=""
             SUCCESSFUL_ROLLBACKS=""
-            for STACK in $ROLLBACK_STACKS; do
+            # Parse pipe-delimited stacks into array
+            IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+            for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
               if [ -f "/tmp/rollback_${STACK}.log" ]; then
                 ROLLED_BACK_STACKS="$ROLLED_BACK_STACKS $STACK"
 
@@ -1412,7 +1423,9 @@ jobs:
             echo ""
             echo "📋 Rollback Results:"
             echo "════════════════════════════════════════════════════════════════"
-            for STACK in $ROLLBACK_STACKS; do
+            # Parse pipe-delimited stacks into array
+            IFS='|' read -r -a ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+            for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
               if [ -f "/tmp/rollback_${STACK}.log" ]; then
                 echo ""
                 echo "🔸 ROLLBACK STACK: $STACK"
@@ -1518,6 +1531,9 @@ jobs:
             # Set OP_TOKEN via environment
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
+            # Set configurable timeout for health check commands
+            HEALTH_CHECK_CMD_TIMEOUT=${{ inputs.health-check-command-timeout }}
+
             echo "🔍 Verifying rollback health for all services..."
 
             ROLLBACK_HEALTHY_STACKS=""
@@ -1558,8 +1574,8 @@ jobs:
               }
 
               # Get basic health status
-              RUNNING_COUNT=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
-              TOTAL_COUNT=$(timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+              RUNNING_COUNT=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+              TOTAL_COUNT=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
 
               ROLLBACK_TOTAL_CONTAINERS=$((ROLLBACK_TOTAL_CONTAINERS + TOTAL_COUNT))
               ROLLBACK_RUNNING_CONTAINERS=$((ROLLBACK_RUNNING_CONTAINERS + RUNNING_COUNT))
