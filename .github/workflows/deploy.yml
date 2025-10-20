@@ -1278,22 +1278,27 @@ jobs:
                   continue
                 }
 
-                # Check if compose.yaml exists
-                if [ ! -f "compose.yaml" ]; then
-                  echo "❌ $STACK: compose.yaml not found"
+                # Check if compose.yaml or compose.yml exists and determine which to use
+                COMPOSE_FILE=""
+                if [ -f "compose.yaml" ]; then
+                  COMPOSE_FILE="compose.yaml"
+                elif [ -f "compose.yml" ]; then
+                  COMPOSE_FILE="compose.yml"
+                else
+                  echo "❌ $STACK: neither compose.yaml nor compose.yml found"
                   validation_failed=true
                   continue
                 fi
 
                 # Validate 1Password environment access and Docker Compose config
-                if ! timeout 30 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services >/dev/null 2>&1; then
+                if ! timeout 30 op run --env-file=/opt/compose/compose.env -- docker compose -f "$COMPOSE_FILE" config --services >/dev/null 2>&1; then
                   echo "❌ $STACK: Environment validation failed (1Password or compose config error)"
                   validation_failed=true
                   continue
                 fi
 
                 # Quick syntax validation
-                if ! timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --quiet 2>/dev/null; then
+                if ! timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f "$COMPOSE_FILE" config --quiet 2>/dev/null; then
                   echo "❌ $STACK: Docker Compose syntax validation failed"
                   validation_failed=true
                   continue
@@ -1503,7 +1508,8 @@ jobs:
           # This ensures we check the stacks that were actually rolled back (from previous commit)
           DISCOVERED_STACKS="${{ steps.rollback.outputs.discovered_rollback_stacks }}"
           if [ -n "$DISCOVERED_STACKS" ]; then
-            STACKS="$DISCOVERED_STACKS"
+            # Convert pipe-delimited stacks to space-delimited for SSH arguments
+            STACKS=$(echo "$DISCOVERED_STACKS" | tr '|' ' ')
             echo "✅ Using discovered rollback stacks: $STACKS"
           else
             # Fallback to input stacks if discovery failed
@@ -1540,6 +1546,18 @@ jobs:
             HEALTH_CHECK_CMD_TIMEOUT=${{ inputs.health-check-command-timeout }}
             if [ -z "$HEALTH_CHECK_CMD_TIMEOUT" ]; then
               HEALTH_CHECK_CMD_TIMEOUT=15
+            fi
+
+            # Enforce minimum and maximum limits for HEALTH_CHECK_CMD_TIMEOUT
+            HEALTH_CHECK_CMD_TIMEOUT_MIN=5
+            HEALTH_CHECK_CMD_TIMEOUT_MAX=60
+            if [ "$HEALTH_CHECK_CMD_TIMEOUT" -lt "$HEALTH_CHECK_CMD_TIMEOUT_MIN" ]; then
+              echo "⚠️ HEALTH_CHECK_CMD_TIMEOUT ($HEALTH_CHECK_CMD_TIMEOUT) below minimum, using $HEALTH_CHECK_CMD_TIMEOUT_MIN"
+              HEALTH_CHECK_CMD_TIMEOUT=$HEALTH_CHECK_CMD_TIMEOUT_MIN
+            fi
+            if [ "$HEALTH_CHECK_CMD_TIMEOUT" -gt "$HEALTH_CHECK_CMD_TIMEOUT_MAX" ]; then
+              echo "⚠️ HEALTH_CHECK_CMD_TIMEOUT ($HEALTH_CHECK_CMD_TIMEOUT) above maximum, using $HEALTH_CHECK_CMD_TIMEOUT_MAX"
+              HEALTH_CHECK_CMD_TIMEOUT=$HEALTH_CHECK_CMD_TIMEOUT_MAX
             fi
 
             echo "🔍 Verifying rollback health for all services..."
