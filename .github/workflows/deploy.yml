@@ -1,5 +1,18 @@
 name: Deploy Docker Compose
 
+# Future Refactoring Recommendations:
+# 1. Extract bash logic into separate composite actions or standalone scripts
+#    - Retry mechanisms (retry.sh, ssh_retry) could be a reusable composite action
+#    - Process_stack function could be extracted to a standalone script
+#    - Validation functions could be moved to a validation composite action
+# 2. Consider splitting deploy and rollback into separate reusable workflows
+#    - Would improve readability and make each workflow easier to maintain
+#    - Could share common functionality via composite actions
+# 3. Abstract common patterns into reusable functions
+#    - Exit code and log handling patterns appear multiple times
+#    - Could create helper functions for result parsing and analysis
+# Note: Current implementation prioritizes single-file simplicity for easier debugging
+
 on:
   workflow_call:
     inputs:
@@ -144,6 +157,34 @@ jobs:
           fi
 
           echo "✅ All input validation passed"
+
+      - name: Verify required tools
+        run: |
+          echo "🔍 Verifying required tools are available..."
+
+          # Check for jq (required for JSON parsing)
+          if ! command -v jq &> /dev/null; then
+            echo "::error::jq is not installed. Installing..."
+            sudo apt-get update -qq
+            sudo apt-get install -y jq
+          fi
+          echo "✅ jq version: $(jq --version)"
+
+          # Check for timeout (required for command timeouts)
+          if ! command -v timeout &> /dev/null; then
+            echo "::error::timeout command is not available"
+            exit 1
+          fi
+          echo "✅ timeout is available (part of coreutils)"
+
+          # Check for readarray (Bash 4.0+ built-in for array operations)
+          if ! declare -p BASH_VERSION &> /dev/null || [ "${BASH_VERSION%%.*}" -lt 4 ]; then
+            echo "::error::Bash 4.0+ is required (current: ${BASH_VERSION:-unknown})"
+            exit 1
+          fi
+          echo "✅ Bash version: $BASH_VERSION (supports readarray and associative arrays)"
+
+          echo "✅ All required tools verified"
 
       - name: Setup retry mechanism
         run: |
@@ -401,18 +442,27 @@ jobs:
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
+            # Consolidate timeout values for easier maintenance
+            # These can be overridden by workflow inputs where available
+            GIT_FETCH_TIMEOUT=${{ inputs.git-fetch-timeout }}
+            GIT_CHECKOUT_TIMEOUT=${{ inputs.git-checkout-timeout }}
+            IMAGE_PULL_TIMEOUT=${{ inputs.image-pull-timeout }}
+            SERVICE_STARTUP_TIMEOUT=${{ inputs.service-startup-timeout }}
+            VALIDATION_ENV_TIMEOUT=${{ inputs.validation-env-timeout }}
+            VALIDATION_SYNTAX_TIMEOUT=${{ inputs.validation-syntax-timeout }}
+
             if [ "$HAS_DOCKGE" = "true" ]; then
               echo "🚀 Deploying Dockge..."
               cd /opt/dockge
 
               # Add timeout protection for Dockge operations
-              if ! timeout 300 op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-                echo "❌ Dockge image pull timed out after 300s"
+              if ! timeout $IMAGE_PULL_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                echo "❌ Dockge image pull timed out after ${IMAGE_PULL_TIMEOUT}s"
                 exit 1
               fi
 
-              if ! timeout 120 op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
-                echo "❌ Dockge startup timed out after 120s"
+              if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                echo "❌ Dockge startup timed out after ${SERVICE_STARTUP_TIMEOUT}s"
                 exit 1
               fi
 
@@ -422,13 +472,13 @@ jobs:
             echo "Updating repository to $TARGET_REF..."
 
             # Add timeout protection to git operations
-            if ! timeout 60 git -C /opt/compose/ fetch; then
-              echo "❌ Git fetch timed out after 60s"
+            if ! timeout $GIT_FETCH_TIMEOUT git -C /opt/compose/ fetch; then
+              echo "❌ Git fetch timed out after ${GIT_FETCH_TIMEOUT}s"
               exit 1
             fi
 
-            if ! timeout 30 git -C /opt/compose/ checkout $TARGET_REF; then
-              echo "❌ Git checkout timed out after 30s"
+            if ! timeout $GIT_CHECKOUT_TIMEOUT git -C /opt/compose/ checkout $TARGET_REF; then
+              echo "❌ Git checkout timed out after ${GIT_CHECKOUT_TIMEOUT}s"
               exit 1
             fi
 
@@ -453,14 +503,14 @@ jobs:
 
                 echo "  Pulling images for $STACK..."
                 # Add timeout protection (5 minutes for image pull)
-                if ! timeout 300 op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                if ! timeout $IMAGE_PULL_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose pull; then
                   echo "❌ Failed to pull images for $STACK during $OPERATION (timeout or error)"
                   return 1
                 fi
 
                 echo "  Starting services for $STACK..."
                 # Add timeout protection (2 minutes for service startup)
-                if ! timeout 120 op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
                   echo "❌ Failed to start services for $STACK during $OPERATION (timeout or error)"
                   return 1
                 fi
@@ -520,14 +570,14 @@ jobs:
                 fi
 
                 # Validate 1Password environment access and Docker Compose config
-                if ! timeout 30 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services >/dev/null 2>&1; then
+                if ! timeout $VALIDATION_ENV_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services >/dev/null 2>&1; then
                   echo "❌ $STACK: Environment validation failed (1Password or compose config error)"
                   validation_failed=true
                   continue
                 fi
 
                 # Quick syntax validation
-                if ! timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --quiet 2>/dev/null; then
+                if ! timeout $VALIDATION_SYNTAX_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --quiet 2>/dev/null; then
                   echo "❌ $STACK: Docker Compose syntax validation failed"
                   validation_failed=true
                   continue
@@ -1137,16 +1187,25 @@ jobs:
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
+            # Consolidate timeout values for easier maintenance
+            # These can be overridden by workflow inputs where available
+            GIT_FETCH_TIMEOUT=${{ inputs.git-fetch-timeout }}
+            GIT_CHECKOUT_TIMEOUT=${{ inputs.git-checkout-timeout }}
+            IMAGE_PULL_TIMEOUT=${{ inputs.image-pull-timeout }}
+            SERVICE_STARTUP_TIMEOUT=${{ inputs.service-startup-timeout }}
+            VALIDATION_ENV_TIMEOUT=${{ inputs.validation-env-timeout }}
+            VALIDATION_SYNTAX_TIMEOUT=${{ inputs.validation-syntax-timeout }}
+
             echo "🔄 Rolling back to $PREVIOUS_SHA..."
 
             # Add timeout protection to git operations
-            if ! timeout 60 git -C /opt/compose/ fetch; then
-              echo "❌ Git fetch timed out after 60s"
+            if ! timeout $GIT_FETCH_TIMEOUT git -C /opt/compose/ fetch; then
+              echo "❌ Git fetch timed out after ${GIT_FETCH_TIMEOUT}s"
               exit 1
             fi
 
-            if ! timeout 30 git -C /opt/compose/ checkout $PREVIOUS_SHA; then
-              echo "❌ Git checkout timed out after 30s"
+            if ! timeout $GIT_CHECKOUT_TIMEOUT git -C /opt/compose/ checkout $PREVIOUS_SHA; then
+              echo "❌ Git checkout timed out after ${GIT_CHECKOUT_TIMEOUT}s"
               exit 1
             fi
 
@@ -1183,13 +1242,13 @@ jobs:
               cd /opt/dockge
 
               # Add timeout protection for Dockge operations
-              if ! timeout 300 op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-                echo "❌ Dockge image pull timed out after 300s"
+              if ! timeout $IMAGE_PULL_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                echo "❌ Dockge image pull timed out after ${IMAGE_PULL_TIMEOUT}s"
                 exit 1
               fi
 
-              if ! timeout 120 op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
-                echo "❌ Dockge startup timed out after 120s"
+              if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                echo "❌ Dockge startup timed out after ${SERVICE_STARTUP_TIMEOUT}s"
                 exit 1
               fi
 
@@ -1215,14 +1274,14 @@ jobs:
 
                 echo "  Pulling images for $STACK..."
                 # Add timeout protection (5 minutes for image pull)
-                if ! timeout 300 op run --env-file=/opt/compose/compose.env -- docker compose pull; then
+                if ! timeout $IMAGE_PULL_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose pull; then
                   echo "❌ Failed to pull images for $STACK during $OPERATION (timeout or error)"
                   return 1
                 fi
 
                 echo "  Starting services for $STACK..."
                 # Add timeout protection (2 minutes for service startup)
-                if ! timeout 120 op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+                if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
                   echo "❌ Failed to start services for $STACK during $OPERATION (timeout or error)"
                   return 1
                 fi
@@ -1291,14 +1350,14 @@ jobs:
                 fi
 
                 # Validate 1Password environment access and Docker Compose config
-                if ! timeout 30 op run --env-file=/opt/compose/compose.env -- docker compose -f "$COMPOSE_FILE" config --services >/dev/null 2>&1; then
+                if ! timeout $VALIDATION_ENV_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f "$COMPOSE_FILE" config --services >/dev/null 2>&1; then
                   echo "❌ $STACK: Environment validation failed (1Password or compose config error)"
                   validation_failed=true
                   continue
                 fi
 
                 # Quick syntax validation
-                if ! timeout 15 op run --env-file=/opt/compose/compose.env -- docker compose -f "$COMPOSE_FILE" config --quiet 2>/dev/null; then
+                if ! timeout $VALIDATION_SYNTAX_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f "$COMPOSE_FILE" config --quiet 2>/dev/null; then
                   echo "❌ $STACK: Docker Compose syntax validation failed"
                   validation_failed=true
                   continue
