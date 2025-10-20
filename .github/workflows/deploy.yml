@@ -57,6 +57,7 @@ jobs:
       cleanup_status: ${{ steps.cleanup.outcome }}
       rollback_status: ${{ steps.rollback.outcome }}
       rollback_health_status: ${{ steps.rollback-health.outcome }}
+      discovered_rollback_stacks: ${{ steps.rollback.outputs.discovered_rollback_stacks }}
       healthy_stacks: ${{ steps.health.outputs.healthy_stacks }}
       degraded_stacks: ${{ steps.health.outputs.degraded_stacks }}
       failed_stacks: ${{ steps.health.outputs.failed_stacks }}
@@ -411,31 +412,48 @@ jobs:
             git -C /opt/compose/ fetch
             git -C /opt/compose/ checkout $TARGET_REF
 
-            # Function to deploy a single stack
-            deploy_stack() {
+            # Shared function to deploy or rollback a single stack
+            # This eliminates code duplication between deploy and rollback operations
+            process_stack() {
               local STACK=$1
-              local LOGFILE="/tmp/deploy_${STACK}.log"
+              local OPERATION=$2  # "deploy" or "rollback"
+              local LOGFILE="/tmp/${OPERATION}_${STACK}.log"
+
               {
-                echo "🚀 Deploying $STACK..."
+                if [ "$OPERATION" = "deploy" ]; then
+                  echo "🚀 Deploying $STACK..."
+                else
+                  echo "🔄 Rolling back $STACK..."
+                fi
+
                 cd /opt/compose/$STACK
 
                 echo "  Pulling images for $STACK..."
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-                  echo "❌ Failed to pull images for $STACK"
+                  echo "❌ Failed to pull images for $STACK during $OPERATION"
                   return 1
                 fi
 
                 echo "  Starting services for $STACK..."
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
-                  echo "❌ Failed to start services for $STACK"
+                  echo "❌ Failed to start services for $STACK during $OPERATION"
                   return 1
                 fi
 
-                echo "✅ $STACK deployed successfully"
+                if [ "$OPERATION" = "deploy" ]; then
+                  echo "✅ $STACK deployed successfully"
+                else
+                  echo "✅ $STACK rolled back successfully"
+                fi
                 return 0
               } > "$LOGFILE" 2>&1
 
               return $?
+            }
+
+            # Wrapper function for deploy (maintains backward compatibility)
+            deploy_stack() {
+              process_stack "$1" "deploy"
             }
 
             # Cleanup function for deploy logs
@@ -1047,7 +1065,27 @@ jobs:
           PREVIOUS_SHA="${{ steps.backup.outputs.previous_sha }}"
           COMPOSE_ARGS="${{ inputs.args || '' }}"
 
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s "$HAS_DOCKGE" "$PREVIOUS_SHA" "$COMPOSE_ARGS" << 'EOF'
+          # Validate PREVIOUS_SHA before attempting rollback
+          if [ "$PREVIOUS_SHA" = "unknown" ] || [ -z "$PREVIOUS_SHA" ]; then
+            echo "❌ Cannot rollback: No previous deployment exists (first deployment)"
+            echo "::error::Rollback failed - no previous deployment to rollback to"
+            exit 1
+          fi
+
+          # Validate SHA format (full 40-char SHA)
+          if ! [[ "$PREVIOUS_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
+            echo "❌ Cannot rollback: Invalid previous SHA format: $PREVIOUS_SHA"
+            echo "::error::Rollback failed - invalid SHA format"
+            exit 1
+          fi
+
+          echo "✅ Previous SHA validation passed: $PREVIOUS_SHA"
+
+          # Source retry functions
+          source /tmp/retry.sh
+
+          # Use retry mechanism for SSH connection (same as deploy) and capture output
+          ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$HAS_DOCKGE\" \"$PREVIOUS_SHA\" \"$COMPOSE_ARGS\"" << 'EOF'
             set -e
 
             # Get arguments passed to script (excluding sensitive OP_TOKEN)
@@ -1081,6 +1119,11 @@ jobs:
 
             echo "📋 Stacks to rollback:$ROLLBACK_STACKS"
 
+            # Output discovered stacks for rollback-health step
+            echo "ROLLBACK_GITHUB_OUTPUT_START"
+            echo "discovered_rollback_stacks=$ROLLBACK_STACKS"
+            echo "ROLLBACK_GITHUB_OUTPUT_END"
+
             # Deploy Dockge first if needed
             if [ "$HAS_DOCKGE" = "true" ]; then
               echo "🔄 Rolling back Dockge..."
@@ -1090,31 +1133,48 @@ jobs:
               echo "✅ Dockge rolled back successfully"
             fi
 
-            # Function to rollback a single stack (same pattern as deploy)
-            rollback_stack() {
+            # Shared function to deploy or rollback a single stack
+            # This eliminates code duplication between deploy and rollback operations
+            process_stack() {
               local STACK=$1
-              local LOGFILE="/tmp/rollback_${STACK}.log"
+              local OPERATION=$2  # "deploy" or "rollback"
+              local LOGFILE="/tmp/${OPERATION}_${STACK}.log"
+
               {
-                echo "🔄 Rolling back $STACK..."
+                if [ "$OPERATION" = "deploy" ]; then
+                  echo "🚀 Deploying $STACK..."
+                else
+                  echo "🔄 Rolling back $STACK..."
+                fi
+
                 cd /opt/compose/$STACK
 
                 echo "  Pulling images for $STACK..."
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-                  echo "❌ Failed to pull images for $STACK during rollback"
+                  echo "❌ Failed to pull images for $STACK during $OPERATION"
                   return 1
                 fi
 
                 echo "  Starting services for $STACK..."
                 if ! op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
-                  echo "❌ Failed to start services for $STACK during rollback"
+                  echo "❌ Failed to start services for $STACK during $OPERATION"
                   return 1
                 fi
 
-                echo "✅ $STACK rolled back successfully"
+                if [ "$OPERATION" = "deploy" ]; then
+                  echo "✅ $STACK deployed successfully"
+                else
+                  echo "✅ $STACK rolled back successfully"
+                fi
                 return 0
               } > "$LOGFILE" 2>&1
 
               return $?
+            }
+
+            # Wrapper function for rollback (uses shared process_stack)
+            rollback_stack() {
+              process_stack "$1" "rollback"
             }
 
             # Cleanup function for rollback logs
@@ -1141,20 +1201,52 @@ jobs:
             # Wait for all rollback deployments and collect results
             echo "⏳ Waiting for all rollbacks to complete..."
             FAILED_ROLLBACKS=""
+            ROLLBACK_ERRORS=""
 
-            # Wait for all background jobs
-            wait
+            # Enhanced parallel job monitoring with proper error propagation
+            echo "⏳ Monitoring parallel rollback operations..."
 
-            # Check rollback results from log files
+            # Wait for jobs individually to capture exit codes
+            for PID in $ROLLBACK_PIDS; do
+              if wait "$PID"; then
+                echo "✅ Rollback process $PID completed successfully"
+              else
+                EXIT_CODE=$?
+                echo "❌ Rollback process $PID failed with exit code $EXIT_CODE"
+                ROLLBACK_ERRORS="$ROLLBACK_ERRORS PID:$PID:$EXIT_CODE"
+              fi
+            done
+
+            # Enhanced result analysis from log files
             ROLLED_BACK_STACKS=""
+            SUCCESSFUL_ROLLBACKS=""
             for STACK in $ROLLBACK_STACKS; do
               if [ -f "/tmp/rollback_${STACK}.log" ]; then
                 ROLLED_BACK_STACKS="$ROLLED_BACK_STACKS $STACK"
-                if grep -q "❌.*$STACK.*rollback" "/tmp/rollback_${STACK}.log"; then
+
+                # More comprehensive error detection (matching deploy pattern)
+                if grep -q "❌.*$STACK\|CRITICAL.*$STACK\|Failed.*$STACK\|Error.*$STACK" "/tmp/rollback_${STACK}.log"; then
                   FAILED_ROLLBACKS="$FAILED_ROLLBACKS $STACK"
+                  # Extract specific error for reporting
+                  STACK_ERROR=$(grep -E "❌.*$STACK|CRITICAL.*$STACK|Failed.*$STACK|Error.*$STACK" "/tmp/rollback_${STACK}.log" | head -1)
+                  echo "🔍 $STACK Rollback Error: $STACK_ERROR"
+                elif grep -q "✅.*$STACK\|Successfully.*$STACK" "/tmp/rollback_${STACK}.log"; then
+                  SUCCESSFUL_ROLLBACKS="$SUCCESSFUL_ROLLBACKS $STACK"
                 fi
+              else
+                echo "⚠️ $STACK: No rollback log found - possible early failure"
+                FAILED_ROLLBACKS="$FAILED_ROLLBACKS $STACK"
               fi
             done
+
+            # Summary of rollback results
+            echo ""
+            echo "📊 Rollback Summary:"
+            echo "  Successful: $(echo $SUCCESSFUL_ROLLBACKS | wc -w | tr -d ' ') stacks"
+            echo "  Failed: $(echo $FAILED_ROLLBACKS | wc -w | tr -d ' ') stacks"
+            if [ -n "$ROLLBACK_ERRORS" ]; then
+              echo "  Process errors: $ROLLBACK_ERRORS"
+            fi
 
             # Display all rollback logs
             echo ""
@@ -1191,6 +1283,21 @@ jobs:
 
             echo "🎉 All stacks rolled back successfully!"
           EOF
+          )
+
+          # Extract rollback result and discovered stacks
+          echo "$ROLLBACK_RESULT"
+
+          # Parse discovered stacks output for rollback-health step
+          if echo "$ROLLBACK_RESULT" | grep -q "ROLLBACK_GITHUB_OUTPUT_START"; then
+            DISCOVERED_STACKS=$(echo "$ROLLBACK_RESULT" | sed -n '/ROLLBACK_GITHUB_OUTPUT_START/,/ROLLBACK_GITHUB_OUTPUT_END/p' | grep "discovered_rollback_stacks=" | cut -d'=' -f2-)
+            echo "discovered_rollback_stacks=$DISCOVERED_STACKS" >> $GITHUB_OUTPUT
+            echo "✅ Captured discovered rollback stacks: $DISCOVERED_STACKS"
+          else
+            echo "⚠️ Could not parse discovered stacks, will use input stacks as fallback"
+            echo "discovered_rollback_stacks=${{ join(fromJSON(inputs.stacks), ' ') }}" >> $GITHUB_OUTPUT
+          fi
+
           echo "::endgroup::"
 
       - name: Verify Rollback Health
@@ -1203,8 +1310,18 @@ jobs:
           # Source retry functions
           source /tmp/retry.sh
 
-          # Parse inputs outside SSH context
-          STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
+          # Use discovered rollback stacks instead of input stacks
+          # This ensures we check the stacks that were actually rolled back (from previous commit)
+          DISCOVERED_STACKS="${{ steps.rollback.outputs.discovered_rollback_stacks }}"
+          if [ -n "$DISCOVERED_STACKS" ]; then
+            STACKS="$DISCOVERED_STACKS"
+            echo "✅ Using discovered rollback stacks: $STACKS"
+          else
+            # Fallback to input stacks if discovery failed
+            STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
+            echo "⚠️ Using input stacks as fallback: $STACKS"
+          fi
+
           HAS_DOCKGE="${{ inputs.has-dockge }}"
 
           # Execute rollback health check
