@@ -182,6 +182,7 @@ jobs:
             local delay=$2
             local ssh_cmd="${@:3}"
             local attempt=1
+            local last_exit_code=1
 
             while [ $attempt -le $max_attempts ]; do
               echo "SSH Attempt $attempt of $max_attempts"
@@ -189,14 +190,14 @@ jobs:
                 echo "✅ SSH command succeeded on attempt $attempt"
                 return 0
               else
-                local exit_code=$?
-                echo "❌ SSH command failed on attempt $attempt (exit code: $exit_code)"
+                last_exit_code=$?
+                echo "❌ SSH command failed on attempt $attempt (exit code: $last_exit_code)"
 
                 # Check for specific SSH errors
-                case $exit_code in
+                case $last_exit_code in
                   255) echo "SSH connection error - network/auth issue" ;;
                   1) echo "General SSH error" ;;
-                  *) echo "Unknown error code: $exit_code" ;;
+                  *) echo "Unknown error code: $last_exit_code" ;;
                 esac
 
                 if [ $attempt -lt $max_attempts ]; then
@@ -207,8 +208,8 @@ jobs:
               fi
             done
 
-            echo "💥 SSH command failed after $max_attempts attempts"
-            return 1
+            echo "💥 SSH command failed after $max_attempts attempts (final exit code: $last_exit_code)"
+            return $last_exit_code
           }
           EOF
           chmod +x /tmp/retry.sh
@@ -439,6 +440,7 @@ jobs:
               local STACK=$1
               local OPERATION=$2  # "deploy" or "rollback"
               local LOGFILE="/tmp/${OPERATION}_${STACK}.log"
+              local EXITCODEFILE="/tmp/${OPERATION}_${STACK}.exitcode"
 
               {
                 if [ "$OPERATION" = "deploy" ]; then
@@ -471,7 +473,10 @@ jobs:
                 return 0
               } > "$LOGFILE" 2>&1
 
-              return $?
+              # Capture and save exit code for robust error detection
+              local exit_code=$?
+              echo "$exit_code" > "$EXITCODEFILE"
+              return $exit_code
             }
 
             # Wrapper function for deploy (maintains backward compatibility)
@@ -583,19 +588,30 @@ jobs:
               fi
             done
 
-            # Enhanced result analysis from log files
+            # Enhanced result analysis using exit code files (more robust than log parsing)
             for STACK in $STACKS; do
               if [ -f "/tmp/deploy_${STACK}.log" ]; then
                 DEPLOYED_STACKS="$DEPLOYED_STACKS $STACK"
 
-                # More comprehensive error detection
-                if grep -q "❌.*$STACK\|CRITICAL.*$STACK\|Failed.*$STACK\|Error.*$STACK" "/tmp/deploy_${STACK}.log"; then
-                  FAILED_STACKS="$FAILED_STACKS $STACK"
-                  # Extract specific error for reporting
-                  STACK_ERROR=$(grep -E "❌.*$STACK|CRITICAL.*$STACK|Failed.*$STACK|Error.*$STACK" "/tmp/deploy_${STACK}.log" | head -1)
-                  echo "🔍 $STACK Error: $STACK_ERROR"
-                elif grep -q "✅.*$STACK\|Successfully.*$STACK" "/tmp/deploy_${STACK}.log"; then
-                  SUCCESSFUL_STACKS="$SUCCESSFUL_STACKS $STACK"
+                # Primary: Check exit code file for robust error detection
+                if [ -f "/tmp/deploy_${STACK}.exitcode" ]; then
+                  EXIT_CODE=$(cat "/tmp/deploy_${STACK}.exitcode")
+                  if [ "$EXIT_CODE" -eq 0 ]; then
+                    SUCCESSFUL_STACKS="$SUCCESSFUL_STACKS $STACK"
+                  else
+                    FAILED_STACKS="$FAILED_STACKS $STACK"
+                    echo "🔍 $STACK Error: Non-zero exit code ($EXIT_CODE)"
+                  fi
+                else
+                  # Fallback: Log-based error detection if exit code file is missing
+                  if grep -q "❌.*$STACK\|CRITICAL.*$STACK\|Failed.*$STACK\|Error.*$STACK" "/tmp/deploy_${STACK}.log"; then
+                    FAILED_STACKS="$FAILED_STACKS $STACK"
+                    # Extract specific error for reporting
+                    STACK_ERROR=$(grep -E "❌.*$STACK|CRITICAL.*$STACK|Failed.*$STACK|Error.*$STACK" "/tmp/deploy_${STACK}.log" | head -1)
+                    echo "🔍 $STACK Error: $STACK_ERROR"
+                  elif grep -q "✅.*$STACK\|Successfully.*$STACK" "/tmp/deploy_${STACK}.log"; then
+                    SUCCESSFUL_STACKS="$SUCCESSFUL_STACKS $STACK"
+                  fi
                 fi
               else
                 echo "⚠️ $STACK: No deployment log found - possible early failure"
@@ -854,8 +870,8 @@ jobs:
             # Parse critical services list
             CRITICAL_SERVICES_ARRAY=""
             if [ -n "$CRITICAL_SERVICES" ] && [ "$CRITICAL_SERVICES" != "[]" ]; then
-              # Convert JSON array to bash array (simple approach)
-              CRITICAL_SERVICES_ARRAY=$(echo "$CRITICAL_SERVICES" | sed 's/\[\|\]\|"//g' | tr ',' ' ')
+              # Convert JSON array to bash array using jq for robust parsing
+              CRITICAL_SERVICES_ARRAY=$(echo "$CRITICAL_SERVICES" | jq -r '.[] | @sh' | tr -d "'" | tr '\n' ' ')
               echo "🚨 Critical services configured: $CRITICAL_SERVICES_ARRAY"
             fi
 
@@ -1185,6 +1201,7 @@ jobs:
               local STACK=$1
               local OPERATION=$2  # "deploy" or "rollback"
               local LOGFILE="/tmp/${OPERATION}_${STACK}.log"
+              local EXITCODEFILE="/tmp/${OPERATION}_${STACK}.exitcode"
 
               {
                 if [ "$OPERATION" = "deploy" ]; then
@@ -1217,7 +1234,10 @@ jobs:
                 return 0
               } > "$LOGFILE" 2>&1
 
-              return $?
+              # Capture and save exit code for robust error detection
+              local exit_code=$?
+              echo "$exit_code" > "$EXITCODEFILE"
+              return $exit_code
             }
 
             # Wrapper function for rollback (uses shared process_stack)
@@ -1326,21 +1346,32 @@ jobs:
               fi
             done
 
-            # Enhanced result analysis from log files
+            # Enhanced result analysis using exit code files (more robust than log parsing)
             ROLLED_BACK_STACKS=""
             SUCCESSFUL_ROLLBACKS=""
             for STACK in $ROLLBACK_STACKS; do
               if [ -f "/tmp/rollback_${STACK}.log" ]; then
                 ROLLED_BACK_STACKS="$ROLLED_BACK_STACKS $STACK"
 
-                # More comprehensive error detection (matching deploy pattern)
-                if grep -q "❌.*$STACK\|CRITICAL.*$STACK\|Failed.*$STACK\|Error.*$STACK" "/tmp/rollback_${STACK}.log"; then
-                  FAILED_ROLLBACKS="$FAILED_ROLLBACKS $STACK"
-                  # Extract specific error for reporting
-                  STACK_ERROR=$(grep -E "❌.*$STACK|CRITICAL.*$STACK|Failed.*$STACK|Error.*$STACK" "/tmp/rollback_${STACK}.log" | head -1)
-                  echo "🔍 $STACK Rollback Error: $STACK_ERROR"
-                elif grep -q "✅.*$STACK\|Successfully.*$STACK" "/tmp/rollback_${STACK}.log"; then
-                  SUCCESSFUL_ROLLBACKS="$SUCCESSFUL_ROLLBACKS $STACK"
+                # Primary: Check exit code file for robust error detection
+                if [ -f "/tmp/rollback_${STACK}.exitcode" ]; then
+                  EXIT_CODE=$(cat "/tmp/rollback_${STACK}.exitcode")
+                  if [ "$EXIT_CODE" -eq 0 ]; then
+                    SUCCESSFUL_ROLLBACKS="$SUCCESSFUL_ROLLBACKS $STACK"
+                  else
+                    FAILED_ROLLBACKS="$FAILED_ROLLBACKS $STACK"
+                    echo "🔍 $STACK Rollback Error: Non-zero exit code ($EXIT_CODE)"
+                  fi
+                else
+                  # Fallback: Log-based error detection if exit code file is missing
+                  if grep -q "❌.*$STACK\|CRITICAL.*$STACK\|Failed.*$STACK\|Error.*$STACK" "/tmp/rollback_${STACK}.log"; then
+                    FAILED_ROLLBACKS="$FAILED_ROLLBACKS $STACK"
+                    # Extract specific error for reporting
+                    STACK_ERROR=$(grep -E "❌.*$STACK|CRITICAL.*$STACK|Failed.*$STACK|Error.*$STACK" "/tmp/rollback_${STACK}.log" | head -1)
+                    echo "🔍 $STACK Rollback Error: $STACK_ERROR"
+                  elif grep -q "✅.*$STACK\|Successfully.*$STACK" "/tmp/rollback_${STACK}.log"; then
+                    SUCCESSFUL_ROLLBACKS="$SUCCESSFUL_ROLLBACKS $STACK"
+                  fi
                 fi
               else
                 echo "⚠️ $STACK: No rollback log found - possible early failure"
@@ -1436,6 +1467,10 @@ jobs:
 
           echo "::endgroup::"
 
+      # Health check runs after rollback attempt regardless of rollback success/failure
+      # This is intentional: we need to know the final system state even if rollback fails
+      # Using 'conclusion != skipped' instead of 'outcome == success' ensures we get
+      # visibility into what services are running, which is critical for incident response
       - name: Verify Rollback Health
         id: rollback-health
         if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure') && steps.rollback.conclusion != 'skipped'
