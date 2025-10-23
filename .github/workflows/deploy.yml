@@ -51,11 +51,46 @@ on:
         required: false
         type: number
         default: 180
+      health-check-command-timeout:
+        description: "Individual health check command timeout in seconds (default: 15)"
+        required: false
+        type: number
+        default: 15
       critical-services:
         description: "JSON array of critical service names that should trigger early exit on failure"
         required: false
         type: string
         default: '[]'
+      git-fetch-timeout:
+        description: "Git fetch operation timeout in seconds (default: 300)"
+        required: false
+        type: number
+        default: 300
+      git-checkout-timeout:
+        description: "Git checkout operation timeout in seconds (default: 60)"
+        required: false
+        type: number
+        default: 60
+      image-pull-timeout:
+        description: "Docker image pull timeout in seconds (default: 600)"
+        required: false
+        type: number
+        default: 600
+      service-startup-timeout:
+        description: "Service startup timeout in seconds (default: 300)"
+        required: false
+        type: number
+        default: 300
+      validation-env-timeout:
+        description: "Environment validation timeout in seconds (default: 30)"
+        required: false
+        type: number
+        default: 30
+      validation-syntax-timeout:
+        description: "Syntax validation timeout in seconds (default: 60)"
+        required: false
+        type: number
+        default: 60
 
 jobs:
   deploy:
