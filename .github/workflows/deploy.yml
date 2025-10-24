@@ -795,6 +795,10 @@ jobs:
             # Set OP_TOKEN via environment (passed separately)
             export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
 
+            # Set timeout configuration with defaults
+            HEALTH_CHECK_TIMEOUT=${{ inputs.health-check-timeout }}
+            HEALTH_CHECK_CMD_TIMEOUT=${{ inputs.health-check-command-timeout }}
+
             # Enhanced health check with exponential backoff
             echo "🔍 Starting enhanced health check with exponential backoff..."
 
