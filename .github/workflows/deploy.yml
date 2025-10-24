@@ -316,7 +316,7 @@ jobs:
           TAILSCALE_OAUTH_SECRET: "op://Docker/tailscale-oauth/secret"
 
       - name: Connect to Tailnet
-        uses: tailscale/github-action@aa604318b61e5b25107287e0d07db6a08b3e72c0  # v4.0.2
+        uses: tailscale/github-action@3a217367cadc62d7600a77470ffe542e2313e6b9  # v4.0.3
         with:
           oauth-client-id: ${{ steps.load-tailscale-credentials.outputs.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ steps.load-tailscale-credentials.outputs.TAILSCALE_OAUTH_SECRET }}
