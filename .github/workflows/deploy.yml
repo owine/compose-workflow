@@ -1159,31 +1159,6 @@ jobs:
           # Extract health outputs from structured result
           echo "$HEALTH_RESULT"
 
-          # DEBUG: Show detailed health check output analysis
-          echo "::group::🔍 DEBUG - Health Check Output Analysis"
-          echo "📊 Total output length: ${#HEALTH_RESULT} characters"
-          echo "📊 Output line count: $(echo "$HEALTH_RESULT" | wc -l)"
-          echo ""
-          echo "🔎 Checking for GITHUB_OUTPUT_START marker:"
-          if echo "$HEALTH_RESULT" | grep -q "GITHUB_OUTPUT_START"; then
-            echo "✅ GITHUB_OUTPUT_START marker FOUND"
-          else
-            echo "❌ GITHUB_OUTPUT_START marker NOT FOUND"
-          fi
-          echo ""
-          echo "🔎 Checking for GITHUB_OUTPUT_END marker:"
-          if echo "$HEALTH_RESULT" | grep -q "GITHUB_OUTPUT_END"; then
-            echo "✅ GITHUB_OUTPUT_END marker FOUND"
-          else
-            echo "❌ GITHUB_OUTPUT_END marker NOT FOUND"
-          fi
-          echo ""
-          echo "📝 Last 50 lines of health check output:"
-          echo "────────────────────────────────────────"
-          echo "$HEALTH_RESULT" | tail -50
-          echo "────────────────────────────────────────"
-          echo "::endgroup::"
-
           # Parse outputs without temporary files
           if echo "$HEALTH_RESULT" | grep -q "GITHUB_OUTPUT_START"; then
             echo "$HEALTH_RESULT" | sed -n '/GITHUB_OUTPUT_START/,/GITHUB_OUTPUT_END/p' | grep -E "^(healthy_stacks|degraded_stacks|failed_stacks|total_containers|running_containers|success_rate)=" >> $GITHUB_OUTPUT
@@ -1194,15 +1169,6 @@ jobs:
 
             if [ -n "$TEMP_FILE_CONTENT" ]; then
               echo "✅ Successfully read outputs from temp file"
-              echo "::group::🔍 DEBUG - Temp File Content"
-              echo "📊 Temp file content length: ${#TEMP_FILE_CONTENT} characters"
-              echo "📊 Temp file line count: $(echo "$TEMP_FILE_CONTENT" | wc -l)"
-              echo ""
-              echo "📝 Full temp file content:"
-              echo "────────────────────────────────────────"
-              echo "$TEMP_FILE_CONTENT"
-              echo "────────────────────────────────────────"
-              echo "::endgroup::"
               echo "$TEMP_FILE_CONTENT" >> $GITHUB_OUTPUT
             else
               echo "❌ Could not read temp file, using fallback outputs"
