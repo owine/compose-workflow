@@ -929,18 +929,6 @@ jobs:
               return 1
             }
 
-            # Function to restore output for successful health checks
-            restore_output_on_success() {
-              local stack=$1
-              local result=$2
-
-              # Restore stdout/stderr
-              exec 1>&3 2>&4
-              exec 3>&- 4>&-
-
-              return $result
-            }
-
             FAILED_STACKS=""
             DEGRADED_STACKS=""
             HEALTHY_STACKS=""
@@ -1009,12 +997,12 @@ jobs:
 
               case $HEALTH_RESULT in
                 0)
-                  restore_output_on_success "$STACK" $HEALTH_RESULT
+                  # Output already restored in health_check_with_retry
                   echo "✅ $STACK: Healthy"
                   HEALTHY_STACKS="$HEALTHY_STACKS $STACK"
                   ;;
                 2)
-                  restore_output_on_success "$STACK" $HEALTH_RESULT
+                  # Output already restored in health_check_with_retry
                   echo "⚠️ $STACK: Degraded but stable"
                   DEGRADED_STACKS="$DEGRADED_STACKS $STACK"
                   # Check if degraded stack is critical
