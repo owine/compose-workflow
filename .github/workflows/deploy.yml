@@ -91,6 +91,11 @@ on:
         required: false
         type: number
         default: 60
+      discord-user-id:
+        description: "Discord user ID to mention in failure notifications (e.g., '<@123456789>')"
+        required: false
+        type: string
+        default: ''
 
 jobs:
   deploy:
@@ -1907,13 +1912,14 @@ jobs:
           echo "message=$COMMIT_MSG" >> $GITHUB_OUTPUT
           echo "short-sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
-      - name: Load Discord webhook
+      - name: Load Discord webhook and user ID
         id: op-load-discord
         uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
         with:
           unset-previous: true
         env:
           DISCORD_WEBHOOK: ${{ inputs.webhook-url }}
+          DISCORD_USER_ID: ${{ inputs.discord-user-id != '' && inputs.discord-user-id || 'SKIP' }}
 
       - name: Send Discord notification
         uses: sarisia/actions-status-discord@11a0bfe3b50977e38aa2bd4a4ebd296415e83c19  # v1.15.4
@@ -1922,7 +1928,7 @@ jobs:
           status: ${{ needs.deploy.outputs.deployment_needed != 'true' && 'success' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
           title: "🚀 ${{ inputs.repo-name }} • ${{ needs.deploy.outputs.deployment_needed != 'true' && 'No Changes' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'Deployed' || needs.deploy.outputs.rollback_status == 'success' && 'Rolled Back' || 'Failed' }}"
           description: |
-            ${{ needs.deploy.outputs.deployment_needed != 'true' && '📋 **Repository already at target commit**' ||
+            ${{ (needs.deploy.outputs.deploy_status == 'failure' || needs.deploy.outputs.health_status == 'failure' || needs.deploy.result == 'failure') && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}> ', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}${{ needs.deploy.outputs.deployment_needed != 'true' && '📋 **Repository already at target commit**' ||
             inputs.force-deploy == true && needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '🔄 **Force deployment completed successfully**' ||
             needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ **Deployment completed successfully**' ||
             needs.deploy.outputs.rollback_status == 'success' && '🔄 **Deployment failed but rolled back successfully**' || '❌ **Deployment failed**' }}
