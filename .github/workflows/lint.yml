@@ -49,6 +49,11 @@ on:
         required: false
         type: string
         default: 'push'
+      discord-user-id:
+        description: "Discord user ID to mention in failure notifications (e.g., '<@123456789>')"
+        required: false
+        type: string
+        default: ''
 
 jobs:
   scanning:
@@ -526,13 +531,14 @@ jobs:
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
-      - name: Load Discord webhook
+      - name: Load Discord webhook and user ID
         id: op-load-discord
         uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
         with:
           unset-previous: true
         env:
           DISCORD_WEBHOOK: ${{ inputs.webhook-url }}
+          DISCORD_USER_ID: ${{ inputs.discord-user-id != '' && inputs.discord-user-id || 'SKIP' }}
 
       - name: Send Discord notification
         uses: sarisia/actions-status-discord@11a0bfe3b50977e38aa2bd4a4ebd296415e83c19  # v1.15.4
@@ -542,7 +548,7 @@ jobs:
           status: ${{ needs.lint-summary.result == 'success' && 'success' || 'failure' }}
           title: "🔍 ${{ inputs.repo-name }} • ${{ needs.lint-summary.result == 'success' && 'Validation Passed' || 'Validation Failed' }}"
           description: |
-            ${{ needs.lint-summary.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
+            ${{ needs.lint-summary.result == 'failure' && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}> ', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}${{ needs.lint-summary.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
 
             **🔒 Security Scan:** ${{ needs.scanning.result == 'success' && '✅ No secrets detected' || needs.scanning.result == 'skipped' && '⏭️ Skipped (PR/manual)' || '❌ Issues found' }}
             **📋 Code Quality:** ${{ needs.lint.result == 'success' && '✅ All stacks valid' || '❌ Issues detected' }}
