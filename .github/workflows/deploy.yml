@@ -545,14 +545,14 @@ jobs:
                 # Add timeout protection (5 minutes for image pull)
                 if ! timeout $IMAGE_PULL_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose pull; then
                   echo "❌ Failed to pull images for $STACK during $OPERATION (timeout or error)"
-                  return 1
+                  exit 1
                 fi
 
                 echo "  Starting services for $STACK..."
                 # Add timeout protection (2 minutes for service startup)
                 if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
                   echo "❌ Failed to start services for $STACK during $OPERATION (timeout or error)"
-                  return 1
+                  exit 1
                 fi
 
                 if [ "$OPERATION" = "deploy" ]; then
@@ -560,7 +560,6 @@ jobs:
                 else
                   echo "✅ $STACK rolled back successfully"
                 fi
-                return 0
               } > "$LOGFILE" 2>&1
 
               # Capture and save exit code for robust error detection
@@ -1327,14 +1326,14 @@ jobs:
                 # Add timeout protection (5 minutes for image pull)
                 if ! timeout $IMAGE_PULL_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose pull; then
                   echo "❌ Failed to pull images for $STACK during $OPERATION (timeout or error)"
-                  return 1
+                  exit 1
                 fi
 
                 echo "  Starting services for $STACK..."
                 # Add timeout protection (2 minutes for service startup)
                 if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
                   echo "❌ Failed to start services for $STACK during $OPERATION (timeout or error)"
-                  return 1
+                  exit 1
                 fi
 
                 if [ "$OPERATION" = "deploy" ]; then
@@ -1342,7 +1341,6 @@ jobs:
                 else
                   echo "✅ $STACK rolled back successfully"
                 fi
-                return 0
               } > "$LOGFILE" 2>&1
 
               # Capture and save exit code for robust error detection
