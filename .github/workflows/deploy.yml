@@ -1923,10 +1923,10 @@ jobs:
         uses: sarisia/actions-status-discord@b8381b25576cb341b2af39926ab42c5056cc44ed  # v1.15.5
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
-          status: ${{ needs.deploy.outputs.deployment_needed != 'true' && 'success' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
-          title: "🚀 ${{ inputs.repo-name }} • ${{ needs.deploy.outputs.deployment_needed != 'true' && 'No Changes' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'Deployed' || needs.deploy.outputs.rollback_status == 'success' && 'Rolled Back' || 'Failed' }}"
+          status: ${{ needs.deploy.result == 'success' && needs.deploy.outputs.deployment_needed != 'true' && 'success' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
+          title: "🚀 ${{ inputs.repo-name }} • ${{ needs.deploy.result == 'success' && needs.deploy.outputs.deployment_needed != 'true' && 'No Changes' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'Deployed' || needs.deploy.outputs.rollback_status == 'success' && 'Rolled Back' || 'Failed' }}"
           description: |
-            ${{ (needs.deploy.outputs.deploy_status == 'failure' || needs.deploy.outputs.health_status == 'failure' || needs.deploy.result == 'failure') && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}> ', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}${{ needs.deploy.outputs.deployment_needed != 'true' && '📋 **Repository already at target commit**' ||
+            ${{ (needs.deploy.outputs.deploy_status == 'failure' || needs.deploy.outputs.health_status == 'failure' || needs.deploy.result == 'failure') && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}> ', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}${{ needs.deploy.result == 'success' && needs.deploy.outputs.deployment_needed != 'true' && '📋 **Repository already at target commit**' ||
             inputs.force-deploy == true && needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '🔄 **Force deployment completed successfully**' ||
             needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && '✅ **Deployment completed successfully**' ||
             needs.deploy.outputs.rollback_status == 'success' && '🔄 **Deployment failed but rolled back successfully**' || '❌ **Deployment failed**' }}
@@ -1971,7 +1971,7 @@ jobs:
             ${{ github.event_name == 'workflow_dispatch' && '🔧 **Triggered manually**' || format('📝 **Commit:** [`{0}`](https://github.com/{1}/commit/{2}) {3}', steps.commit-msg.outputs.short-sha, github.repository, inputs.target-ref, steps.commit-msg.outputs.message) }}
 
             **⏱️ Duration:** ${{ github.event_name != 'workflow_dispatch' && '3min' || 'Manual' }}
-          color: ${{ needs.deploy.outputs.deployment_needed != 'true' && 0x6c757d ||
+          color: ${{ needs.deploy.result == 'success' && needs.deploy.outputs.deployment_needed != 'true' && 0x6c757d ||
             needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 0x28a745 ||
             needs.deploy.outputs.rollback_status == 'success' && 0xffc107 ||
             needs.deploy.outputs.degraded_stacks != '' && 0xfd7e14 || 0xdc3545 }}
