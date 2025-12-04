@@ -123,6 +123,8 @@ jobs:
       rollback_total_containers: ${{ steps.rollback-health.outputs.rollback_total_containers }}
       rollback_running_containers: ${{ steps.rollback-health.outputs.rollback_running_containers }}
       rollback_success_rate: ${{ steps.rollback-health.outputs.rollback_success_rate }}
+      removed_stacks: ${{ steps.cleanup-removed.outputs.removed_stacks }}
+      has_removed_stacks: ${{ steps.cleanup-removed.outputs.has_removed_stacks }}
     steps:
       - name: Validate and sanitize inputs
         run: |
