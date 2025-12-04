@@ -413,6 +413,101 @@ jobs:
           fi
           echo "::endgroup::"
 
+      - name: Detect and cleanup removed stacks
+        id: cleanup-removed
+        if: steps.backup.outputs.deployment_needed == 'true'
+        continue-on-error: false
+        run: |
+          echo "::group::Detecting removed stacks"
+          # Source retry functions
+          source /tmp/retry.sh
+
+          # Get current and target SHA from backup step
+          CURRENT_SHA="${{ steps.backup.outputs.previous_sha }}"
+          TARGET_REF="${{ inputs.target-ref }}"
+
+          echo "📊 Comparing commits:"
+          echo "  Current: $CURRENT_SHA"
+          echo "  Target:  $TARGET_REF"
+
+          # Detect removed stacks on the server
+          echo "🔍 Checking for removed stacks..."
+
+          REMOVED_STACKS=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' deployment-server" << DETECT_EOF
+            cd /opt/compose
+
+            # Fetch target ref to ensure we have it
+            git fetch origin $TARGET_REF 2>/dev/null || git fetch 2>/dev/null
+
+            # Find deleted compose.yaml files between current and target
+            git diff --diff-filter=D --name-only $CURRENT_SHA $TARGET_REF 2>/dev/null | \
+              grep -E '^[^/]+/compose\.yaml$' | \
+              sed 's|/compose\.yaml||' || echo ""
+          DETECT_EOF
+          )
+
+          # Store removed stacks for later steps
+          if [ -z "$REMOVED_STACKS" ]; then
+            echo "✅ No stacks to remove"
+            echo "removed_stacks=" >> $GITHUB_OUTPUT
+            echo "has_removed_stacks=false" >> $GITHUB_OUTPUT
+          else
+            echo "🗑️ Found stacks to remove:"
+            echo "$REMOVED_STACKS" | while read -r stack; do
+              echo "  - $stack"
+            done
+
+            # Convert to JSON array for output
+            REMOVED_JSON=$(echo "$REMOVED_STACKS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "removed_stacks=$REMOVED_JSON" >> $GITHUB_OUTPUT
+            echo "has_removed_stacks=true" >> $GITHUB_OUTPUT
+
+            # Cleanup each removed stack
+            echo ""
+            echo "::group::Cleaning up removed stacks"
+
+            CLEANUP_FAILED=false
+            while IFS= read -r stack; do
+              [ -z "$stack" ] && continue
+
+              echo "🧹 Cleaning up stack: $stack"
+
+              if ! ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' deployment-server" << CLEANUP_EOF
+                cd /opt/compose/$stack
+
+                # Check if compose.yaml exists
+                if [ ! -f compose.yaml ]; then
+                  echo "⚠️ compose.yaml not found for $stack - may have been manually removed"
+                  exit 0
+                fi
+
+                # Run docker compose down with 1Password
+                export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+                if op run --env-file=/opt/compose/compose.env -- docker compose -f ./compose.yaml down; then
+                  echo "✅ Successfully cleaned up $stack"
+                else
+                  echo "❌ Failed to clean up $stack"
+                  exit 1
+                fi
+              CLEANUP_EOF
+              then
+                echo "💥 Cleanup failed for stack: $stack"
+                CLEANUP_FAILED=true
+                break
+              fi
+            done <<< "$REMOVED_STACKS"
+
+            echo "::endgroup::"
+
+            if [ "$CLEANUP_FAILED" = "true" ]; then
+              echo "::error::Stack cleanup failed - stopping deployment"
+              exit 1
+            fi
+
+            echo "✅ All removed stacks cleaned successfully"
+          fi
+          echo "::endgroup::"
+
       - name: Deploy All Stacks
         id: deploy
         if: steps.backup.outputs.deployment_needed == 'true'
