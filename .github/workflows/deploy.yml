@@ -508,6 +508,51 @@ jobs:
           fi
           echo "::endgroup::"
 
+      - name: Notify removed stacks cleanup
+        if: steps.cleanup-removed.outputs.has_removed_stacks == 'true'
+        run: |
+          echo "📢 Sending cleanup notification to Discord..."
+
+          # Get webhook URL from 1Password
+          WEBHOOK_URL=$(op read "${{ inputs.webhook-url }}")
+
+          # Build removed stacks list
+          REMOVED_STACKS='${{ steps.cleanup-removed.outputs.removed_stacks }}'
+          STACK_LIST=$(echo "$REMOVED_STACKS" | jq -r '.[] | "- " + .')
+
+          # Get current timestamp
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Send Discord notification
+          curl -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d @- << EOF
+          {
+            "embeds": [{
+              "title": "🗑️ Stack Cleanup - ${{ inputs.repo-name }}",
+              "description": "Removed stacks have been cleaned up before deployment",
+              "color": 16753920,
+              "fields": [
+                {
+                  "name": "Removed Stacks",
+                  "value": "$STACK_LIST"
+                },
+                {
+                  "name": "Target Commit",
+                  "value": "\`${{ inputs.target-ref }}\`"
+                },
+                {
+                  "name": "Previous Commit",
+                  "value": "\`${{ steps.backup.outputs.previous_sha }}\`"
+                }
+              ],
+              "timestamp": "$TIMESTAMP"
+            }]
+          }
+          EOF
+
+          echo "✅ Cleanup notification sent"
+
       - name: Deploy All Stacks
         id: deploy
         if: steps.backup.outputs.deployment_needed == 'true'
