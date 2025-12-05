@@ -428,6 +428,14 @@ jobs:
           CURRENT_SHA="${{ steps.backup.outputs.previous_sha }}"
           TARGET_REF="${{ inputs.target-ref }}"
 
+          # Skip detection if this is the first deployment
+          if [ "$CURRENT_SHA" = "unknown" ]; then
+            echo "ℹ️ First deployment detected - no previous stacks to remove"
+            echo "removed_stacks=" >> $GITHUB_OUTPUT
+            echo "has_removed_stacks=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           echo "📊 Comparing commits:"
           echo "  Current: $CURRENT_SHA"
           echo "  Target:  $TARGET_REF"
