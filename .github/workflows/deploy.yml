@@ -443,18 +443,46 @@ jobs:
           # Detect removed stacks on the server
           echo "🔍 Checking for removed stacks..."
 
-          REMOVED_STACKS=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' deployment-server" << DETECT_EOF
+          REMOVED_STACKS=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' deployment-server" << 'DETECT_EOF'
+            set -e
             cd /opt/compose
 
             # Fetch target ref to ensure we have it
-            git fetch origin $TARGET_REF 2>/dev/null || git fetch 2>/dev/null
+            if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
+              echo "⚠️ Failed to fetch target ref, trying general fetch..."
+              if ! git fetch 2>/dev/null; then
+                echo "::error::Failed to fetch repository updates"
+                exit 1
+              fi
+            fi
+
+            # Resolve target ref to SHA for comparison
+            TARGET_SHA=$(git rev-parse "$TARGET_REF" 2>/dev/null || echo "$TARGET_REF")
+
+            # Validate both SHAs exist
+            if ! git cat-file -e "$CURRENT_SHA" 2>/dev/null; then
+              echo "::error::Current SHA $CURRENT_SHA not found in repository"
+              exit 1
+            fi
+
+            if ! git cat-file -e "$TARGET_SHA" 2>/dev/null; then
+              echo "::error::Target SHA $TARGET_SHA not found in repository"
+              exit 1
+            fi
 
             # Find deleted compose.yaml files between current and target
-            git diff --diff-filter=D --name-only $CURRENT_SHA $TARGET_REF 2>/dev/null | \
+            git diff --diff-filter=D --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null | \
               grep -E '^[^/]+/compose\.yaml$' | \
               sed 's|/compose\.yaml||' || echo ""
           DETECT_EOF
           )
+
+          # Check if detection succeeded
+          DETECTION_EXIT=$?
+          if [ $DETECTION_EXIT -ne 0 ]; then
+            echo "::error::Failed to detect removed stacks (exit code: $DETECTION_EXIT)"
+            exit 1
+          fi
 
           # Store removed stacks for later steps
           if [ -z "$REMOVED_STACKS" ]; then
