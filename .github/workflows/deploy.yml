@@ -456,8 +456,13 @@ jobs:
           # Detect removed stacks on the server
           echo "🔍 Checking for removed stacks..."
 
-          REMOVED_STACKS=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' deployment-server" << DETECT_EOF
+          REMOVED_STACKS=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$CURRENT_SHA\" \"$TARGET_REF\"" << 'DETECT_EOF'
             set -e
+
+            # Get arguments passed from local shell
+            CURRENT_SHA="$1"
+            TARGET_REF="$2"
+
             cd /opt/compose
 
             # Fetch target ref to ensure we have it
@@ -523,27 +528,30 @@ jobs:
 
               echo "🧹 Cleaning up stack: $stack"
 
-              if ! ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' deployment-server" << CLEANUP_EOF
+              if ! ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$stack\"" << 'CLEANUP_EOF'
+                # Get stack name from argument
+                STACK="$1"
+
                 # Check if stack directory exists
-                if [ ! -d /opt/compose/$stack ]; then
-                  echo "⚠️ Stack directory not found for $stack - already fully removed"
+                if [ ! -d "/opt/compose/$STACK" ]; then
+                  echo "⚠️ Stack directory not found for $STACK - already fully removed"
                   exit 0
                 fi
 
-                cd /opt/compose/$stack
+                cd "/opt/compose/$STACK"
 
                 # Check if compose.yaml exists
                 if [ ! -f compose.yaml ]; then
-                  echo "⚠️ compose.yaml not found for $stack - may have been manually removed"
+                  echo "⚠️ compose.yaml not found for $STACK - may have been manually removed"
                   exit 0
                 fi
 
                 # Run docker compose down with 1Password
                 export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
                 if op run --env-file=/opt/compose/compose.env -- docker compose -f ./compose.yaml down; then
-                  echo "✅ Successfully cleaned up $stack"
+                  echo "✅ Successfully cleaned up $STACK"
                 else
-                  echo "❌ Failed to clean up $stack"
+                  echo "❌ Failed to clean up $STACK"
                   exit 1
                 fi
               CLEANUP_EOF
