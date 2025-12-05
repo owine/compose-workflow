@@ -240,7 +240,7 @@ fi
 - All removed stack cleanups successful (no orphaned containers)
 - Clear Discord notifications showing what was cleaned
 - No false positives (detecting stacks that weren't actually removed)
-- Deployment failures if cleanup fails (fail-safe working)
+- Deployment fails if cleanup fails (fail-safe working)
 
 ## Future Enhancements
 

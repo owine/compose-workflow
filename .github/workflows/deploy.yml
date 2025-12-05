@@ -446,6 +446,7 @@ jobs:
             echo "ℹ️ First deployment detected - no previous stacks to remove"
             echo "removed_stacks=" >> $GITHUB_OUTPUT
             echo "has_removed_stacks=false" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
             exit 0
           fi
 
@@ -456,7 +457,8 @@ jobs:
           # Detect removed stacks on the server
           echo "🔍 Checking for removed stacks..."
 
-          REMOVED_STACKS=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$CURRENT_SHA\" \"$TARGET_REF\"" << 'DETECT_EOF'
+          # Build detection script as a variable for robust passing through ssh_retry
+          DETECT_SCRIPT=$(cat << 'DETECT_SCRIPT_END'
             set -e
 
             # Get arguments passed from local shell
@@ -492,8 +494,11 @@ jobs:
             git diff --diff-filter=D --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null | \
               grep -E '^[^/]+/compose\.yaml$' | \
               sed 's|/compose\.yaml||' || echo ""
-          DETECT_EOF
+          DETECT_SCRIPT_END
           )
+
+          # Execute detection script via ssh_retry with arguments
+          REMOVED_STACKS=$(echo "$DETECT_SCRIPT" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$CURRENT_SHA\" \"$TARGET_REF\"")
 
           # Check if detection succeeded
           DETECTION_EXIT=$?
@@ -522,40 +527,44 @@ jobs:
             echo ""
             echo "::group::Cleaning up removed stacks"
 
+            # Build cleanup script as a variable for robust passing through ssh_retry
+            CLEANUP_SCRIPT=$(cat << 'CLEANUP_SCRIPT_END'
+              # Get stack name from argument
+              STACK="$1"
+
+              # Check if stack directory exists
+              if [ ! -d "/opt/compose/$STACK" ]; then
+                echo "⚠️ Stack directory not found for $STACK - already fully removed"
+                exit 0
+              fi
+
+              cd "/opt/compose/$STACK"
+
+              # Check if compose.yaml exists
+              if [ ! -f compose.yaml ]; then
+                echo "⚠️ compose.yaml not found for $STACK - may have been manually removed"
+                exit 0
+              fi
+
+              # Run docker compose down with 1Password
+              export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+              if op run --env-file=/opt/compose/compose.env -- docker compose -f ./compose.yaml down; then
+                echo "✅ Successfully cleaned up $STACK"
+              else
+                echo "❌ Failed to clean up $STACK"
+                exit 1
+              fi
+            CLEANUP_SCRIPT_END
+            )
+
             CLEANUP_FAILED=false
             while IFS= read -r stack; do
               [ -z "$stack" ] && continue
 
               echo "🧹 Cleaning up stack: $stack"
 
-              if ! ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$stack\"" << 'CLEANUP_EOF'
-                # Get stack name from argument
-                STACK="$1"
-
-                # Check if stack directory exists
-                if [ ! -d "/opt/compose/$STACK" ]; then
-                  echo "⚠️ Stack directory not found for $STACK - already fully removed"
-                  exit 0
-                fi
-
-                cd "/opt/compose/$STACK"
-
-                # Check if compose.yaml exists
-                if [ ! -f compose.yaml ]; then
-                  echo "⚠️ compose.yaml not found for $STACK - may have been manually removed"
-                  exit 0
-                fi
-
-                # Run docker compose down with 1Password
-                export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
-                if op run --env-file=/opt/compose/compose.env -- docker compose -f ./compose.yaml down; then
-                  echo "✅ Successfully cleaned up $STACK"
-                else
-                  echo "❌ Failed to clean up $STACK"
-                  exit 1
-                fi
-              CLEANUP_EOF
-              then
+              # Execute cleanup script via ssh_retry with stack name as argument
+              if ! echo "$CLEANUP_SCRIPT" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$stack\""; then
                 echo "💥 Cleanup failed for stack: $stack"
                 CLEANUP_FAILED=true
                 break
