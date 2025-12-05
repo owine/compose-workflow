@@ -456,7 +456,7 @@ jobs:
           # Detect removed stacks on the server
           echo "🔍 Checking for removed stacks..."
 
-          REMOVED_STACKS=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' deployment-server" << 'DETECT_EOF'
+          REMOVED_STACKS=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' deployment-server" << DETECT_EOF
             set -e
             cd /opt/compose
 
@@ -524,6 +524,12 @@ jobs:
               echo "🧹 Cleaning up stack: $stack"
 
               if ! ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' deployment-server" << CLEANUP_EOF
+                # Check if stack directory exists
+                if [ ! -d /opt/compose/$stack ]; then
+                  echo "⚠️ Stack directory not found for $stack - already fully removed"
+                  exit 0
+                fi
+
                 cd /opt/compose/$stack
 
                 # Check if compose.yaml exists
@@ -567,40 +573,37 @@ jobs:
           # Get webhook URL from 1Password
           WEBHOOK_URL=$(op read "${{ inputs.webhook-url }}")
 
-          # Build removed stacks list
+          # Build removed stacks list and create JSON payload using jq for proper escaping
           REMOVED_STACKS='${{ steps.cleanup-removed.outputs.removed_stacks }}'
           STACK_LIST=$(echo "$REMOVED_STACKS" | jq -r '.[] | "- " + .')
-
-          # Get current timestamp
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Build JSON payload with jq to ensure proper escaping
+          PAYLOAD=$(jq -n \
+            --arg title "🗑️ Stack Cleanup - ${{ inputs.repo-name }}" \
+            --arg description "Removed stacks have been cleaned up before deployment" \
+            --arg stacks "$STACK_LIST" \
+            --arg target "${{ inputs.target-ref }}" \
+            --arg previous "${{ steps.backup.outputs.previous_sha }}" \
+            --arg timestamp "$TIMESTAMP" \
+            '{
+              embeds: [{
+                title: $title,
+                description: $description,
+                color: 16753920,
+                fields: [
+                  {name: "Removed Stacks", value: $stacks},
+                  {name: "Target Commit", value: ("`" + $target + "`")},
+                  {name: "Previous Commit", value: ("`" + $previous + "`")}
+                ],
+                timestamp: $timestamp
+              }]
+            }')
 
           # Send Discord notification
           curl -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            -d @- << EOF
-          {
-            "embeds": [{
-              "title": "🗑️ Stack Cleanup - ${{ inputs.repo-name }}",
-              "description": "Removed stacks have been cleaned up before deployment",
-              "color": 16753920,
-              "fields": [
-                {
-                  "name": "Removed Stacks",
-                  "value": "$STACK_LIST"
-                },
-                {
-                  "name": "Target Commit",
-                  "value": "\`${{ inputs.target-ref }}\`"
-                },
-                {
-                  "name": "Previous Commit",
-                  "value": "\`${{ steps.backup.outputs.previous_sha }}\`"
-                }
-              ],
-              "timestamp": "$TIMESTAMP"
-            }]
-          }
-          EOF
+            -d "$PAYLOAD"
 
           echo "✅ Cleanup notification sent"
 

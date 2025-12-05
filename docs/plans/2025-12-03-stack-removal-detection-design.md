@@ -41,7 +41,7 @@ When a stack directory (e.g., `dozzle/`) is deleted from a repository, the curre
 1. Deploy Job Start
    ├─ SSH to server (existing)
    ├─ Capture current SHA (existing)
-   └─ Setup SSH multiplexing (existing)
+   └─ Set up SSH multiplexing (existing)
 
 2. NEW: Stack Removal Detection
    ├─ Fetch target ref on server
