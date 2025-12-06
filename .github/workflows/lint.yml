@@ -118,6 +118,20 @@ jobs:
         with:
           unset-previous: true
 
+  actionlint:
+    name: Workflow validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          repository: ${{ inputs.target-repository }}
+          ref: ${{ inputs.target-ref }}
+
+      - name: Run actionlint
+        uses: raven-actions/actionlint@v2.0.1
+
   lint:
     strategy:
       matrix:
@@ -154,7 +168,10 @@ jobs:
             local temp_env_file="$2"
 
             # Extract environment variable references from compose file and create realistic placeholders
-            grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
+            while IFS= read -r match; do
+              # Remove ${ prefix and } suffix using parameter expansion
+              var="${match#\$\{}"
+              var="${var%\}}"
               # Use realistic placeholder values based on common variable patterns
               case "$var" in
                 *PATH*|*DIR*)
@@ -185,7 +202,7 @@ jobs:
                   echo "${var}=placeholder_value" >> "$temp_env_file"
                   ;;
               esac
-            done 2>/dev/null || true
+            done < <(grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u) 2>/dev/null || true
           }
 
           # Run YAML and Docker Compose linting in parallel with output capture
@@ -234,7 +251,7 @@ jobs:
             echo "❌ FAILED - YAML linting detected issues in ./${{ matrix.stack }}/compose.yaml:"
             echo ""
             echo "🔍 Issues found:"
-            cat "$YAML_OUTPUT" | sed 's/^/    /' | sed 's|\.\/||g'
+            sed 's/^/    /' "$YAML_OUTPUT" | sed 's|\.\/||g'
             echo ""
             echo "🛠️  Fix locally with:"
             echo "    yamllint --strict --config-file .yamllint ${{ matrix.stack }}/compose.yaml"
@@ -253,7 +270,7 @@ jobs:
             echo "🔍 Issues found:"
             # Use filtered output to show relevant errors
             if [ -s "$DOCKER_FILTERED" ]; then
-              cat "$DOCKER_FILTERED" | sed 's/^/    /'
+              sed 's/^/    /' "$DOCKER_FILTERED"
             else
               echo "    Configuration errors detected (see full output above)"
             fi
@@ -308,7 +325,7 @@ jobs:
   lint-summary:
     name: Lint Summary
     runs-on: ubuntu-24.04
-    needs: [scanning, lint]
+    needs: [scanning, actionlint, lint]
     if: always()
     timeout-minutes: 5
     steps:
@@ -326,7 +343,10 @@ jobs:
             local temp_env_file="$2"
 
             # Extract environment variable references from compose file and create realistic placeholders
-            grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
+            while IFS= read -r match; do
+              # Remove ${ prefix and } suffix using parameter expansion
+              var="${match#\$\{}"
+              var="${var%\}}"
               # Use realistic placeholder values based on common variable patterns
               case "$var" in
                 *PATH*|*DIR*)
@@ -357,7 +377,7 @@ jobs:
                   echo "${var}=placeholder_value" >> "$temp_env_file"
                   ;;
               esac
-            done 2>/dev/null || true
+            done < <(grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u) 2>/dev/null || true
           }
 
           echo "📊 Final Validation Summary"
@@ -385,6 +405,26 @@ jobs:
             *)
               echo "❓ UNKNOWN - Unexpected scanning result: ${{ needs.scanning.result }}"
               SCANNING_OK=false
+              ;;
+          esac
+
+          echo ""
+
+          # Actionlint Workflow Validation Results
+          echo "⚙️  WORKFLOW VALIDATION (ACTIONLINT)"
+          echo "───────────────────────────────────────────────────────────────────────────────────"
+          case "${{ needs.actionlint.result }}" in
+            "success")
+              echo "✅ PASSED - All GitHub Actions workflows are valid"
+              ACTIONLINT_OK=true
+              ;;
+            "failure")
+              echo "❌ FAILED - Workflow validation issues detected"
+              ACTIONLINT_OK=false
+              ;;
+            *)
+              echo "❓ UNKNOWN - Unexpected actionlint result: ${{ needs.actionlint.result }}"
+              ACTIONLINT_OK=false
               ;;
           esac
 
@@ -422,6 +462,7 @@ jobs:
             else
               echo "   ❌ FAILED - YAML validation detected issues:"
               echo ""
+              # shellcheck disable=SC2001  # sed is appropriate for multi-line prefix addition
               yamllint --strict --config-file .yamllint "./$stack/compose.yaml" 2>&1 | sed 's/^/      /' | sed 's|\.\/||g'
               echo ""
               echo "   🛠️  Fix locally: yamllint --strict --config-file .yamllint $stack/compose.yaml"
@@ -447,7 +488,8 @@ jobs:
                 grep -v "WARNING.*not set" || echo "Configuration errors detected")
 
               if [[ -n "$DOCKER_ERRORS" && "$DOCKER_ERRORS" != "Configuration errors detected" ]]; then
-                echo "$DOCKER_ERRORS" | sed 's/^/      /'
+                # shellcheck disable=SC2001  # sed is appropriate for multi-line prefix addition
+                sed 's/^/      /' <<< "$DOCKER_ERRORS"
               else
                 echo "      Configuration syntax or structure issues detected"
               fi
@@ -505,7 +547,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           # Final determination
-          if [[ "$SCANNING_OK" == "true" && "$LINT_OK" == "true" ]]; then
+          if [[ "$SCANNING_OK" == "true" && "$ACTIONLINT_OK" == "true" && "$LINT_OK" == "true" ]]; then
             echo "🎉 FINAL STATUS: ALL VALIDATION CHECKS PASSED"
             echo "   Repository is ready for deployment"
             exit 0
@@ -515,6 +557,7 @@ jobs:
             echo ""
             echo "   Failed components:"
             [[ "$SCANNING_OK" != "true" ]] && echo "   • GitGuardian security scanning"
+            [[ "$ACTIONLINT_OK" != "true" ]] && echo "   • Workflow validation (actionlint)"
             [[ "$LINT_OK" != "true" ]] && echo "   • Code quality validation (see detailed errors above)"
             echo ""
             exit 1
@@ -523,7 +566,7 @@ jobs:
   notify:
     name: Discord Notification
     runs-on: ubuntu-24.04
-    needs: [scanning, lint, lint-summary]
+    needs: [scanning, actionlint, lint, lint-summary]
     if: always()
     steps:
       - name: Configure 1Password Service Account
@@ -551,11 +594,19 @@ jobs:
             ${{ needs.lint-summary.result == 'failure' && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}> ', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}${{ needs.lint-summary.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
 
             **🔒 Security Scan:** ${{ needs.scanning.result == 'success' && '✅ No secrets detected' || needs.scanning.result == 'skipped' && '⏭️ Skipped (PR/manual)' || '❌ Issues found' }}
+            **⚙️ Workflow Validation:** ${{ needs.actionlint.result == 'success' && '✅ All workflows valid' || '❌ Issues detected' }}
             **📋 Code Quality:** ${{ needs.lint.result == 'success' && '✅ All stacks valid' || '❌ Issues detected' }}
 
             **📂 Validated Stacks:** `${{ join(fromJson(inputs.stacks), '`, `') }}`
 
             ${{ github.event_name == 'pull_request' && '🔀 **Pull Request Validation**' || github.event_name == 'workflow_dispatch' && '🔧 **Manual Validation**' || format('📝 **Push to `{0}`**', github.ref_name) }}
+
+            ${{ needs.actionlint.result == 'failure' && '
+            **⚙️ Workflow Issues:**
+            • GitHub Actions workflow validation failed
+            • Review the **Workflow Validation** job for details
+            • Fix workflow syntax, shellcheck, or expression errors
+            • Test locally: `actionlint .github/workflows/*.yml`' || '' }}
 
             ${{ needs.lint.result == 'failure' && '
             **🚨 Action Required:**

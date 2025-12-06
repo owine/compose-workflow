@@ -60,6 +60,7 @@ This repository provides two main reusable workflows:
 5. **Caching Strategies**: Optimized caching for Tailscale state and deployment tools
 6. **SSH Optimization**: Connection multiplexing and retry mechanisms
 7. **Parallel Execution**: All lint jobs (GitGuardian, YAML lint) run concurrently
+8. **Stack Removal Detection**: Automatic cleanup of removed stacks with fail-safe operation
 
 ### Benefits of Centralization
 
@@ -175,6 +176,7 @@ The deploy workflow (`deploy.yml`) provides:
 8. **SSH Optimization** - Connection multiplexing for better performance
 9. **Caching** - Optimized caching for Tailscale and deployment tools
 10. **Rich Discord Notifications** - Comprehensive deployment status with health metrics
+11. **Stack Removal Cleanup** - Detect deleted stacks via git diff and clean up containers before repository update
 
 ## Security Integration
 

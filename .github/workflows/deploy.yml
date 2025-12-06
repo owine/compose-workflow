@@ -123,6 +123,8 @@ jobs:
       rollback_total_containers: ${{ steps.rollback-health.outputs.rollback_total_containers }}
       rollback_running_containers: ${{ steps.rollback-health.outputs.rollback_running_containers }}
       rollback_success_rate: ${{ steps.rollback-health.outputs.rollback_success_rate }}
+      removed_stacks: ${{ steps.cleanup-removed.outputs.removed_stacks }}
+      has_removed_stacks: ${{ steps.cleanup-removed.outputs.has_removed_stacks }}
     steps:
       - name: Validate and sanitize inputs
         run: |
@@ -133,7 +135,6 @@ jobs:
           }
 
           # Validate stack names contain only safe characters
-          INVALID_STACKS=""
           echo '${{ inputs.stacks }}' | jq -r '.[]' | while read -r stack; do
             if [[ ! "$stack" =~ ^[a-zA-Z0-9_-]+$ ]]; then
               echo "::error::Invalid stack name: $stack. Only alphanumeric, underscore, and hyphen allowed."
@@ -399,19 +400,255 @@ jobs:
           fi
 
           # Set outputs with proper validation
-          echo "previous_sha=${CURRENT_SHA}" >> $GITHUB_OUTPUT
+          echo "previous_sha=${CURRENT_SHA}" >> "$GITHUB_OUTPUT"
 
           if [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "${{ inputs.force-deploy }}" != "true" ]; then
             echo "⚠️ Repository is already at target commit - no deployment needed"
-            echo "deployment_needed=false" >> $GITHUB_OUTPUT
+            echo "deployment_needed=false" >> "$GITHUB_OUTPUT"
           elif [ "$CURRENT_SHA" = "$TARGET_SHA" ] && [ "${{ inputs.force-deploy }}" = "true" ]; then
             echo "🔄 Force deployment requested - proceeding despite same commit"
-            echo "deployment_needed=true" >> $GITHUB_OUTPUT
+            echo "deployment_needed=true" >> "$GITHUB_OUTPUT"
           else
             echo "✅ Deployment needed - proceeding with update"
-            echo "deployment_needed=true" >> $GITHUB_OUTPUT
+            echo "deployment_needed=true" >> "$GITHUB_OUTPUT"
           fi
           echo "::endgroup::"
+
+      # STACK REMOVAL DETECTION AND CLEANUP
+      # This step runs before repository update to clean up Docker containers
+      # for stacks that have been completely removed from the repository.
+      #
+      # Process:
+      # 1. Compare current deployed SHA with target SHA using git diff
+      # 2. Identify deleted */compose.yaml files (one level deep only)
+      # 3. Run 'docker compose down' for each removed stack
+      # 4. Fail deployment if any cleanup fails (fail-safe)
+      # 5. Send Discord notification listing removed stacks
+      #
+      # Design: docs/plans/2025-12-03-stack-removal-detection-design.md
+
+      - name: Detect and clean up removed stacks
+        id: cleanup-removed
+        if: steps.backup.outputs.deployment_needed == 'true'
+        continue-on-error: false
+        run: |
+          # Source retry functions
+          source /tmp/retry.sh
+
+          # === DETECTION FUNCTION ===
+          # Purpose: Detect removed stacks by comparing git commits
+          # Inputs: $1=current_sha, $2=target_ref
+          # Output: Newline-separated list of stack names (stdout)
+          # Returns: 0 on success, 1 on error
+          detect_removed_stacks() {
+            local current_sha="$1"
+            local target_ref="$2"
+
+            # Build detection script
+            local detect_script
+            detect_script=$(cat << 'DETECT_EOF'
+            set -e
+            CURRENT_SHA="$1"
+            TARGET_REF="$2"
+
+            cd /opt/compose
+
+            # Fetch target ref to ensure we have it
+            if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
+              echo "⚠️ Failed to fetch target ref, trying general fetch..." >&2
+              if ! git fetch 2>/dev/null; then
+                echo "::error::Failed to fetch repository updates" >&2
+                exit 1
+              fi
+            fi
+
+            # Resolve target ref to SHA for comparison
+            TARGET_SHA=$(git rev-parse "$TARGET_REF" 2>/dev/null || echo "$TARGET_REF")
+
+            # Validate both SHAs exist
+            if ! git cat-file -e "$CURRENT_SHA" 2>/dev/null; then
+              echo "::error::Current SHA $CURRENT_SHA not found in repository" >&2
+              exit 1
+            fi
+
+            if ! git cat-file -e "$TARGET_SHA" 2>/dev/null; then
+              echo "::error::Target SHA $TARGET_SHA not found in repository" >&2
+              exit 1
+            fi
+
+            # Find deleted compose.yaml files between current and target
+            git diff --diff-filter=D --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null | \
+              grep -E '^[^/]+/compose\.yaml$' | \
+              sed 's|/compose\.yaml||' || echo ""
+          DETECT_EOF
+            )
+
+            # Execute detection script on remote server
+            echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$current_sha\" \"$target_ref\""
+          }
+
+          # === CLEANUP FUNCTION ===
+          # Purpose: Clean up a single removed stack using docker compose down
+          # Inputs: $1=stack_name
+          # Returns: 0 on success, 1 on error
+          # Note: Requires OP_SERVICE_ACCOUNT_TOKEN from GitHub secrets
+          # Security: Token passed as environment variable via heredoc (not command-line args) to avoid exposure in process listings
+          cleanup_stack() {
+            local stack="$1"
+            local op_token="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+
+            # Build cleanup script that expects OP_SERVICE_ACCOUNT_TOKEN from environment
+            local cleanup_script
+            cleanup_script=$(cat << 'CLEANUP_EOF'
+            STACK="$1"
+
+            # Check if stack directory exists
+            if [ ! -d "/opt/compose/$STACK" ]; then
+              echo "⚠️ Stack directory not found for $STACK - already fully removed"
+              exit 0
+            fi
+
+            cd "/opt/compose/$STACK"
+
+            # Check if compose.yaml exists
+            if [ ! -f compose.yaml ]; then
+              echo "⚠️ compose.yaml not found for $STACK - may have been manually removed"
+              exit 0
+            fi
+
+            # Run docker compose down with 1Password
+            # Note: OP_SERVICE_ACCOUNT_TOKEN is set by the wrapper script
+            if op run --env-file=/opt/compose/compose.env -- docker compose -f ./compose.yaml down; then
+              echo "✅ Successfully cleaned up $STACK"
+            else
+              echo "❌ Failed to clean up $STACK"
+              exit 1
+            fi
+          CLEANUP_EOF
+            )
+
+            # Execute cleanup script on remote server
+            # Token passed as environment variable via heredoc to avoid exposure in process args
+            ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$stack\"" <<EOF
+          export OP_SERVICE_ACCOUNT_TOKEN="$op_token"
+          $cleanup_script
+          EOF
+          }
+
+          # === MAIN EXECUTION ===
+          echo "::group::Detecting removed stacks"
+
+          CURRENT_SHA="${{ steps.backup.outputs.previous_sha }}"
+          TARGET_REF="${{ inputs.target-ref }}"
+
+          # Skip detection if this is the first deployment
+          if [ "$CURRENT_SHA" = "unknown" ]; then
+            echo "ℹ️ First deployment detected - no previous stacks to remove"
+            echo "removed_stacks=" >> "$GITHUB_OUTPUT"
+            echo "has_removed_stacks=false" >> "$GITHUB_OUTPUT"
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          echo "📊 Comparing commits:"
+          echo "  Current: $CURRENT_SHA"
+          echo "  Target:  $TARGET_REF"
+          echo "🔍 Checking for removed stacks..."
+
+          # Execute detection
+          REMOVED_STACKS=$(detect_removed_stacks "$CURRENT_SHA" "$TARGET_REF")
+          DETECTION_EXIT=$?
+
+          if [ $DETECTION_EXIT -ne 0 ]; then
+            echo "::error::Failed to detect removed stacks (exit code: $DETECTION_EXIT)"
+            exit 1
+          fi
+
+          # Process results
+          if [ -z "$REMOVED_STACKS" ]; then
+            echo "✅ No stacks to remove"
+            echo "removed_stacks=" >> "$GITHUB_OUTPUT"
+            echo "has_removed_stacks=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "🗑️ Found stacks to remove:"
+            echo "$REMOVED_STACKS" | while read -r stack; do
+              echo "  - $stack"
+            done
+
+            # Convert to JSON array for output
+            REMOVED_JSON=$(echo "$REMOVED_STACKS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "removed_stacks=$REMOVED_JSON" >> "$GITHUB_OUTPUT"
+            echo "has_removed_stacks=true" >> "$GITHUB_OUTPUT"
+
+            # Cleanup each removed stack
+            echo ""
+            echo "::group::Cleaning up removed stacks"
+
+            CLEANUP_FAILED=false
+            while IFS= read -r stack; do
+              [ -z "$stack" ] && continue
+
+              echo "🧹 Cleaning up stack: $stack"
+
+              if ! cleanup_stack "$stack"; then
+                echo "💥 Cleanup failed for stack: $stack"
+                CLEANUP_FAILED=true
+                break
+              fi
+            done <<< "$REMOVED_STACKS"
+
+            echo "::endgroup::"
+
+            if [ "$CLEANUP_FAILED" = "true" ]; then
+              echo "::error::Stack cleanup failed - stopping deployment"
+              exit 1
+            fi
+
+            echo "✅ All removed stacks cleaned successfully"
+          fi
+          echo "::endgroup::"
+
+      - name: Notify removed stacks cleanup
+        if: steps.cleanup-removed.outputs.has_removed_stacks == 'true'
+        run: |
+          echo "📢 Sending cleanup notification to Discord..."
+
+          # Get webhook URL from 1Password
+          WEBHOOK_URL=$(op read "${{ inputs.webhook-url }}")
+
+          # Build removed stacks list and create JSON payload using jq for proper escaping
+          REMOVED_STACKS="${{ steps.cleanup-removed.outputs.removed_stacks }}"
+          STACK_LIST=$(jq -r '.[] | "- " + .' <<< "$REMOVED_STACKS")
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Build JSON payload with jq to ensure proper escaping
+          PAYLOAD=$(jq -n \
+            --arg title "🗑️ Stack Cleanup - ${{ inputs.repo-name }}" \
+            --arg description "Removed stacks have been cleaned up before deployment" \
+            --arg stacks "$STACK_LIST" \
+            --arg target "${{ inputs.target-ref }}" \
+            --arg previous "${{ steps.backup.outputs.previous_sha }}" \
+            --arg timestamp "$TIMESTAMP" \
+            '{
+              embeds: [{
+                title: $title,
+                description: $description,
+                color: 16753920,
+                fields: [
+                  {name: "Removed Stacks", value: $stacks},
+                  {name: "Target Commit", value: ("`" + $target + "`")},
+                  {name: "Previous Commit", value: ("`" + $previous + "`")}
+                ],
+                timestamp: $timestamp
+              }]
+            }')
+
+          # Send Discord notification
+          curl -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+
+          echo "✅ Cleanup notification sent"
 
       - name: Deploy All Stacks
         id: deploy
@@ -429,12 +666,9 @@ jobs:
 
           # Parse inputs outside SSH context
           STACKS="${{ join(fromJson(inputs.stacks), ' ') }}"
-          OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
           HAS_DOCKGE="${{ inputs.has-dockge }}"
           TARGET_REF="${{ inputs.target-ref }}"
           COMPOSE_ARGS="${{ inputs.args || '' }}"
-          HEALTH_CHECK_TIMEOUT="${{ inputs.health-check-timeout }}"
-          CRITICAL_SERVICES='${{ inputs.critical-services }}'
 
 
           # Use retry mechanism and optimized deployment
@@ -772,7 +1006,6 @@ jobs:
 
           # Parse inputs outside SSH context
           STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
-          OP_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
           HAS_DOCKGE="${{ inputs.has-dockge }}"
 
           # Execute health check and capture structured output
@@ -1153,7 +1386,7 @@ jobs:
 
           # Parse outputs without temporary files
           if echo "$HEALTH_RESULT" | grep -q "GITHUB_OUTPUT_START"; then
-            echo "$HEALTH_RESULT" | sed -n '/GITHUB_OUTPUT_START/,/GITHUB_OUTPUT_END/p' | grep -E "^(healthy_stacks|degraded_stacks|failed_stacks|total_containers|running_containers|success_rate)=" >> $GITHUB_OUTPUT
+            echo "$HEALTH_RESULT" | sed -n '/GITHUB_OUTPUT_START/,/GITHUB_OUTPUT_END/p' | grep -E "^(healthy_stacks|degraded_stacks|failed_stacks|total_containers|running_containers|success_rate)=" >> "$GITHUB_OUTPUT"
           else
             echo "⚠️  GITHUB_OUTPUT_START marker not found, attempting to read from temp file..."
             # Try to read from temp file on remote server
@@ -1161,16 +1394,18 @@ jobs:
 
             if [ -n "$TEMP_FILE_CONTENT" ]; then
               echo "✅ Successfully read outputs from temp file"
-              echo "$TEMP_FILE_CONTENT" >> $GITHUB_OUTPUT
+              echo "$TEMP_FILE_CONTENT" >> "$GITHUB_OUTPUT"
             else
               echo "❌ Could not read temp file, using fallback outputs"
               # Fallback outputs if parsing fails
-              echo "healthy_stacks=" >> $GITHUB_OUTPUT
-              echo "degraded_stacks=" >> $GITHUB_OUTPUT
-              echo "failed_stacks=" >> $GITHUB_OUTPUT
-              echo "total_containers=0" >> $GITHUB_OUTPUT
-              echo "running_containers=0" >> $GITHUB_OUTPUT
-              echo "success_rate=0" >> $GITHUB_OUTPUT
+              {
+                echo "healthy_stacks="
+                echo "degraded_stacks="
+                echo "failed_stacks="
+                echo "total_containers=0"
+                echo "running_containers=0"
+                echo "success_rate=0"
+              } >> "$GITHUB_OUTPUT"
             fi
           fi
 
@@ -1610,11 +1845,11 @@ jobs:
           # Parse discovered stacks output for rollback-health step (simplified - no markers needed)
           if echo "$ROLLBACK_RESULT" | grep -q "DISCOVERED_ROLLBACK_STACKS="; then
             DISCOVERED_STACKS=$(echo "$ROLLBACK_RESULT" | grep "DISCOVERED_ROLLBACK_STACKS=" | cut -d'=' -f2-)
-            echo "discovered_rollback_stacks=$DISCOVERED_STACKS" >> $GITHUB_OUTPUT
+            echo "discovered_rollback_stacks=$DISCOVERED_STACKS" >> "$GITHUB_OUTPUT"
             echo "✅ Captured discovered rollback stacks: $DISCOVERED_STACKS"
           else
             echo "⚠️ Could not parse discovered stacks, will use input stacks as fallback"
-            echo "discovered_rollback_stacks=${{ join(fromJSON(inputs.stacks), ' ') }}" >> $GITHUB_OUTPUT
+            echo "discovered_rollback_stacks=${{ join(fromJSON(inputs.stacks), ' ') }}" >> "$GITHUB_OUTPUT"
           fi
 
           echo "::endgroup::"
@@ -1809,20 +2044,24 @@ jobs:
             RUNNING=$(echo "$ROLLBACK_HEALTH_RESULT" | grep "ROLLBACK_HEALTH_RUNNING_CONTAINERS=" | cut -d'=' -f2-)
             RATE=$(echo "$ROLLBACK_HEALTH_RESULT" | grep "ROLLBACK_HEALTH_SUCCESS_RATE=" | cut -d'=' -f2-)
 
-            echo "rollback_healthy_stacks=${HEALTHY:-}" >> $GITHUB_OUTPUT
-            echo "rollback_degraded_stacks=${DEGRADED:-}" >> $GITHUB_OUTPUT
-            echo "rollback_failed_stacks=${FAILED:-}" >> $GITHUB_OUTPUT
-            echo "rollback_total_containers=${TOTAL:-0}" >> $GITHUB_OUTPUT
-            echo "rollback_running_containers=${RUNNING:-0}" >> $GITHUB_OUTPUT
-            echo "rollback_success_rate=${RATE:-0}" >> $GITHUB_OUTPUT
+            {
+              echo "rollback_healthy_stacks=${HEALTHY:-}"
+              echo "rollback_degraded_stacks=${DEGRADED:-}"
+              echo "rollback_failed_stacks=${FAILED:-}"
+              echo "rollback_total_containers=${TOTAL:-0}"
+              echo "rollback_running_containers=${RUNNING:-0}"
+              echo "rollback_success_rate=${RATE:-0}"
+            } >> "$GITHUB_OUTPUT"
           else
             # Fallback outputs if parsing fails
-            echo "rollback_healthy_stacks=" >> $GITHUB_OUTPUT
-            echo "rollback_degraded_stacks=" >> $GITHUB_OUTPUT
-            echo "rollback_failed_stacks=" >> $GITHUB_OUTPUT
-            echo "rollback_total_containers=0" >> $GITHUB_OUTPUT
-            echo "rollback_running_containers=0" >> $GITHUB_OUTPUT
-            echo "rollback_success_rate=0" >> $GITHUB_OUTPUT
+            {
+              echo "rollback_healthy_stacks="
+              echo "rollback_degraded_stacks="
+              echo "rollback_failed_stacks="
+              echo "rollback_total_containers=0"
+              echo "rollback_running_containers=0"
+              echo "rollback_success_rate=0"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Cleanup SSH connections
@@ -1907,8 +2146,8 @@ jobs:
             | head -1)
           SHORT_SHA="${{ inputs.target-ref }}"
           SHORT_SHA="${SHORT_SHA:0:7}"
-          echo "message=$COMMIT_MSG" >> $GITHUB_OUTPUT
-          echo "short-sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "message=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
+          echo "short-sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Load Discord webhook and user ID
         id: op-load-discord
