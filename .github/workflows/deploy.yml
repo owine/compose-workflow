@@ -582,6 +582,32 @@ jobs:
             echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$target_ref\""
           }
 
+          # === DETECTION FUNCTION: DISCOVERY ANALYSIS ===
+          # Purpose: Analyze deleted files from tj-actions/changed-files output
+          # Inputs: $1=deleted_files_json (JSON array from tj-actions/changed-files)
+          # Output: Newline-separated list of stack names (stdout)
+          # Returns: 0 on success, 1 on error
+          detect_removed_stacks_discovery() {
+            local deleted_files_json="$1"
+
+            # Build detection script
+            local detect_script
+            detect_script=$(cat << 'DETECT_DISCOVERY_EOF'
+            set -e
+            DELETED_FILES_JSON="$1"
+
+            # Parse JSON array and filter for compose.yaml deletions
+            # Pattern: one level deep only (stack-name/compose.yaml)
+            echo "$DELETED_FILES_JSON" | jq -r '.[]' 2>/dev/null | \
+              grep -E '^[^/]+/compose\.yaml$' | \
+              sed 's|/compose\.yaml||' || echo ""
+          DETECT_DISCOVERY_EOF
+            )
+
+            # Execute detection script on remote server
+            echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$deleted_files_json\""
+          }
+
           # === CLEANUP FUNCTION ===
           # Purpose: Clean up a single removed stack using docker compose down
           # Inputs: $1=stack_name
