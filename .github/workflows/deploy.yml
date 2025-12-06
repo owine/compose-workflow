@@ -474,12 +474,12 @@ jobs:
           # Source retry functions
           source /tmp/retry.sh
 
-          # === DETECTION FUNCTION ===
-          # Purpose: Detect removed stacks by comparing git commits
+          # === DETECTION FUNCTION: GIT DIFF ===
+          # Purpose: Detect stacks removed between two git commits
           # Inputs: $1=current_sha, $2=target_ref
           # Output: Newline-separated list of stack names (stdout)
           # Returns: 0 on success, 1 on error
-          detect_removed_stacks() {
+          detect_removed_stacks_gitdiff() {
             local current_sha="$1"
             local target_ref="$2"
 
