@@ -25,7 +25,7 @@ Expected: PASS (workflow is currently valid)
 Insert after line 414 (after the backup step closes) and before line 416 (before "Deploy All Stacks"):
 
 ```yaml
-      - name: Detect and cleanup removed stacks
+      - name: Detect and clean up removed stacks
         id: cleanup-removed
         if: steps.backup.outputs.deployment_needed == 'true'
         continue-on-error: false

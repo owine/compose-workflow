@@ -427,7 +427,7 @@ jobs:
       #
       # Design: docs/plans/2025-12-03-stack-removal-detection-design.md
 
-      - name: Detect and cleanup removed stacks
+      - name: Detect and clean up removed stacks
         id: cleanup-removed
         if: steps.backup.outputs.deployment_needed == 'true'
         continue-on-error: false
@@ -530,7 +530,7 @@ jobs:
             # Execute cleanup script on remote server
             # Token passed as environment variable via heredoc to avoid exposure in process args
             ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$stack\"" <<EOF
-          export OP_SERVICE_ACCOUNT_TOKEN='$op_token'
+          export OP_SERVICE_ACCOUNT_TOKEN="$op_token"
           $cleanup_script
           EOF
           }
