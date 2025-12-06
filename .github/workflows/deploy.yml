@@ -547,7 +547,9 @@ jobs:
               fi
 
               # Run docker compose down with 1Password
-              # OP_SERVICE_ACCOUNT_TOKEN is passed via environment
+              # Note: OP_SERVICE_ACCOUNT_TOKEN embedded here rather than via SendEnv
+              # because SendEnv requires server-side AcceptEnv configuration
+              export OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
               if op run --env-file=/opt/compose/compose.env -- docker compose -f ./compose.yaml down; then
                 echo "✅ Successfully cleaned up $STACK"
               else
@@ -564,9 +566,7 @@ jobs:
               echo "🧹 Cleaning up stack: $stack"
 
               # Execute cleanup script via ssh_retry with stack name as argument
-              # Pass OP token as environment variable for security
-              if ! OP_SERVICE_ACCOUNT_TOKEN="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
-                   echo "$CLEANUP_SCRIPT" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" -o SendEnv=OP_SERVICE_ACCOUNT_TOKEN deployment-server /bin/bash -s \"$stack\""; then
+              if ! echo "$CLEANUP_SCRIPT" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$stack\""; then
                 echo "💥 Cleanup failed for stack: $stack"
                 CLEANUP_FAILED=true
                 break
@@ -593,7 +593,7 @@ jobs:
           WEBHOOK_URL=$(op read "${{ inputs.webhook-url }}")
 
           # Build removed stacks list and create JSON payload using jq for proper escaping
-          REMOVED_STACKS=${{ steps.cleanup-removed.outputs.removed_stacks }}
+          REMOVED_STACKS="${{ steps.cleanup-removed.outputs.removed_stacks }}"
           STACK_LIST=$(jq -r '.[] | "- " + .' <<< "$REMOVED_STACKS")
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
