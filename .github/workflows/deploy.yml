@@ -393,7 +393,9 @@ jobs:
 
       - name: Get changed files for removal detection
         id: changed-files
-        uses: tj-actions/changed-files@v47
+        # Pin to commit SHA instead of tag for security (CVE-2025-30066)
+        # This is v47.0.0 released on 2024-09-13
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62
         with:
           json: true
           sha: ${{ inputs.target-ref }}
