@@ -617,8 +617,8 @@ jobs:
           WEBHOOK_URL=$(op read "${{ inputs.webhook-url }}")
 
           # Build removed stacks list and create JSON payload using jq for proper escaping
-          REMOVED_STACKS="${{ steps.cleanup-removed.outputs.removed_stacks }}"
-          STACK_LIST=$(jq -r '.[] | "- " + .' <<< "$REMOVED_STACKS")
+          REMOVED_STACKS='${{ steps.cleanup-removed.outputs.removed_stacks }}'
+          STACK_LIST=$(echo "$REMOVED_STACKS" | jq -r '.[] | "- " + .')
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           # Build JSON payload with jq to ensure proper escaping
