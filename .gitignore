@@ -44,3 +44,6 @@ yarn.lock
 
 # GitHub Actions runner temp files
 .runner/
+
+# Git worktrees
+.worktrees/

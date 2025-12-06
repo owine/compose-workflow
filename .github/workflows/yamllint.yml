@@ -1,4 +1,4 @@
-name: YAML Lint
+name: Lint Workflows
 
 on:
   push:
@@ -16,14 +16,27 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
       - name: Run yamllint
+        id: yamllint
+        continue-on-error: true
         run: yamllint --strict --config-file .yamllint .
 
       - name: Report results
         if: always()
         run: |
-          if [ $? -eq 0 ]; then
+          if [ "${{ steps.yamllint.outcome }}" = "success" ]; then
             echo "✅ All YAML files are properly formatted"
           else
             echo "❌ YAML formatting issues found"
             echo "Please fix the issues above or update .yamllint configuration if needed"
+            exit 1
           fi
+
+  actionlint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - name: Run actionlint
+        uses: raven-actions/actionlint@v2.0.1
