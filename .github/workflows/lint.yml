@@ -118,6 +118,20 @@ jobs:
         with:
           unset-previous: true
 
+  actionlint:
+    name: Workflow validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          repository: ${{ inputs.target-repository }}
+          ref: ${{ inputs.target-ref }}
+
+      - name: Run actionlint
+        uses: raven-actions/actionlint@v2.0.1
+
   lint:
     strategy:
       matrix:
@@ -311,7 +325,7 @@ jobs:
   lint-summary:
     name: Lint Summary
     runs-on: ubuntu-24.04
-    needs: [scanning, lint]
+    needs: [scanning, actionlint, lint]
     if: always()
     timeout-minutes: 5
     steps:
@@ -391,6 +405,26 @@ jobs:
             *)
               echo "❓ UNKNOWN - Unexpected scanning result: ${{ needs.scanning.result }}"
               SCANNING_OK=false
+              ;;
+          esac
+
+          echo ""
+
+          # Actionlint Workflow Validation Results
+          echo "⚙️  WORKFLOW VALIDATION (ACTIONLINT)"
+          echo "───────────────────────────────────────────────────────────────────────────────────"
+          case "${{ needs.actionlint.result }}" in
+            "success")
+              echo "✅ PASSED - All GitHub Actions workflows are valid"
+              ACTIONLINT_OK=true
+              ;;
+            "failure")
+              echo "❌ FAILED - Workflow validation issues detected"
+              ACTIONLINT_OK=false
+              ;;
+            *)
+              echo "❓ UNKNOWN - Unexpected actionlint result: ${{ needs.actionlint.result }}"
+              ACTIONLINT_OK=false
               ;;
           esac
 
@@ -513,7 +547,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           # Final determination
-          if [[ "$SCANNING_OK" == "true" && "$LINT_OK" == "true" ]]; then
+          if [[ "$SCANNING_OK" == "true" && "$ACTIONLINT_OK" == "true" && "$LINT_OK" == "true" ]]; then
             echo "🎉 FINAL STATUS: ALL VALIDATION CHECKS PASSED"
             echo "   Repository is ready for deployment"
             exit 0
@@ -523,6 +557,7 @@ jobs:
             echo ""
             echo "   Failed components:"
             [[ "$SCANNING_OK" != "true" ]] && echo "   • GitGuardian security scanning"
+            [[ "$ACTIONLINT_OK" != "true" ]] && echo "   • Workflow validation (actionlint)"
             [[ "$LINT_OK" != "true" ]] && echo "   • Code quality validation (see detailed errors above)"
             echo ""
             exit 1
@@ -531,7 +566,7 @@ jobs:
   notify:
     name: Discord Notification
     runs-on: ubuntu-24.04
-    needs: [scanning, lint, lint-summary]
+    needs: [scanning, actionlint, lint, lint-summary]
     if: always()
     steps:
       - name: Configure 1Password Service Account
@@ -559,11 +594,19 @@ jobs:
             ${{ needs.lint-summary.result == 'failure' && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}> ', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}${{ needs.lint-summary.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
 
             **🔒 Security Scan:** ${{ needs.scanning.result == 'success' && '✅ No secrets detected' || needs.scanning.result == 'skipped' && '⏭️ Skipped (PR/manual)' || '❌ Issues found' }}
+            **⚙️ Workflow Validation:** ${{ needs.actionlint.result == 'success' && '✅ All workflows valid' || '❌ Issues detected' }}
             **📋 Code Quality:** ${{ needs.lint.result == 'success' && '✅ All stacks valid' || '❌ Issues detected' }}
 
             **📂 Validated Stacks:** `${{ join(fromJson(inputs.stacks), '`, `') }}`
 
             ${{ github.event_name == 'pull_request' && '🔀 **Pull Request Validation**' || github.event_name == 'workflow_dispatch' && '🔧 **Manual Validation**' || format('📝 **Push to `{0}`**', github.ref_name) }}
+
+            ${{ needs.actionlint.result == 'failure' && '
+            **⚙️ Workflow Issues:**
+            • GitHub Actions workflow validation failed
+            • Review the **Workflow Validation** job for details
+            • Fix workflow syntax, shellcheck, or expression errors
+            • Test locally: `actionlint .github/workflows/*.yml`' || '' }}
 
             ${{ needs.lint.result == 'failure' && '
             **🚨 Action Required:**
