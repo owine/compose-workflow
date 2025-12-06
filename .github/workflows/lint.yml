@@ -154,7 +154,10 @@ jobs:
             local temp_env_file="$2"
 
             # Extract environment variable references from compose file and create realistic placeholders
-            grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
+            while IFS= read -r match; do
+              # Remove ${ prefix and } suffix using parameter expansion
+              var="${match#\$\{}"
+              var="${var%\}}"
               # Use realistic placeholder values based on common variable patterns
               case "$var" in
                 *PATH*|*DIR*)
@@ -185,7 +188,7 @@ jobs:
                   echo "${var}=placeholder_value" >> "$temp_env_file"
                   ;;
               esac
-            done 2>/dev/null || true
+            done < <(grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u) 2>/dev/null || true
           }
 
           # Run YAML and Docker Compose linting in parallel with output capture
@@ -234,7 +237,7 @@ jobs:
             echo "❌ FAILED - YAML linting detected issues in ./${{ matrix.stack }}/compose.yaml:"
             echo ""
             echo "🔍 Issues found:"
-            cat "$YAML_OUTPUT" | sed 's/^/    /' | sed 's|\.\/||g'
+            sed 's/^/    /' "$YAML_OUTPUT" | sed 's|\.\/||g'
             echo ""
             echo "🛠️  Fix locally with:"
             echo "    yamllint --strict --config-file .yamllint ${{ matrix.stack }}/compose.yaml"
@@ -253,7 +256,7 @@ jobs:
             echo "🔍 Issues found:"
             # Use filtered output to show relevant errors
             if [ -s "$DOCKER_FILTERED" ]; then
-              cat "$DOCKER_FILTERED" | sed 's/^/    /'
+              sed 's/^/    /' "$DOCKER_FILTERED"
             else
               echo "    Configuration errors detected (see full output above)"
             fi
@@ -326,7 +329,10 @@ jobs:
             local temp_env_file="$2"
 
             # Extract environment variable references from compose file and create realistic placeholders
-            grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u | sed 's/\${//' | sed 's/}//' | while read var; do
+            while IFS= read -r match; do
+              # Remove ${ prefix and } suffix using parameter expansion
+              var="${match#\$\{}"
+              var="${var%\}}"
               # Use realistic placeholder values based on common variable patterns
               case "$var" in
                 *PATH*|*DIR*)
@@ -357,7 +363,7 @@ jobs:
                   echo "${var}=placeholder_value" >> "$temp_env_file"
                   ;;
               esac
-            done 2>/dev/null || true
+            done < <(grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u) 2>/dev/null || true
           }
 
           echo "📊 Final Validation Summary"
@@ -422,6 +428,7 @@ jobs:
             else
               echo "   ❌ FAILED - YAML validation detected issues:"
               echo ""
+              # shellcheck disable=SC2001  # sed is appropriate for multi-line prefix addition
               yamllint --strict --config-file .yamllint "./$stack/compose.yaml" 2>&1 | sed 's/^/      /' | sed 's|\.\/||g'
               echo ""
               echo "   🛠️  Fix locally: yamllint --strict --config-file .yamllint $stack/compose.yaml"
@@ -447,7 +454,8 @@ jobs:
                 grep -v "WARNING.*not set" || echo "Configuration errors detected")
 
               if [[ -n "$DOCKER_ERRORS" && "$DOCKER_ERRORS" != "Configuration errors detected" ]]; then
-                echo "$DOCKER_ERRORS" | sed 's/^/      /'
+                # shellcheck disable=SC2001  # sed is appropriate for multi-line prefix addition
+                sed 's/^/      /' <<< "$DOCKER_ERRORS"
               else
                 echo "      Configuration syntax or structure issues detected"
               fi

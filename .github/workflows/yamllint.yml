@@ -38,26 +38,5 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
-      - name: Install actionlint
-        run: |
-          echo "📦 Installing actionlint..."
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          pwd >> "$GITHUB_PATH"
-
       - name: Run actionlint
-        id: actionlint
-        continue-on-error: true
-        run: |
-          echo "🔍 Running actionlint on workflow files..."
-          actionlint -color
-
-      - name: Report results
-        if: always()
-        run: |
-          if [ "${{ steps.actionlint.outcome }}" = "success" ]; then
-            echo "✅ All GitHub Actions workflows are valid"
-          else
-            echo "❌ Workflow validation issues found"
-            echo "Please fix the issues above"
-            exit 1
-          fi
+        uses: raven-actions/actionlint@v2.0.1
