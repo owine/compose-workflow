@@ -492,6 +492,7 @@ jobs:
           # Inputs: $1=stack_name
           # Returns: 0 on success, 1 on error
           # Note: Requires OP_SERVICE_ACCOUNT_TOKEN from GitHub secrets
+          # Security: Token passed via stdin (not command-line args) to avoid exposure in process listings
           cleanup_stack() {
             local stack="$1"
             local op_token="${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
@@ -500,7 +501,9 @@ jobs:
             local cleanup_script
             cleanup_script=$(cat << 'CLEANUP_EOF'
             STACK="$1"
-            OP_TOKEN="$2"
+
+            # Read OP token from stdin (first line) - not visible in process listings
+            read -r OP_TOKEN
 
             # Check if stack directory exists
             if [ ! -d "/opt/compose/$STACK" ]; then
@@ -517,8 +520,7 @@ jobs:
             fi
 
             # Run docker compose down with 1Password
-            # Note: OP_SERVICE_ACCOUNT_TOKEN embedded here rather than via SendEnv
-            # because SendEnv requires server-side AcceptEnv configuration
+            # Note: OP_SERVICE_ACCOUNT_TOKEN passed via stdin to avoid exposure in process args
             export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
             if op run --env-file=/opt/compose/compose.env -- docker compose -f ./compose.yaml down; then
               echo "✅ Successfully cleaned up $STACK"
@@ -530,7 +532,11 @@ jobs:
             )
 
             # Execute cleanup script on remote server
-            echo "$cleanup_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$stack\" \"$op_token\""
+            # Token passed via stdin (first line) instead of command-line arg for security
+            {
+              echo "$op_token"
+              echo "$cleanup_script"
+            } | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$stack\""
           }
 
           # === MAIN EXECUTION ===
