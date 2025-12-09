@@ -73,24 +73,8 @@ jobs:
         run: |
           echo "📋 Workflow Version Information"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          # Parse workflow_ref to extract repository and ref
-          # Format: owner/repo/.github/workflows/workflow.yml@refs/heads/branch or @sha
-          WORKFLOW_REF="${{ github.workflow_ref }}"
-          echo "Reusable workflow: $WORKFLOW_REF"
-
-          # Extract repository and ref from workflow_ref
-          if [[ "$WORKFLOW_REF" =~ ^([^/]+/[^/]+)/\.github/workflows/[^@]+@(.+)$ ]]; then
-            WORKFLOW_REPO="${BASH_REMATCH[1]}"
-            WORKFLOW_REF_PART="${BASH_REMATCH[2]}"
-
-            # Resolve SHA from ref
-            WORKFLOW_SHA=$(git ls-remote "https://github.com/$WORKFLOW_REPO.git" "$WORKFLOW_REF_PART" | awk '{print $1}' || echo "unknown")
-            echo "Workflow SHA: ${WORKFLOW_SHA:-unknown}"
-          else
-            echo "Workflow SHA: unable to parse workflow_ref"
-          fi
-
+          echo "Reusable workflow: ${{ github.workflow_ref }}"
+          echo "Workflow SHA: ${{ github.sha }}"
           echo "Target repository: ${{ inputs.target-repository }}"
           echo "Target ref: ${{ inputs.target-ref }}"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
@@ -160,24 +144,8 @@ jobs:
         run: |
           echo "📋 Workflow Version Information"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          # Parse workflow_ref to extract repository and ref
-          # Format: owner/repo/.github/workflows/workflow.yml@refs/heads/branch or @sha
-          WORKFLOW_REF="${{ github.workflow_ref }}"
-          echo "Reusable workflow: $WORKFLOW_REF"
-
-          # Extract repository and ref from workflow_ref
-          if [[ "$WORKFLOW_REF" =~ ^([^/]+/[^/]+)/\.github/workflows/[^@]+@(.+)$ ]]; then
-            WORKFLOW_REPO="${BASH_REMATCH[1]}"
-            WORKFLOW_REF_PART="${BASH_REMATCH[2]}"
-
-            # Resolve SHA from ref
-            WORKFLOW_SHA=$(git ls-remote "https://github.com/$WORKFLOW_REPO.git" "$WORKFLOW_REF_PART" | awk '{print $1}' || echo "unknown")
-            echo "Workflow SHA: ${WORKFLOW_SHA:-unknown}"
-          else
-            echo "Workflow SHA: unable to parse workflow_ref"
-          fi
-
+          echo "Reusable workflow: ${{ github.workflow_ref }}"
+          echo "Workflow SHA: ${{ github.sha }}"
           echo "Target repository: ${{ inputs.target-repository }}"
           echo "Target ref: ${{ inputs.target-ref }}"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
