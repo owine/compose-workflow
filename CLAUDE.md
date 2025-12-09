@@ -30,9 +30,9 @@ This repository provides two main reusable workflows:
   - `target-ref`: Git reference to checkout (default: main)
   - Various GitHub event parameters for context
 
-#### 2. Deploy Workflow (`/.github/workflows/deploy.yml`)  
+#### 2. Deploy Workflow (`/.github/workflows/deploy.yml`)
 - **Purpose**: Handles deployment, health checks, rollback, and cleanup with comprehensive monitoring
-- **Features**: 
+- **Features**:
   - Input validation and sanitization for security
   - Enhanced error handling with retry logic and exponential backoff
   - Parallel stack deployment with detailed logging
@@ -42,6 +42,11 @@ This repository provides two main reusable workflows:
   - SSH connection optimization with multiplexing
   - Tailscale integration with cached state
   - Rich Discord notifications with deployment metrics
+  - **Enhanced Stack Removal Detection**: Three-method detection system
+    - Git diff: Commit comparison (existing)
+    - Tree comparison: Filesystem vs commit tree (catches undeployed removals)
+    - Discovery analysis: tj-actions/changed-files validation
+  - Union-based aggregation with fail-safe error handling
 - **Key Input Parameters**:
   - `stacks`: JSON array of stack names to deploy
   - `webhook-url`: 1Password reference to Discord webhook  

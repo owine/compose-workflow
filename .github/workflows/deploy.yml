@@ -105,6 +105,7 @@ jobs:
     outputs:
       previous_sha: ${{ steps.backup.outputs.previous_sha }}
       deployment_needed: ${{ steps.backup.outputs.deployment_needed }}
+      deleted_files: ${{ steps.changed-files.outputs.deleted_files }}
       deploy_status: ${{ steps.deploy.outcome }}
       health_status: ${{ steps.health.outcome }}
       cleanup_status: ${{ steps.cleanup.outcome }}
@@ -362,6 +363,44 @@ jobs:
 
           echo "✅ SSH connection optimization configured"
 
+      - name: Checkout repository for change detection
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0  # Fetch full history for accurate change detection
+
+      - name: Determine previous deployment SHA
+        id: determine-previous
+        run: |
+          # Use retry mechanism for SSH connection
+          source /tmp/retry.sh
+
+          # Get current deployment SHA with error handling
+          echo "🔍 Checking current deployment SHA for change detection..."
+          if CURRENT_SHA=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD 2>/dev/null'"); then
+            # Validate SHA format
+            if [[ "$CURRENT_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
+              echo "✅ Current deployed SHA: $CURRENT_SHA"
+              echo "previous_sha=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
+            else
+              echo "⚠️ Invalid SHA format from server: $CURRENT_SHA"
+              echo "⚠️ Using HEAD^ as fallback for change detection"
+              echo "previous_sha=HEAD^" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "⚠️ Could not retrieve current deployment SHA - using HEAD^ for change detection"
+            echo "previous_sha=HEAD^" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Get changed files for removal detection
+        id: changed-files
+        # Pin to commit SHA instead of tag for security (CVE-2025-30066)
+        # This is v47.0.0 released on 2024-09-13
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62
+        with:
+          json: true
+          sha: ${{ inputs.target-ref }}
+          base_sha: ${{ steps.determine-previous.outputs.previous_sha }}
+
       - name: Store current deployment for rollback
         id: backup
         run: |
@@ -414,18 +453,29 @@ jobs:
           fi
           echo "::endgroup::"
 
+      # ================================================================
       # STACK REMOVAL DETECTION AND CLEANUP
-      # This step runs before repository update to clean up Docker containers
-      # for stacks that have been completely removed from the repository.
+      # ================================================================
+      # Automatically detect and clean up Docker stacks that have been
+      # removed from the repository using three independent detection methods.
+      #
+      # Detection Methods:
+      # 1. Git Diff: Compares current deployed SHA vs target SHA
+      # 2. Tree Comparison: Compares target commit tree vs server filesystem
+      #    (catches removals from previous undeployed commits)
+      # 3. Discovery Analysis: Analyzes tj-actions/changed-files output
+      #    (validates removals from GitHub perspective)
       #
       # Process:
-      # 1. Compare current deployed SHA with target SHA using git diff
-      # 2. Identify deleted */compose.yaml files (one level deep only)
-      # 3. Run 'docker compose down' for each removed stack
-      # 4. Fail deployment if any cleanup fails (fail-safe)
-      # 5. Send Discord notification listing removed stacks
+      # 1. Run all three detection methods independently on deployment server
+      # 2. Fail deployment if ANY detection method encounters errors (fail-safe)
+      # 3. Aggregate results using union approach (remove anything found by any method)
+      # 4. Deduplicate and validate stack names
+      # 5. Run 'docker compose down' for each removed stack
+      # 6. Fail deployment if any cleanup fails
+      # 7. Send Discord notification listing removed stacks
       #
-      # Design: docs/plans/2025-12-03-stack-removal-detection-design.md
+      # Design: docs/plans/2025-12-06-enhanced-stack-removal-detection-design.md
 
       - name: Detect and clean up removed stacks
         id: cleanup-removed
@@ -435,12 +485,12 @@ jobs:
           # Source retry functions
           source /tmp/retry.sh
 
-          # === DETECTION FUNCTION ===
-          # Purpose: Detect removed stacks by comparing git commits
+          # === DETECTION FUNCTION: GIT DIFF ===
+          # Purpose: Detect stacks removed between two git commits
           # Inputs: $1=current_sha, $2=target_ref
           # Output: Newline-separated list of stack names (stdout)
           # Returns: 0 on success, 1 on error
-          detect_removed_stacks() {
+          detect_removed_stacks_gitdiff() {
             local current_sha="$1"
             local target_ref="$2"
 
@@ -485,6 +535,109 @@ jobs:
 
             # Execute detection script on remote server
             echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$current_sha\" \"$target_ref\""
+          }
+
+          # === DETECTION FUNCTION: TREE COMPARISON ===
+          # Purpose: Detect stacks on server filesystem missing from target commit tree
+          # Inputs: $1=target_ref
+          # Output: Newline-separated list of stack names (stdout)
+          # Returns: 0 on success, 1 on error
+          detect_removed_stacks_tree() {
+            local target_ref="$1"
+
+            # Build detection script
+            local detect_script
+            detect_script=$(cat << 'DETECT_TREE_EOF'
+            set -e
+            TARGET_REF="$1"
+
+            cd /opt/compose
+
+            # Fetch target ref to ensure we have it
+            if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
+              echo "⚠️ Failed to fetch target ref, trying general fetch..." >&2
+              if ! git fetch 2>/dev/null; then
+                echo "::error::Failed to fetch repository updates" >&2
+                exit 1
+              fi
+            fi
+
+            # Resolve target ref to SHA
+            TARGET_SHA=$(git rev-parse "$TARGET_REF" 2>/dev/null || echo "$TARGET_REF")
+
+            # Validate target SHA exists
+            if ! git cat-file -e "$TARGET_SHA" 2>/dev/null; then
+              echo "::error::Target SHA $TARGET_SHA not found in repository" >&2
+              exit 1
+            fi
+
+            # Get directories in target commit (one level deep, directories only)
+            COMMIT_DIRS=$(git ls-tree --name-only "$TARGET_SHA" 2>/dev/null | sort)
+
+            # Get directories on server filesystem (exclude .git and hidden dirs)
+            SERVER_DIRS=$(find /opt/compose -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | sort)
+
+            # Find directories on server but not in commit
+            MISSING_IN_COMMIT=$(comm -13 <(echo "$COMMIT_DIRS") <(echo "$SERVER_DIRS"))
+
+            # Filter for directories with compose.yaml files
+            for dir in $MISSING_IN_COMMIT; do
+              if [ -f "/opt/compose/$dir/compose.yaml" ]; then
+                echo "$dir"
+              fi
+            done
+          DETECT_TREE_EOF
+            )
+
+            # Execute detection script on remote server
+            echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$target_ref\""
+          }
+
+          # === DETECTION FUNCTION: DISCOVERY ANALYSIS ===
+          # Purpose: Analyze deleted files from tj-actions/changed-files output
+          # Inputs: $1=deleted_files_json (JSON array from tj-actions/changed-files)
+          # Output: Newline-separated list of stack names (stdout)
+          # Returns: 0 on success, 1 on error
+          detect_removed_stacks_discovery() {
+            local deleted_files_json="$1"
+
+            # Build detection script
+            local detect_script
+            detect_script=$(cat << 'DETECT_DISCOVERY_EOF'
+            set -e
+            DELETED_FILES_JSON="$1"
+
+            # Parse JSON array and filter for compose.yaml deletions
+            # Pattern: one level deep only (stack-name/compose.yaml)
+            echo "$DELETED_FILES_JSON" | jq -r '.[]' 2>/dev/null | \
+              grep -E '^[^/]+/compose\.yaml$' | \
+              sed 's|/compose\.yaml||' || echo ""
+          DETECT_DISCOVERY_EOF
+            )
+
+            # Execute detection script on remote server
+            echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$deleted_files_json\""
+          }
+
+          # === AGGREGATION FUNCTION ===
+          # Purpose: Merge and deduplicate results from all three detection methods
+          # Inputs: $1=gitdiff_stacks, $2=tree_stacks, $3=discovery_stacks (newline-separated lists)
+          # Output: Deduplicated newline-separated list of stack names (stdout)
+          # Returns: 0 on success (empty string if all inputs empty, not an error)
+          aggregate_removed_stacks() {
+            local gitdiff_stacks="$1"
+            local tree_stacks="$2"
+            local discovery_stacks="$3"
+
+            # Concatenate all three lists, remove empty lines, sort and deduplicate
+            {
+              echo "$gitdiff_stacks"
+              echo "$tree_stacks"
+              echo "$discovery_stacks"
+            } | \
+              grep -v '^$' | \
+              sort -u | \
+              grep -E '^[a-zA-Z0-9_-]+$' || echo ""
           }
 
           # === CLEANUP FUNCTION ===
@@ -555,13 +708,50 @@ jobs:
           echo "  Target:  $TARGET_REF"
           echo "🔍 Checking for removed stacks..."
 
-          # Execute detection
-          REMOVED_STACKS=$(detect_removed_stacks "$CURRENT_SHA" "$TARGET_REF")
-          DETECTION_EXIT=$?
+          # Read deleted files from discover-stacks step
+          DELETED_FILES='${{ steps.changed-files.outputs.deleted_files }}'
 
-          if [ $DETECTION_EXIT -ne 0 ]; then
-            echo "::error::Failed to detect removed stacks (exit code: $DETECTION_EXIT)"
+          echo "🔍 Running three detection methods..."
+
+          # Execute all three detection methods independently
+          echo "  1. Git diff detection (commit comparison)..."
+          GITDIFF_STACKS=$(detect_removed_stacks_gitdiff "$CURRENT_SHA" "$TARGET_REF") || GITDIFF_EXIT=$?
+
+          echo "  2. Tree comparison detection (filesystem vs commit)..."
+          TREE_STACKS=$(detect_removed_stacks_tree "$TARGET_REF") || TREE_EXIT=$?
+
+          echo "  3. Discovery analysis detection (changed files)..."
+          DISCOVERY_STACKS=$(detect_removed_stacks_discovery "$DELETED_FILES") || DISCOVERY_EXIT=$?
+
+          # Fail deployment if any detection method failed (fail-safe)
+          if [ "${GITDIFF_EXIT:-0}" -ne 0 ]; then
+            echo "::error::Git diff detection failed (exit code: $GITDIFF_EXIT)"
             exit 1
+          fi
+          if [ "${TREE_EXIT:-0}" -ne 0 ]; then
+            echo "::error::Tree comparison detection failed (exit code: $TREE_EXIT)"
+            exit 1
+          fi
+          if [ "${DISCOVERY_EXIT:-0}" -ne 0 ]; then
+            echo "::error::Discovery analysis detection failed (exit code: $DISCOVERY_EXIT)"
+            exit 1
+          fi
+
+          echo "✅ All detection methods completed successfully"
+
+          # Aggregate results (union of all three methods)
+          echo "📊 Aggregating results..."
+          REMOVED_STACKS=$(aggregate_removed_stacks "$GITDIFF_STACKS" "$TREE_STACKS" "$DISCOVERY_STACKS")
+
+          # Debug logging
+          if [ -n "$GITDIFF_STACKS" ]; then
+            echo "  Git diff found: $(echo "$GITDIFF_STACKS" | tr '\n' ', ' | sed 's/,$//')"
+          fi
+          if [ -n "$TREE_STACKS" ]; then
+            echo "  Tree comparison found: $(echo "$TREE_STACKS" | tr '\n' ', ' | sed 's/,$//')"
+          fi
+          if [ -n "$DISCOVERY_STACKS" ]; then
+            echo "  Discovery analysis found: $(echo "$DISCOVERY_STACKS" | tr '\n' ', ' | sed 's/,$//')"
           fi
 
           # Process results
