@@ -204,12 +204,12 @@ jobs:
         run: |
           echo "📋 Workflow Version Information"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Reusable workflow: ${{ github.workflow_ref }}"
-          echo "Workflow SHA: ${{ github.sha }}"
           echo "Repository: ${{ inputs.repo-name }}"
           echo "Target ref: ${{ inputs.target-ref }}"
           echo "Stacks: ${{ inputs.stacks }}"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
+          echo ""
+          echo "ℹ️  Reusable workflow SHA shown in 'Uses:' line above"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Verify required tools

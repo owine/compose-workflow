@@ -73,11 +73,11 @@ jobs:
         run: |
           echo "📋 Workflow Version Information"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Reusable workflow: ${{ github.workflow_ref }}"
-          echo "Workflow SHA: ${{ github.sha }}"
           echo "Target repository: ${{ inputs.target-repository }}"
           echo "Target ref: ${{ inputs.target-ref }}"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
+          echo ""
+          echo "ℹ️  Reusable workflow SHA shown in 'Uses:' line above"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Configure 1Password Service Account
@@ -144,11 +144,11 @@ jobs:
         run: |
           echo "📋 Workflow Version Information"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Reusable workflow: ${{ github.workflow_ref }}"
-          echo "Workflow SHA: ${{ github.sha }}"
           echo "Target repository: ${{ inputs.target-repository }}"
           echo "Target ref: ${{ inputs.target-ref }}"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
+          echo ""
+          echo "ℹ️  Reusable workflow SHA shown in 'Uses:' line above"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Run actionlint
