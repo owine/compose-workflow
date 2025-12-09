@@ -453,18 +453,29 @@ jobs:
           fi
           echo "::endgroup::"
 
+      # ================================================================
       # STACK REMOVAL DETECTION AND CLEANUP
-      # This step runs before repository update to clean up Docker containers
-      # for stacks that have been completely removed from the repository.
+      # ================================================================
+      # Automatically detect and clean up Docker stacks that have been
+      # removed from the repository using three independent detection methods.
+      #
+      # Detection Methods:
+      # 1. Git Diff: Compares current deployed SHA vs target SHA
+      # 2. Tree Comparison: Compares target commit tree vs server filesystem
+      #    (catches removals from previous undeployed commits)
+      # 3. Discovery Analysis: Analyzes tj-actions/changed-files output
+      #    (validates removals from GitHub perspective)
       #
       # Process:
-      # 1. Compare current deployed SHA with target SHA using git diff
-      # 2. Identify deleted */compose.yaml files (one level deep only)
-      # 3. Run 'docker compose down' for each removed stack
-      # 4. Fail deployment if any cleanup fails (fail-safe)
-      # 5. Send Discord notification listing removed stacks
+      # 1. Run all three detection methods independently on deployment server
+      # 2. Fail deployment if ANY detection method encounters errors (fail-safe)
+      # 3. Aggregate results using union approach (remove anything found by any method)
+      # 4. Deduplicate and validate stack names
+      # 5. Run 'docker compose down' for each removed stack
+      # 6. Fail deployment if any cleanup fails
+      # 7. Send Discord notification listing removed stacks
       #
-      # Design: docs/plans/2025-12-03-stack-removal-detection-design.md
+      # Design: docs/plans/2025-12-06-enhanced-stack-removal-detection-design.md
 
       - name: Detect and clean up removed stacks
         id: cleanup-removed
