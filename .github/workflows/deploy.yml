@@ -608,6 +608,27 @@ jobs:
             echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" deployment-server /bin/bash -s \"$deleted_files_json\""
           }
 
+          # === AGGREGATION FUNCTION ===
+          # Purpose: Merge and deduplicate results from all three detection methods
+          # Inputs: $1=gitdiff_stacks, $2=tree_stacks, $3=discovery_stacks (newline-separated lists)
+          # Output: Deduplicated newline-separated list of stack names (stdout)
+          # Returns: 0 on success (empty string if all inputs empty, not an error)
+          aggregate_removed_stacks() {
+            local gitdiff_stacks="$1"
+            local tree_stacks="$2"
+            local discovery_stacks="$3"
+
+            # Concatenate all three lists, remove empty lines, sort and deduplicate
+            {
+              echo "$gitdiff_stacks"
+              echo "$tree_stacks"
+              echo "$discovery_stacks"
+            } | \
+              grep -v '^$' | \
+              sort -u | \
+              grep -E '^[a-zA-Z0-9_-]+$' || echo ""
+          }
+
           # === CLEANUP FUNCTION ===
           # Purpose: Clean up a single removed stack using docker compose down
           # Inputs: $1=stack_name
