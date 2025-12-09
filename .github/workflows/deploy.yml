@@ -697,13 +697,50 @@ jobs:
           echo "  Target:  $TARGET_REF"
           echo "🔍 Checking for removed stacks..."
 
-          # Execute detection
-          REMOVED_STACKS=$(detect_removed_stacks "$CURRENT_SHA" "$TARGET_REF")
-          DETECTION_EXIT=$?
+          # Read deleted files from discover-stacks step
+          DELETED_FILES='${{ steps.changed-files.outputs.deleted_files }}'
 
-          if [ $DETECTION_EXIT -ne 0 ]; then
-            echo "::error::Failed to detect removed stacks (exit code: $DETECTION_EXIT)"
+          echo "🔍 Running three detection methods..."
+
+          # Execute all three detection methods independently
+          echo "  1. Git diff detection (commit comparison)..."
+          GITDIFF_STACKS=$(detect_removed_stacks_gitdiff "$CURRENT_SHA" "$TARGET_REF") || GITDIFF_EXIT=$?
+
+          echo "  2. Tree comparison detection (filesystem vs commit)..."
+          TREE_STACKS=$(detect_removed_stacks_tree "$TARGET_REF") || TREE_EXIT=$?
+
+          echo "  3. Discovery analysis detection (changed files)..."
+          DISCOVERY_STACKS=$(detect_removed_stacks_discovery "$DELETED_FILES") || DISCOVERY_EXIT=$?
+
+          # Fail deployment if any detection method failed (fail-safe)
+          if [ "${GITDIFF_EXIT:-0}" -ne 0 ]; then
+            echo "::error::Git diff detection failed (exit code: $GITDIFF_EXIT)"
             exit 1
+          fi
+          if [ "${TREE_EXIT:-0}" -ne 0 ]; then
+            echo "::error::Tree comparison detection failed (exit code: $TREE_EXIT)"
+            exit 1
+          fi
+          if [ "${DISCOVERY_EXIT:-0}" -ne 0 ]; then
+            echo "::error::Discovery analysis detection failed (exit code: $DISCOVERY_EXIT)"
+            exit 1
+          fi
+
+          echo "✅ All detection methods completed successfully"
+
+          # Aggregate results (union of all three methods)
+          echo "📊 Aggregating results..."
+          REMOVED_STACKS=$(aggregate_removed_stacks "$GITDIFF_STACKS" "$TREE_STACKS" "$DISCOVERY_STACKS")
+
+          # Debug logging
+          if [ -n "$GITDIFF_STACKS" ]; then
+            echo "  Git diff found: $(echo "$GITDIFF_STACKS" | tr '\n' ', ' | sed 's/,$//')"
+          fi
+          if [ -n "$TREE_STACKS" ]; then
+            echo "  Tree comparison found: $(echo "$TREE_STACKS" | tr '\n' ', ' | sed 's/,$//')"
+          fi
+          if [ -n "$DISCOVERY_STACKS" ]; then
+            echo "  Discovery analysis found: $(echo "$DISCOVERY_STACKS" | tr '\n' ', ' | sed 's/,$//')"
           fi
 
           # Process results
