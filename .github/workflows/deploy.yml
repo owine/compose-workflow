@@ -368,6 +368,17 @@ jobs:
         with:
           fetch-depth: 0  # Fetch full history for accurate change detection
 
+      - name: Display version information
+        run: |
+          echo "📋 Workflow Version Information"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Reusable workflow: ${{ github.workflow_ref }}"
+          echo "Repository: ${{ inputs.repo-name }}"
+          echo "Target ref: ${{ inputs.target-ref }}"
+          echo "Stacks: ${{ inputs.stacks }}"
+          echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
       - name: Determine previous deployment SHA
         id: determine-previous
         run: |
