@@ -73,7 +73,12 @@ jobs:
         run: |
           echo "📋 Workflow Version Information"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Reusable workflow: ${{ github.workflow_ref }}"
+          echo "Reusable workflow: ${{ github.action_repository }}/.github/workflows/lint.yml@${{ github.action_ref }}"
+
+          # Resolve compose-workflow SHA from action ref
+          WORKFLOW_SHA=$(git ls-remote https://github.com/${{ github.action_repository }}.git ${{ github.action_ref }} | awk '{print $1}')
+          echo "Workflow SHA: ${WORKFLOW_SHA:-unknown}"
+
           echo "Target repository: ${{ inputs.target-repository }}"
           echo "Target ref: ${{ inputs.target-ref }}"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
@@ -143,7 +148,12 @@ jobs:
         run: |
           echo "📋 Workflow Version Information"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Reusable workflow: ${{ github.workflow_ref }}"
+          echo "Reusable workflow: ${{ github.action_repository }}/.github/workflows/lint.yml@${{ github.action_ref }}"
+
+          # Resolve compose-workflow SHA from action ref
+          WORKFLOW_SHA=$(git ls-remote https://github.com/${{ github.action_repository }}.git ${{ github.action_ref }} | awk '{print $1}')
+          echo "Workflow SHA: ${WORKFLOW_SHA:-unknown}"
+
           echo "Target repository: ${{ inputs.target-repository }}"
           echo "Target ref: ${{ inputs.target-ref }}"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"

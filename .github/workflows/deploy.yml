@@ -200,6 +200,22 @@ jobs:
 
           echo "✅ All input validation passed"
 
+      - name: Display version information
+        run: |
+          echo "📋 Workflow Version Information"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Reusable workflow: ${{ github.action_repository }}/.github/workflows/deploy.yml@${{ github.action_ref }}"
+
+          # Resolve compose-workflow SHA from action ref
+          WORKFLOW_SHA=$(git ls-remote https://github.com/${{ github.action_repository }}.git ${{ github.action_ref }} | awk '{print $1}')
+          echo "Workflow SHA: ${WORKFLOW_SHA:-unknown}"
+
+          echo "Repository: ${{ inputs.repo-name }}"
+          echo "Target ref: ${{ inputs.target-ref }}"
+          echo "Stacks: ${{ inputs.stacks }}"
+          echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
       - name: Verify required tools
         run: |
           echo "🔍 Verifying required tools are available..."
@@ -367,17 +383,6 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           fetch-depth: 0  # Fetch full history for accurate change detection
-
-      - name: Display version information
-        run: |
-          echo "📋 Workflow Version Information"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Reusable workflow: ${{ github.workflow_ref }}"
-          echo "Repository: ${{ inputs.repo-name }}"
-          echo "Target ref: ${{ inputs.target-ref }}"
-          echo "Stacks: ${{ inputs.stacks }}"
-          echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Determine previous deployment SHA
         id: determine-previous
@@ -730,7 +735,14 @@ jobs:
           TREE_STACKS=$(detect_removed_stacks_tree "$TARGET_REF") || TREE_EXIT=$?
 
           echo "  3. Discovery analysis detection (changed files)..."
-          DISCOVERY_STACKS=$(detect_removed_stacks_discovery "$DELETED_FILES") || DISCOVERY_EXIT=$?
+          if [ "$DELETED_FILES" = "[]" ] || [ -z "$DELETED_FILES" ]; then
+            # Empty JSON array or empty string - no deleted files to analyze
+            echo "     ℹ️  No deleted files detected - skipping discovery analysis"
+            DISCOVERY_STACKS=""
+            DISCOVERY_EXIT=0
+          else
+            DISCOVERY_STACKS=$(detect_removed_stacks_discovery "$DELETED_FILES") || DISCOVERY_EXIT=$?
+          fi
 
           # Fail deployment if any detection method failed (fail-safe)
           if [ "${GITDIFF_EXIT:-0}" -ne 0 ]; then
