@@ -364,7 +364,7 @@ jobs:
           echo "✅ SSH connection optimization configured"
 
       - name: Checkout repository for change detection
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           fetch-depth: 0  # Fetch full history for accurate change detection
 
@@ -395,7 +395,7 @@ jobs:
         id: changed-files
         # Pin to commit SHA instead of tag for security (CVE-2025-30066)
         # This is v47.0.0 released on 2024-09-13
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62
+        uses: tj-actions/changed-files@abdd2f68ea150cee8f236d4a9fb4e0f2491abf1b
         with:
           json: true
           sha: ${{ inputs.target-ref }}
