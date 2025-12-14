@@ -7,8 +7,12 @@
   "timezone": "America/Chicago",
   "prHourlyLimit": 4,
   "prConcurrentLimit": 3,
-  "commitMessageTopic": "{{depName}}",
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "commitMessageTopic": "update {{depName}}",
   "commitMessageExtra": "to {{newVersion}}",
+  "prTitle": "{{semanticPrefix}}{{#if isPin}}Pin{{else}}Update{{/if}} {{depName}} to {{#if isMajor}}{{prettyNewMajor}}{{else}}{{prettyNewVersion}}{{/if}}",
   "packageRules": [
     {
       "groupName": "Security updates",
@@ -18,7 +22,11 @@
       ],
       "isVulnerabilityAlert": true,
       "automerge": true,
-      "prPriority": 10
+      "prPriority": 10,
+      "labels": [
+        "security",
+        "dependencies"
+      ]
     },
     {
       "groupName": "GitHub Actions",
@@ -33,7 +41,7 @@
         "digest"
       ],
       "automerge": true,
-      "minimumReleaseAge": null
+      "minimumReleaseAge": "1 hour"
     },
     {
       "groupName": "Major GitHub Actions",
