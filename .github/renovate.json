@@ -12,7 +12,7 @@
   "semanticCommitScope": "deps",
   "commitMessageTopic": "update {{depName}}",
   "commitMessageExtra": "to {{newVersion}}",
-  "prTitle": "{{semanticPrefix}}{{#if isPin}}Pin{{else}}Update{{/if}} {{depName}} to {{#if isMajor}}{{prettyNewMajor}}{{else}}{{prettyNewVersion}}{{/if}}",
+  "prTitle": "{{#if semanticCommitType}}{{semanticCommitType}}{{#if semanticCommitScope}}({{semanticCommitScope}}){{/if}}: {{/if}}{{#if isPin}}Pin{{else}}Update{{/if}} {{depName}} to {{#if isMajor}}{{prettyNewMajor}}{{else}}{{prettyNewVersion}}{{/if}}",
   "packageRules": [
     {
       "groupName": "Security updates",
