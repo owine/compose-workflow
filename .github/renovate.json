@@ -3,7 +3,6 @@
   "extends": [
     "config:best-practices"
   ],
-  "dependencyDashboard": true,
   "timezone": "America/Chicago",
   "prHourlyLimit": 4,
   "prConcurrentLimit": 3,
@@ -13,21 +12,15 @@
   "commitMessageTopic": "update {{depName}}",
   "commitMessageExtra": "to {{newVersion}}",
   "prTitle": "{{#if semanticCommitType}}{{semanticCommitType}}{{#if semanticCommitScope}}({{semanticCommitScope}}){{/if}}: {{/if}}{{#if isPin}}Pin{{else}}Update{{/if}} {{depName}} to {{#if isMajor}}{{prettyNewMajor}}{{else}}{{prettyNewVersion}}{{/if}}",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": [
+      "security",
+      "dependencies"
+    ],
+    "automerge": true
+  },
   "packageRules": [
-    {
-      "groupName": "Security updates",
-      "groupSlug": "security",
-      "matchUpdateTypes": [
-        "patch"
-      ],
-      "isVulnerabilityAlert": true,
-      "automerge": true,
-      "prPriority": 10,
-      "labels": [
-        "security",
-        "dependencies"
-      ]
-    },
     {
       "groupName": "GitHub Actions",
       "groupSlug": "all-gha",
