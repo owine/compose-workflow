@@ -9,9 +9,8 @@
   "semanticCommits": "enabled",
   "semanticCommitType": "chore",
   "semanticCommitScope": "deps",
-  "commitMessageTopic": "update {{depName}}",
-  "commitMessageExtra": "to {{newVersion}}",
-  "prTitle": "{{#if semanticCommitType}}{{semanticCommitType}}{{#if semanticCommitScope}}({{semanticCommitScope}}){{/if}}: {{/if}}{{#if isPin}}Pin{{else}}Update{{/if}} {{depName}} to {{#if isMajor}}{{prettyNewMajor}}{{else}}{{prettyNewVersion}}{{/if}}",
+  "commitMessageTopic": "{{depName}}",
+  "commitMessageExtra": "{{#if isDigest}}digest to {{newDigestShort}}{{else}}to {{#if isMajor}}{{prettyNewMajor}}{{else}}{{prettyNewVersion}}{{/if}}{{/if}}",
   "vulnerabilityAlerts": {
     "enabled": true,
     "labels": [
