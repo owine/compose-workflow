@@ -406,6 +406,7 @@ jobs:
       - name: Get changed files for removal detection
         id: changed-files
         if: steps.determine-previous.outputs.previous_sha != inputs.target-ref
+        continue-on-error: true
         uses: tj-actions/changed-files@e0021407031f5be11a464abee9a0776171c79891 # v47.0.1
         with:
           json: true
@@ -528,12 +529,14 @@ jobs:
 
             # Validate both SHAs exist
             if ! git cat-file -e "$CURRENT_SHA" 2>/dev/null; then
-              echo "::error::Current SHA $CURRENT_SHA not found in repository" >&2
+              echo "::warning::Current SHA $CURRENT_SHA not found in repository (may have been replaced by force-push)" >&2
+              echo "     Skipping git diff detection, will rely on tree comparison method" >&2
               exit 1
             fi
 
             if ! git cat-file -e "$TARGET_SHA" 2>/dev/null; then
-              echo "::error::Target SHA $TARGET_SHA not found in repository" >&2
+              echo "::warning::Target SHA $TARGET_SHA not found in repository" >&2
+              echo "     Skipping git diff detection, will rely on tree comparison method" >&2
               exit 1
             fi
 
@@ -719,8 +722,14 @@ jobs:
           echo "  Target:  $TARGET_REF"
           echo "🔍 Checking for removed stacks..."
 
-          # Read deleted files from discover-stacks step
+          # Read deleted files from changed-files step (may be empty if step failed)
           DELETED_FILES='${{ steps.changed-files.outputs.deleted_files }}'
+
+          # Check if changed-files step succeeded
+          if [ "${{ steps.changed-files.outcome }}" != "success" ]; then
+            echo "⚠️  Changed-files detection failed (likely due to missing git ref)"
+            echo "     Proceeding with git diff and tree comparison methods only"
+          fi
 
           echo "🔍 Running three detection methods..."
 
