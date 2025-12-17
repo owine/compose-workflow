@@ -81,13 +81,13 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
+        uses: 1password/load-secrets-action/configure@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load GitGuardian credentials
         id: op-load-secret
-        uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
+        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
         with:
           unset-previous: true
         env:
@@ -125,7 +125,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Unload GitGuardian credentials
-        uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
+        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
         with:
           unset-previous: true
 
@@ -603,13 +603,13 @@ jobs:
     if: always()
     steps:
       - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
+        uses: 1password/load-secrets-action/configure@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load Discord webhook and user ID
         id: op-load-discord
-        uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
+        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
         with:
           unset-previous: true
         env:
@@ -661,6 +661,6 @@ jobs:
           avatar_url: "https://cdn-icons-png.flaticon.com/512/2103/2103633.png"
 
       - name: Unload Discord webhook
-        uses: 1password/load-secrets-action@13f58eec611f8e5db52ec16247f58c508398f3e6  # v3.0.0
+        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
         with:
           unset-previous: true
