@@ -1217,16 +1217,14 @@ jobs:
           # Source retry functions
           source /tmp/retry.sh
 
-          # Set error handling
-          set -e
-          trap 'echo "❌ Health check failed at line $LINENO"' ERR
-
           # Parse inputs outside SSH context
           STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
           HAS_DOCKGE="${{ inputs.has-dockge }}"
 
           # Execute health check and capture structured output
+          # Temporarily disable set -e to capture exit code from command substitution
           # Use retry mechanism for health check
+          set +e
           HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} /bin/bash -s $STACKS \"$HAS_DOCKGE\"" << 'EOF'
             set -e
 
@@ -1597,6 +1595,20 @@ jobs:
             fi
           EOF
           )
+          HEALTH_EXIT_CODE=$?
+          set -e
+
+          # Check if health check command failed
+          if [ $HEALTH_EXIT_CODE -ne 0 ]; then
+            echo "::error::Health check failed with exit code: $HEALTH_EXIT_CODE"
+            echo "💥 Health check command failed - marking deployment as failed"
+            # Still extract outputs for debugging before failing
+            echo "$HEALTH_RESULT"
+            if echo "$HEALTH_RESULT" | grep -q "GITHUB_OUTPUT_START"; then
+              echo "$HEALTH_RESULT" | sed -n '/GITHUB_OUTPUT_START/,/GITHUB_OUTPUT_END/p' | grep -E "^(healthy_stacks|degraded_stacks|failed_stacks|total_containers|running_containers|success_rate)=" >> "$GITHUB_OUTPUT" || true
+            fi
+            exit 1
+          fi
 
           # Extract health outputs from structured result
           echo "$HEALTH_RESULT"
