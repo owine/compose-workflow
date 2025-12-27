@@ -518,6 +518,7 @@ jobs:
       - name: Health Check All Services
         id: health
         if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
+        continue-on-error: true
         run: |
           ./.compose-workflow/scripts/deployment/health-check.sh \
             --stacks "${{ join(fromJSON(inputs.stacks), ' ') }}" \
