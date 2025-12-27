@@ -58,5 +58,5 @@ create_temp_env() {
         echo "${var}=placeholder_value" >> "$temp_env_file"
         ;;
     esac
-  done < <(grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u) 2>/dev/null || true
+  done < <(grep -oE '\$\{[^}]+\}' "$compose_file" 2>/dev/null | sort -u || echo "")
 }

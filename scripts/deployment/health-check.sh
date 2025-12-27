@@ -74,20 +74,25 @@ log_info "Starting health check for stacks: $STACKS"
 log_info "Health check timeout: ${HEALTH_TIMEOUT}s, Command timeout: ${COMMAND_TIMEOUT}s"
 
 # Execute health check via SSH with retry
-# Export OP_TOKEN for the remote script to use
-export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
-
 # Escape CRITICAL_SERVICES to prevent glob expansion on remote shell
 ESCAPED_CRITICAL_SERVICES="${CRITICAL_SERVICES//\[/\\[}"
 ESCAPED_CRITICAL_SERVICES="${ESCAPED_CRITICAL_SERVICES//\]/\\]}"
 
 # Use printf %q to properly escape arguments for eval in ssh_retry
+# shellcheck disable=SC2086 # Word splitting is intentional for printf to process each stack
 STACKS_ESCAPED=$(printf '%q ' $STACKS)
 HAS_DOCKGE_ESCAPED=$(printf '%q' "$HAS_DOCKGE")
 
+# Pass OP_TOKEN via stdin (more secure than env vars in process list)
 set +e
-HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES=\"$ESCAPED_CRITICAL_SERVICES\" /bin/bash -s $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED" << 'EOF'
+HEALTH_RESULT=$({
+  echo "$OP_TOKEN"
+  cat << 'EOF'
   set -e
+
+  # Read OP_TOKEN from first line of stdin (passed securely)
+  read -r OP_SERVICE_ACCOUNT_TOKEN
+  export OP_SERVICE_ACCOUNT_TOKEN
 
   # Get arguments passed to script (excluding sensitive OP_TOKEN)
   TOTAL_ARGS=$#
@@ -105,9 +110,8 @@ HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SS
     fi
   done
 
-  # OP_TOKEN, HEALTH_TIMEOUT, COMMAND_TIMEOUT, and CRITICAL_SERVICES are passed via environment variables
-  # from the SSH command line above
-  export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN}"
+  # OP_SERVICE_ACCOUNT_TOKEN was read from stdin above (more secure than env vars)
+  # HEALTH_TIMEOUT, COMMAND_TIMEOUT, and CRITICAL_SERVICES are passed via environment variables
 
   # Set timeout configuration with defaults
   HEALTH_CHECK_TIMEOUT=${HEALTH_TIMEOUT:-180}
@@ -552,7 +556,7 @@ HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SS
     exit 0
   fi
 EOF
-)
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES=\"$ESCAPED_CRITICAL_SERVICES\" /bin/bash -s $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED")
 HEALTH_EXIT_CODE=$?
 set -e
 

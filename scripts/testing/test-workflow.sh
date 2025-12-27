@@ -1,10 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Local testing script for Docker Compose workflows
 # This script simulates the GitHub Actions workflow locally for testing
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034 # REPO_ROOT reserved for future use in local testing
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Color codes
@@ -240,6 +241,7 @@ main() {
                 shift
                 ;;
             -v|--verbose)
+                # shellcheck disable=SC2034 # verbose reserved for future verbose logging implementation
                 verbose="true"
                 shift
                 ;;

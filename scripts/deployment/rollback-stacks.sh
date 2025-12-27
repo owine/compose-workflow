@@ -119,10 +119,17 @@ else
   CRITICAL_SERVICES_ESCAPED=$(printf '%q' "$CRITICAL_SERVICES")
 fi
 
-ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $PREVIOUS_SHA_ESCAPED $COMPOSE_ARGS_ESCAPED $CRITICAL_SERVICES_ESCAPED" << 'EOF'
+# Pass OP_TOKEN via stdin (more secure than env vars in process list)
+ROLLBACK_RESULT=$({
+  echo "$OP_TOKEN"
+  cat << 'EOF'
   set -e
 
-  # Get arguments passed to script (excluding sensitive OP_TOKEN)
+  # Read OP_TOKEN from first line of stdin (passed securely)
+  read -r OP_SERVICE_ACCOUNT_TOKEN
+  export OP_SERVICE_ACCOUNT_TOKEN
+
+  # Get arguments passed to script
   PREVIOUS_SHA="$1"
   COMPOSE_ARGS="$2"
   CRITICAL_SERVICES="$3"
@@ -131,7 +138,8 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
   [ "$COMPOSE_ARGS" = "__EMPTY__" ] && COMPOSE_ARGS=""
   [ "$CRITICAL_SERVICES" = "__EMPTY__" ] && CRITICAL_SERVICES=""
 
-  # OP_SERVICE_ACCOUNT_TOKEN and timeouts are passed via 'env' command on remote side
+  # OP_SERVICE_ACCOUNT_TOKEN was read from stdin above (more secure than env vars)
+  # Timeouts are passed via 'env' command on remote side
   # They are already in the environment, no need to export again
 
   # Consolidate timeout values for easier maintenance
@@ -174,14 +182,13 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
     exit 1
   fi
 
-  # Use null character as delimiter to support stack names with spaces and special characters
-  # Note: Null delimiter is used only within this SSH script execution
-  # The rollback-health step will convert it to space-delimited before passing between workflow steps
-  ROLLBACK_STACKS=$(printf "%s\0" "${ROLLBACK_STACKS_ARRAY[@]}")
+  # Use newline as delimiter for cross-step communication
+  # Newlines work better than null bytes for GitHub Actions step output
+  ROLLBACK_STACKS=$(printf "%s\n" "${ROLLBACK_STACKS_ARRAY[@]}")
   echo "📋 Stacks to rollback: ${ROLLBACK_STACKS_ARRAY[*]}"
 
-  # Output discovered stacks for rollback-health step (null-delimited)
-  # Will be converted to space-delimited in rollback-health step for compatibility
+  # Output discovered stacks for rollback-health step (newline-delimited)
+  # Will be converted to space-delimited in rollback-health step
   echo "DISCOVERED_ROLLBACK_STACKS=$ROLLBACK_STACKS"
 
   # Note: Dockge rollback is now handled by deploy-dockge.sh before this SSH session
@@ -193,7 +200,10 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
     local OPERATION=$2  # "deploy" or "rollback"
     local LOGFILE="/tmp/${OPERATION}_${STACK}.log"
     local EXITCODEFILE="/tmp/${OPERATION}_${STACK}.exitcode"
+    local exit_code=0
 
+    # Execute deployment/rollback in subshell with output redirection
+    # Capture exit code explicitly to ensure it's always written to the exit code file
     {
       if [ "$OPERATION" = "deploy" ]; then
         echo "🚀 Deploying $STACK..."
@@ -222,10 +232,9 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
       else
         echo "✅ $STACK rolled back successfully"
       fi
-    } > "$LOGFILE" 2>&1
+    } > "$LOGFILE" 2>&1 || exit_code=$?
 
-    # Capture and save exit code for robust error detection
-    local exit_code=$?
+    # Always write exit code to file, even if operation failed
     echo "$exit_code" > "$EXITCODEFILE"
     return $exit_code
   }
@@ -238,7 +247,7 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
   # Cleanup function for rollback logs
   cleanup_rollback_logs() {
     # Parse null-delimited stacks into array
-    readarray -d $'\0' -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+    readarray -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
     for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
       rm -f "/tmp/rollback_${STACK}.log" 2>/dev/null
     done
@@ -250,7 +259,7 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
     local validation_failed=false
 
     # Parse null-delimited stacks into array
-    readarray -d $'\0' -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+    readarray -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
     for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
       echo "  Validating $STACK..."
 
@@ -324,7 +333,7 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
   declare -A ROLLBACK_PID_TO_STACK
 
   # Parse null-delimited stacks into array
-  readarray -d $'\0' -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+  readarray -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
 
   for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
     echo "🔄 Rolling back $STACK..."
@@ -372,7 +381,7 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
   ROLLED_BACK_STACKS=""
   SUCCESSFUL_ROLLBACKS=""
   # Parse null-delimited stacks into array
-  readarray -d $'\0' -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+  readarray -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
   for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
     if [ -f "/tmp/rollback_${STACK}.log" ]; then
       ROLLED_BACK_STACKS="$ROLLED_BACK_STACKS $STACK"
@@ -444,7 +453,7 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
   echo "📋 Rollback Results:"
   echo "════════════════════════════════════════════════════════════════"
   # Parse null-delimited stacks into array
-  readarray -d $'\0' -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
+  readarray -t ROLLBACK_STACKS_ARRAY <<< "$ROLLBACK_STACKS"
   for STACK in "${ROLLBACK_STACKS_ARRAY[@]}"; do
     if [ -f "/tmp/rollback_${STACK}.log" ]; then
       echo ""
@@ -483,7 +492,7 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
 
   echo "🎉 All stacks rolled back successfully!"
 EOF
-)
+} | ssh_retry 3 10 "ssh $SSH_USER@$SSH_HOST env GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $PREVIOUS_SHA_ESCAPED $COMPOSE_ARGS_ESCAPED $CRITICAL_SERVICES_ESCAPED")
 
 # Extract rollback result and discovered stacks
 echo "$ROLLBACK_RESULT"

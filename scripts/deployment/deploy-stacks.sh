@@ -98,6 +98,7 @@ log_info "Target ref: $TARGET_REF"
 # Use 'env' on remote side to set environment variables for the remote bash session
 # Use printf %q to properly escape arguments for eval in ssh_retry
 # Empty COMPOSE_ARGS uses placeholder to survive eval
+# shellcheck disable=SC2086 # Word splitting is intentional for printf to process each stack
 STACKS_ESCAPED=$(printf '%q ' $STACKS)
 TARGET_REF_ESCAPED=$(printf '%q' "$TARGET_REF")
 
@@ -107,8 +108,16 @@ else
   COMPOSE_ARGS_ESCAPED=$(printf '%q' "$COMPOSE_ARGS")
 fi
 
-ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $STACKS_ESCAPED $TARGET_REF_ESCAPED $COMPOSE_ARGS_ESCAPED" << 'EOF'
+# Pass OP_TOKEN via stdin (more secure than env vars in process list)
+# Concatenate token as first line, then the deployment script
+{
+  echo "$OP_TOKEN"
+  cat << 'EOF'
   set -e
+
+  # Read OP_TOKEN from first line of stdin (passed securely)
+  read -r OP_SERVICE_ACCOUNT_TOKEN
+  export OP_SERVICE_ACCOUNT_TOKEN
 
   # Performance optimizations
   export DOCKER_BUILDKIT=1
@@ -143,13 +152,8 @@ ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_S
   # Everything before the last 2 arguments are stack names
   STACKS="${@:1:$((TOTAL_ARGS-2))}"
 
-
-  # OP_SERVICE_ACCOUNT_TOKEN and timeouts are passed via 'env' command on remote side
-  # They are already in the environment, no need to export again
-  # export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN}"
-
-  # Consolidate timeout values for easier maintenance
-  # These can be overridden by workflow inputs where available
+  # OP_SERVICE_ACCOUNT_TOKEN was read from stdin above (more secure than env vars)
+  # Timeouts are passed via 'env' command on remote side
   GIT_FETCH_TIMEOUT=${GIT_FETCH_TIMEOUT:-60}
   GIT_CHECKOUT_TIMEOUT=${GIT_CHECKOUT_TIMEOUT:-30}
   IMAGE_PULL_TIMEOUT=${IMAGE_PULL_TIMEOUT:-300}
@@ -179,7 +183,10 @@ ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_S
     local OPERATION=$2  # "deploy" or "rollback"
     local LOGFILE="/tmp/${OPERATION}_${STACK}.log"
     local EXITCODEFILE="/tmp/${OPERATION}_${STACK}.exitcode"
+    local exit_code=0
 
+    # Execute deployment/rollback in subshell with output redirection
+    # Capture exit code explicitly to ensure it's always written to the exit code file
     {
       if [ "$OPERATION" = "deploy" ]; then
         echo "🚀 Deploying $STACK..."
@@ -208,10 +215,9 @@ ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_S
       else
         echo "✅ $STACK rolled back successfully"
       fi
-    } > "$LOGFILE" 2>&1
+    } > "$LOGFILE" 2>&1 || exit_code=$?
 
-    # Capture and save exit code for robust error detection
-    local exit_code=$?
+    # Always write exit code to file, even if operation failed
     echo "$exit_code" > "$EXITCODEFILE"
     return $exit_code
   }
@@ -404,6 +410,7 @@ ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_S
 
   echo "🎉 All stacks deployed successfully in parallel!"
 EOF
+} | ssh_retry 3 10 "ssh $SSH_USER@$SSH_HOST env GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $STACKS_ESCAPED $TARGET_REF_ESCAPED $COMPOSE_ARGS_ESCAPED"
 
 log_success "Deployment completed successfully"
 exit 0

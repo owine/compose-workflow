@@ -45,6 +45,27 @@
         "major"
       ],
       "minimumReleaseAge": "3 days"
+    },
+    {
+      "groupName": "Critical Security Actions",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackagePatterns": [
+        "^actions/checkout",
+        "^1password/",
+        "^tailscale/github-action"
+      ],
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "labels": [
+        "security",
+        "dependencies",
+        "review-required"
+      ]
     }
   ]
 }

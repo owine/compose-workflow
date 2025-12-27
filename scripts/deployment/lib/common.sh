@@ -75,10 +75,16 @@ format_list() {
 # Check if variable is set and non-empty
 require_var() {
   local var_name=$1
+  local context="${2:-}"  # Optional context parameter
   local var_value="${!var_name:-}"
 
   if [ -z "$var_value" ]; then
-    log_error "Required variable $var_name is not set"
+    local caller_info="${FUNCNAME[1]}:${BASH_LINENO[0]}"
+    if [ -n "$context" ]; then
+      log_error "Required variable $var_name is not set (at $caller_info, context: $context)"
+    else
+      log_error "Required variable $var_name is not set (at $caller_info)"
+    fi
     return 1
   fi
 
