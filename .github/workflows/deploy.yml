@@ -1,17 +1,18 @@
 name: Deploy Docker Compose
 
-# Future Refactoring Recommendations:
-# 1. Extract bash logic into separate composite actions or standalone scripts
-#    - Retry mechanisms (retry.sh, ssh_retry) could be a reusable composite action
-#    - Process_stack function could be extracted to a standalone script
-#    - Validation functions could be moved to a validation composite action
-# 2. Consider splitting deploy and rollback into separate reusable workflows
-#    - Would improve readability and make each workflow easier to maintain
-#    - Could share common functionality via composite actions
-# 3. Abstract common patterns into reusable functions
-#    - Exit code and log handling patterns appear multiple times
-#    - Could create helper functions for result parsing and analysis
-# Note: Current implementation prioritizes single-file simplicity for easier debugging
+# Refactoring Status:
+# ✅ Extracted deployment scripts to scripts/deployment/ (Phases 1-5 complete)
+#    - lib/ssh-helpers.sh: Retry mechanisms with exponential backoff
+#    - lib/common.sh: Logging, validation, and utility functions
+#    - health-check.sh: Service health verification with stack-specific counting
+#    - deploy-stacks.sh: Parallel deployment with comprehensive error handling
+#    - detect-removed-stacks.sh: Multi-method stack removal detection
+#    - cleanup-stack.sh: Individual stack cleanup helper
+#    - rollback-stacks.sh: Automated rollback with stack discovery
+#
+# Future Enhancements:
+# - Consider composite actions for Tailscale setup and SSH configuration
+# - Evaluate splitting deploy/rollback into separate reusable workflows
 
 on:
   workflow_call:
@@ -240,75 +241,6 @@ jobs:
 
           echo "✅ All required tools verified"
 
-      - name: Setup retry mechanism
-        run: |
-          # Create retry function for bash commands
-          cat > /tmp/retry.sh << 'EOF'
-          #!/bin/bash
-          retry() {
-            local max_attempts=$1
-            local delay=$2
-            local command="${@:3}"
-            local attempt=1
-
-            while [ $attempt -le $max_attempts ]; do
-              echo "Attempt $attempt of $max_attempts: $command"
-              if eval "$command"; then
-                echo "✅ Command succeeded on attempt $attempt"
-                return 0
-              else
-                echo "❌ Command failed on attempt $attempt"
-                if [ $attempt -lt $max_attempts ]; then
-                  echo "⏳ Waiting ${delay}s before retry..."
-                  sleep $delay
-                  delay=$((delay * 2))  # Exponential backoff
-                fi
-                attempt=$((attempt + 1))
-              fi
-            done
-
-            echo "💥 Command failed after $max_attempts attempts"
-            return 1
-          }
-
-          # Create SSH retry function with specific error handling
-          ssh_retry() {
-            local max_attempts=$1
-            local delay=$2
-            local ssh_cmd="${@:3}"
-            local attempt=1
-            local last_exit_code=1
-
-            while [ $attempt -le $max_attempts ]; do
-              echo "SSH Attempt $attempt of $max_attempts" >&2
-              if eval "$ssh_cmd"; then
-                echo "✅ SSH command succeeded on attempt $attempt" >&2
-                return 0
-              else
-                last_exit_code=$?
-                echo "❌ SSH command failed on attempt $attempt (exit code: $last_exit_code)" >&2
-
-                # Check for specific SSH errors
-                case $last_exit_code in
-                  255) echo "SSH connection error - network/auth issue" >&2 ;;
-                  1) echo "General SSH error" >&2 ;;
-                  *) echo "Unknown error code: $last_exit_code" >&2 ;;
-                esac
-
-                if [ $attempt -lt $max_attempts ]; then
-                  echo "⏳ Waiting ${delay}s before SSH retry..." >&2
-                  sleep $delay
-                fi
-                attempt=$((attempt + 1))
-              fi
-            done
-
-            echo "💥 SSH command failed after $max_attempts attempts (final exit code: $last_exit_code)" >&2
-            return $last_exit_code
-          }
-          EOF
-          chmod +x /tmp/retry.sh
-
       - name: Cache deployment tools
         uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb  # v5.0.1
         with:
@@ -384,7 +316,7 @@ jobs:
         id: determine-previous
         run: |
           # Use retry mechanism for SSH connection
-          source /tmp/retry.sh
+          source ./scripts/deployment/lib/ssh-helpers.sh
 
           # Get current deployment SHA with error handling
           echo "🔍 Checking current deployment SHA for change detection..."
@@ -418,7 +350,7 @@ jobs:
         run: |
           echo "::group::Preparing deployment backup"
           # Use retry mechanism for SSH connection
-          source /tmp/retry.sh
+          source ./scripts/deployment/lib/ssh-helpers.sh
 
           # Get current deployment SHA with error handling
           echo "🔍 Checking current deployment SHA..."

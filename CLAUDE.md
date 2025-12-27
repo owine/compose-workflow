@@ -121,6 +121,62 @@ Example Discord notification configuration:
 webhook-url: "op://Docker/discord-github-notifications/environment_webhook_url"
 ```
 
+### Modular Deployment Scripts
+
+The deploy workflow uses modular bash scripts in `scripts/deployment/` for all major operations:
+
+#### Library Files (`scripts/deployment/lib/`)
+- **ssh-helpers.sh** - Retry mechanisms with exponential backoff
+  - `retry()` - General command retry with configurable attempts and delays
+  - `ssh_retry()` - SSH-specific retry with error code handling
+  - `ssh_exec()` - Simple SSH execution wrapper
+- **common.sh** - Logging, validation, and utilities
+  - Colored logging functions (`log_info`, `log_success`, `log_error`, `log_warning`)
+  - Input validation (`validate_stack_name`, `validate_sha`, `validate_op_reference`)
+  - GitHub Actions output helpers (`set_github_output`)
+  - Utility functions (`format_list`, `require_var`)
+
+#### Deployment Scripts
+- **health-check.sh** - Service health verification (584 lines)
+  - Stack-specific service counting with accurate compose file detection
+  - Dynamic retry logic based on critical service failures
+  - Comprehensive health status reporting (healthy/degraded/failed stacks)
+  - Docker health status parsing (healthy/starting/unhealthy containers)
+  - Dockge integration when enabled
+
+- **deploy-stacks.sh** - Deployment orchestration (690 lines)
+  - Parallel stack deployment with background processes
+  - Exit code file-based error detection
+  - Comprehensive logging with stack-specific output
+  - Git operations with configurable timeouts
+  - Image pull and service startup with retry logic
+  - Compose syntax and environment validation
+
+- **detect-removed-stacks.sh** - Stack removal detection (328 lines)
+  - Three-method detection system (git diff, tree comparison, discovery analysis)
+  - Union-based aggregation with fail-safe error handling
+  - Automatic cleanup of removed stacks
+  - Null-delimited output for special character support
+
+- **cleanup-stack.sh** - Individual stack cleanup (87 lines)
+  - Single stack removal helper
+  - 1Password integration for environment variables
+  - Graceful handling of missing stacks
+
+- **rollback-stacks.sh** - Rollback automation (495 lines)
+  - SHA validation and git operations
+  - Dynamic stack discovery from previous commit
+  - Parallel rollback execution with PID tracking
+  - Critical service failure detection
+  - Comprehensive error reporting
+
+#### Script Benefits
+- **Modularity**: Each script has a single, well-defined purpose
+- **Reusability**: Scripts can be called from other workflows or locally
+- **Testability**: Scripts can be tested independently of the workflow
+- **Maintainability**: Easier to update and debug than inline heredocs
+- **Expression Limits**: Eliminated GitHub Actions 21,000 character heredoc limit issues
+
 ## Development Commands
 
 ### Workflow Development
@@ -256,16 +312,26 @@ This repository contains:
 ```
 ├── .github/
 │   └── workflows/
-│       ├── lint.yml           # Reusable lint workflow
-│       └── deploy.yml         # Reusable deploy workflow  
+│       ├── lint.yml              # Reusable lint workflow
+│       └── deploy.yml            # Reusable deploy workflow (783 lines, 69% reduction)
 ├── scripts/
+│   ├── deployment/               # Modular deployment scripts
+│   │   ├── lib/
+│   │   │   ├── ssh-helpers.sh   # Retry mechanisms (68 lines)
+│   │   │   └── common.sh        # Utilities and validation (86 lines)
+│   │   ├── health-check.sh      # Health verification (584 lines)
+│   │   ├── deploy-stacks.sh     # Deployment orchestration (690 lines)
+│   │   ├── detect-removed-stacks.sh  # Stack removal detection (328 lines)
+│   │   ├── cleanup-stack.sh     # Individual stack cleanup (87 lines)
+│   │   ├── rollback-stacks.sh   # Rollback automation (495 lines)
+│   │   └── IMPLEMENTATION_GUIDE.md  # Refactoring documentation
 │   └── testing/
-│       ├── test-workflow.sh   # Workflow testing script
-│       ├── validate-compose.sh # Compose validation script
-│       └── README.md          # Testing documentation
-├── CLAUDE.md                  # This file - Claude Code guidance
-├── README.md                  # Repository documentation
-└── renovate.json              # Renovate configuration for dependency updates
+│       ├── test-workflow.sh     # Workflow testing script
+│       ├── validate-compose.sh  # Compose validation script
+│       └── README.md            # Testing documentation
+├── CLAUDE.md                    # This file - Claude Code guidance
+├── README.md                    # Repository documentation
+└── renovate.json                # Renovate configuration for dependency updates
 ```
 
 ### Dependency Management
