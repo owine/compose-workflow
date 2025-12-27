@@ -168,6 +168,13 @@ jobs:
           repository: ${{ inputs.target-repository }}
           ref: ${{ inputs.target-ref }}
 
+      - name: Checkout compose-workflow for linting scripts
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          repository: owine/compose-workflow
+          ref: main
+          path: .compose-workflow
+
       - name: Display version information
         run: |
           echo "📋 Workflow Version Information"
@@ -179,164 +186,11 @@ jobs:
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      - name: Run parallel linting
+      - name: Run stack validation
         run: |
-          # Set pipefail to capture exit codes correctly from pipelines
-          set -o pipefail
-
-          # Create temporary files for capturing output
-          YAML_OUTPUT=$(mktemp)
-          DOCKER_OUTPUT=$(mktemp)
-          DOCKER_FILTERED=$(mktemp)
-
-          echo "🔍 Starting validation for stack: ${{ matrix.stack }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📁 Stack: ${{ matrix.stack }}"
-          echo "📄 File: ./${{ matrix.stack }}/compose.yaml"
-          echo ""
-
-          # Function to create temporary environment file with placeholder values
-          create_temp_env() {
-            local compose_file="$1"
-            local temp_env_file="$2"
-
-            # Extract environment variable references from compose file and create realistic placeholders
-            while IFS= read -r match; do
-              # Remove ${ prefix and } suffix using parameter expansion
-              var="${match#\$\{}"
-              var="${var%\}}"
-              # Use realistic placeholder values based on common variable patterns
-              case "$var" in
-                *PATH*|*DIR*)
-                  echo "${var}=/tmp/placeholder" >> "$temp_env_file"
-                  ;;
-                *DOMAIN*)
-                  echo "${var}=example.com" >> "$temp_env_file"
-                  ;;
-                *PORT*)
-                  echo "${var}=8080" >> "$temp_env_file"
-                  ;;
-                *KEY*|*SECRET*|*TOKEN*|*PASS*)
-                  echo "${var}=placeholder-secret-value" >> "$temp_env_file"
-                  ;;
-                *URL*|*HOST*)
-                  echo "${var}=http://localhost:8080" >> "$temp_env_file"
-                  ;;
-                UID|PUID)
-                  echo "${var}=1000" >> "$temp_env_file"
-                  ;;
-                GID|PGID)
-                  echo "${var}=1000" >> "$temp_env_file"
-                  ;;
-                TZ)
-                  echo "${var}=UTC" >> "$temp_env_file"
-                  ;;
-                *)
-                  echo "${var}=placeholder_value" >> "$temp_env_file"
-                  ;;
-              esac
-            done < <(grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u) 2>/dev/null || true
-          }
-
-          # Run YAML and Docker Compose linting in parallel with output capture
-          (set -o pipefail; yamllint --strict --config-file .yamllint ./${{ matrix.stack }}/compose.yaml 2>&1 | tee "$YAML_OUTPUT") &
-          YAML_PID=$!
-
-          # Create temporary .env with placeholders to suppress environment variable warnings
-          TEMP_ENV=$(mktemp)
-          create_temp_env "./${{ matrix.stack }}/compose.yaml" "$TEMP_ENV"
-
-          (set -o pipefail; docker compose --env-file "$TEMP_ENV" -f ./${{ matrix.stack }}/compose.yaml config 2>&1 | tee "$DOCKER_OUTPUT") &
-          DOCKER_PID=$!
-
-          # Wait for both processes and capture exit codes
-          wait $YAML_PID
-          YAML_EXIT=$?
-
-          wait $DOCKER_PID
-          DOCKER_EXIT=$?
-
-          # Filter Docker Compose output to remove environment variable warnings but keep real errors
-          if [ $DOCKER_EXIT -eq 0 ]; then
-            # If Docker Compose succeeded, just copy the output
-            cp "$DOCKER_OUTPUT" "$DOCKER_FILTERED"
-          else
-            # If Docker Compose failed, filter out common environment variable warnings but keep errors
-            grep -v "WARNING.*interpolat" "$DOCKER_OUTPUT" | \
-            grep -v "WARNING.*environment variable" | \
-            grep -v "WARNING.*not set" > "$DOCKER_FILTERED" || cp "$DOCKER_OUTPUT" "$DOCKER_FILTERED"
-          fi
-
-          # Cleanup temporary env file
-          rm -f "$TEMP_ENV"
-
-          echo ""
-          echo "📋 VALIDATION RESULTS SUMMARY"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          # Report YAML linting results with enhanced formatting
-          echo ""
-          echo "📝 YAML LINTING (yamllint)"
-          echo "───────────────────────────────────────────────────────────────────────────────────"
-          if [ $YAML_EXIT -eq 0 ]; then
-            echo "✅ PASSED - YAML syntax and formatting is valid"
-          else
-            echo "❌ FAILED - YAML linting detected issues in ./${{ matrix.stack }}/compose.yaml:"
-            echo ""
-            echo "🔍 Issues found:"
-            sed 's/^/    /' "$YAML_OUTPUT" | sed 's|\.\/||g'
-            echo ""
-            echo "🛠️  Fix locally with:"
-            echo "    yamllint --strict --config-file .yamllint ${{ matrix.stack }}/compose.yaml"
-          fi
-
-          echo ""
-
-          # Report Docker Compose validation results
-          echo "🐳 DOCKER COMPOSE VALIDATION (docker compose config)"
-          echo "───────────────────────────────────────────────────────────────────────────────────"
-          if [ $DOCKER_EXIT -eq 0 ]; then
-            echo "✅ PASSED - Docker Compose configuration is valid"
-          else
-            echo "❌ FAILED - Docker Compose validation detected issues in ./${{ matrix.stack }}/compose.yaml:"
-            echo ""
-            echo "🔍 Issues found:"
-            # Use filtered output to show relevant errors
-            if [ -s "$DOCKER_FILTERED" ]; then
-              sed 's/^/    /' "$DOCKER_FILTERED"
-            else
-              echo "    Configuration errors detected (see full output above)"
-            fi
-            echo ""
-            echo "🛠️  Fix locally with:"
-            echo "    docker compose -f ${{ matrix.stack }}/compose.yaml config"
-          fi
-
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          # Final status summary
-          if [ $YAML_EXIT -eq 0 ] && [ $DOCKER_EXIT -eq 0 ]; then
-            echo "🎉 OVERALL STATUS: ALL VALIDATION CHECKS PASSED"
-            echo "   Stack '${{ matrix.stack }}' is ready for deployment"
-          else
-            echo "💥 OVERALL STATUS: VALIDATION FAILED"
-            echo "   Stack '${{ matrix.stack }}' has configuration issues that must be resolved"
-            echo ""
-            echo "   Failed checks:"
-            [ $YAML_EXIT -ne 0 ] && echo "   • YAML linting (yamllint)"
-            [ $DOCKER_EXIT -ne 0 ] && echo "   • Docker Compose validation (docker compose config)"
-          fi
-
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          # Cleanup temporary files
-          rm -f "$YAML_OUTPUT" "$DOCKER_OUTPUT" "$DOCKER_FILTERED"
-
-          # Exit with error if any linting failed
-          if [ $YAML_EXIT -ne 0 ] || [ $DOCKER_EXIT -ne 0 ]; then
-            exit 1
-          fi
+          ./.compose-workflow/scripts/linting/validate-stack.sh \
+            --stack "${{ matrix.stack }}" \
+            --yamllint-config .yamllint
 
       - name: Report lint status
         if: always()
@@ -368,233 +222,21 @@ jobs:
           repository: ${{ inputs.target-repository }}
           ref: ${{ inputs.target-ref }}
 
+      - name: Checkout compose-workflow for linting scripts
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          repository: owine/compose-workflow
+          ref: main
+          path: .compose-workflow
+
       - name: 📊 Generate detailed summary with error reproduction
         run: |
-          # Function to create temporary environment file with placeholder values
-          create_temp_env() {
-            local compose_file="$1"
-            local temp_env_file="$2"
-
-            # Extract environment variable references from compose file and create realistic placeholders
-            while IFS= read -r match; do
-              # Remove ${ prefix and } suffix using parameter expansion
-              var="${match#\$\{}"
-              var="${var%\}}"
-              # Use realistic placeholder values based on common variable patterns
-              case "$var" in
-                *PATH*|*DIR*)
-                  echo "${var}=/tmp/placeholder" >> "$temp_env_file"
-                  ;;
-                *DOMAIN*)
-                  echo "${var}=example.com" >> "$temp_env_file"
-                  ;;
-                *PORT*)
-                  echo "${var}=8080" >> "$temp_env_file"
-                  ;;
-                *KEY*|*SECRET*|*TOKEN*|*PASS*)
-                  echo "${var}=placeholder-secret-value" >> "$temp_env_file"
-                  ;;
-                *URL*|*HOST*)
-                  echo "${var}=http://localhost:8080" >> "$temp_env_file"
-                  ;;
-                UID|PUID)
-                  echo "${var}=1000" >> "$temp_env_file"
-                  ;;
-                GID|PGID)
-                  echo "${var}=1000" >> "$temp_env_file"
-                  ;;
-                TZ)
-                  echo "${var}=UTC" >> "$temp_env_file"
-                  ;;
-                *)
-                  echo "${var}=placeholder_value" >> "$temp_env_file"
-                  ;;
-              esac
-            done < <(grep -oE '\$\{[^}]+\}' "$compose_file" | sort -u) 2>/dev/null || true
-          }
-
-          echo "📊 Final Validation Summary"
-          echo ""
-          echo "🔍 COMPREHENSIVE VALIDATION RESULTS"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-
-          # GitGuardian Scanning Results
-          echo "🔒 GITGUARDIAN SECURITY SCANNING"
-          echo "───────────────────────────────────────────────────────────────────────────────────"
-          case "${{ needs.scanning.result }}" in
-            "success")
-              echo "✅ PASSED - No secrets detected in code changes"
-              SCANNING_OK=true
-              ;;
-            "skipped")
-              echo "⏭️  SKIPPED - Security scanning only runs on push events"
-              SCANNING_OK=true
-              ;;
-            "failure")
-              echo "❌ FAILED - Security issues detected (secrets or policy violations)"
-              SCANNING_OK=false
-              ;;
-            *)
-              echo "❓ UNKNOWN - Unexpected scanning result: ${{ needs.scanning.result }}"
-              SCANNING_OK=false
-              ;;
-          esac
-
-          echo ""
-
-          # Actionlint Workflow Validation Results
-          echo "⚙️  WORKFLOW VALIDATION (ACTIONLINT)"
-          echo "───────────────────────────────────────────────────────────────────────────────────"
-          case "${{ needs.actionlint.result }}" in
-            "success")
-              echo "✅ PASSED - All GitHub Actions workflows are valid"
-              ACTIONLINT_OK=true
-              ;;
-            "failure")
-              echo "❌ FAILED - Workflow validation issues detected"
-              ACTIONLINT_OK=false
-              ;;
-            *)
-              echo "❓ UNKNOWN - Unexpected actionlint result: ${{ needs.actionlint.result }}"
-              ACTIONLINT_OK=false
-              ;;
-          esac
-
-          echo ""
-
-          # Detailed Lint Results with Error Reproduction
-          echo "📋 CODE QUALITY VALIDATION - DETAILED RESULTS"
-          echo "───────────────────────────────────────────────────────────────────────────────────"
-
-          # Parse stacks from input
-          STACKS='${{ inputs.stacks }}'
-          echo "📁 Analyzing stacks: $(echo "$STACKS" | jq -r 'join(", ")')"
-          echo ""
-
-          LINT_OK=true
-
-          # Process each stack and reproduce errors if validation failed
-          echo "$STACKS" | jq -r '.[]' | while read -r stack; do
-            echo "🔍 Checking stack: $stack"
-            echo "📄 File: ./$stack/compose.yaml"
-
-            # Check if stack file exists
-            if [[ ! -f "./$stack/compose.yaml" ]]; then
-              echo "❌ ERROR: Stack file ./$stack/compose.yaml not found"
-              continue
-            fi
-
-            STACK_FAILED=false
-
-            # Run YAML validation
-            echo ""
-            echo "   📝 YAML Linting (yamllint):"
-            if yamllint --strict --config-file .yamllint "./$stack/compose.yaml" 2>/dev/null; then
-              echo "   ✅ PASSED - YAML validation successful"
-            else
-              echo "   ❌ FAILED - YAML validation detected issues:"
-              echo ""
-              # shellcheck disable=SC2001  # sed is appropriate for multi-line prefix addition
-              yamllint --strict --config-file .yamllint "./$stack/compose.yaml" 2>&1 | sed 's/^/      /' | sed 's|\.\/||g'
-              echo ""
-              echo "   🛠️  Fix locally: yamllint --strict --config-file .yamllint $stack/compose.yaml"
-              STACK_FAILED=true
-            fi
-
-            echo ""
-            echo "   🐳 Docker Compose Validation:"
-
-            # Create temporary .env with placeholders to suppress environment variable warnings
-            TEMP_ENV=$(mktemp)
-            create_temp_env "./$stack/compose.yaml" "$TEMP_ENV"
-
-            if docker compose --env-file "$TEMP_ENV" -f "./$stack/compose.yaml" config >/dev/null 2>&1; then
-              echo "   ✅ PASSED - Docker Compose validation successful"
-            else
-              echo "   ❌ FAILED - Docker Compose validation detected issues:"
-              echo ""
-              # Show filtered errors (remove environment variable warnings)
-              DOCKER_ERRORS=$(docker compose --env-file "$TEMP_ENV" -f "./$stack/compose.yaml" config 2>&1 | \
-                grep -v "WARNING.*interpolat" | \
-                grep -v "WARNING.*environment variable" | \
-                grep -v "WARNING.*not set" || echo "Configuration errors detected")
-
-              if [[ -n "$DOCKER_ERRORS" && "$DOCKER_ERRORS" != "Configuration errors detected" ]]; then
-                # shellcheck disable=SC2001  # sed is appropriate for multi-line prefix addition
-                sed 's/^/      /' <<< "$DOCKER_ERRORS"
-              else
-                echo "      Configuration syntax or structure issues detected"
-              fi
-              echo ""
-              echo "   🛠️  Fix locally: docker compose -f $stack/compose.yaml config"
-              STACK_FAILED=true
-            fi
-
-            rm -f "$TEMP_ENV"
-
-            if [[ "$STACK_FAILED" == "true" ]]; then
-              echo "   🚨 Stack $stack has validation failures"
-            else
-              echo "   ✅ Stack $stack passed all validations"
-            fi
-
-            echo ""
-            echo "───────────────────────────────────────────────────────────────────────────────────"
-          done
-
-          echo ""
-
-          # Overall Results Summary
-          if [[ "${{ needs.lint.result }}" == "success" ]]; then
-            echo "✅ ALL STACKS PASSED - YAML and Docker Compose validations successful"
-            LINT_OK=true
-          else
-            echo "❌ VALIDATION FAILURES DETECTED"
-            echo ""
-            echo "🚨 Failed Stacks Summary:"
-            # Re-check for any failures to show summary
-            echo "$STACKS" | jq -r '.[]' | while read -r stack; do
-              FAILED_CHECKS=()
-
-              if ! yamllint --strict --config-file .yamllint "./$stack/compose.yaml" >/dev/null 2>&1; then
-                FAILED_CHECKS+=("YAML linting")
-              fi
-
-              TEMP_ENV=$(mktemp)
-              create_temp_env "./$stack/compose.yaml" "$TEMP_ENV"
-
-              if ! docker compose --env-file "$TEMP_ENV" -f "./$stack/compose.yaml" config >/dev/null 2>&1; then
-                FAILED_CHECKS+=("Docker Compose validation")
-              fi
-              rm -f "$TEMP_ENV"
-
-              if [[ ${#FAILED_CHECKS[@]} -gt 0 ]]; then
-                echo "   • $stack - $(IFS=', '; echo "${FAILED_CHECKS[*]}")"
-              fi
-            done
-            LINT_OK=false
-          fi
-
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          # Final determination
-          if [[ "$SCANNING_OK" == "true" && "$ACTIONLINT_OK" == "true" && "$LINT_OK" == "true" ]]; then
-            echo "🎉 FINAL STATUS: ALL VALIDATION CHECKS PASSED"
-            echo "   Repository is ready for deployment"
-            exit 0
-          else
-            echo "💥 FINAL STATUS: VALIDATION FAILED"
-            echo "   Issues must be resolved before deployment"
-            echo ""
-            echo "   Failed components:"
-            [[ "$SCANNING_OK" != "true" ]] && echo "   • GitGuardian security scanning"
-            [[ "$ACTIONLINT_OK" != "true" ]] && echo "   • Workflow validation (actionlint)"
-            [[ "$LINT_OK" != "true" ]] && echo "   • Code quality validation (see detailed errors above)"
-            echo ""
-            exit 1
-          fi
+          ./.compose-workflow/scripts/linting/lint-summary.sh \
+            --stacks '${{ inputs.stacks }}' \
+            --yamllint-config .yamllint \
+            --scanning-result "${{ needs.scanning.result }}" \
+            --actionlint-result "${{ needs.actionlint.result }}" \
+            --lint-result "${{ needs.lint.result }}"
 
   notify:
     name: Discord Notification

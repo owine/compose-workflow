@@ -121,6 +121,41 @@ Example Discord notification configuration:
 webhook-url: "op://Docker/discord-github-notifications/environment_webhook_url"
 ```
 
+### Modular Linting Scripts
+
+The lint workflow uses modular bash scripts in `scripts/linting/` for all validation operations:
+
+#### Library Files (`scripts/linting/lib/`)
+- **env-helpers.sh** - Environment file generation for validation
+  - `create_temp_env()` - Creates temporary .env files with realistic placeholders
+  - Eliminates environment variable warnings during Docker Compose validation
+- **common.sh** - Logging and utilities
+  - Colored logging functions (`log_info`, `log_success`, `log_error`, `log_warning`)
+  - Validation functions (`validate_stack_name`, `require_var`)
+  - Formatting helpers (`format_list`, `print_separator`, `print_subseparator`)
+  - GitHub Actions output helpers (`set_github_output`)
+
+#### Linting Scripts
+- **validate-stack.sh** - Stack validation (172 lines)
+  - Parallel execution of YAML linting and Docker Compose validation
+  - Comprehensive error reporting with fix suggestions
+  - Temporary file management and cleanup
+  - Exit code-based failure detection
+
+- **lint-summary.sh** - Summary generation (239 lines)
+  - Aggregates results from GitGuardian, actionlint, and stack validation
+  - Reproduces validation errors with detailed context
+  - Generates comprehensive final status report
+  - Determines overall workflow success/failure
+
+#### Script Benefits
+- **Modularity**: Each script has a single, well-defined purpose
+- **Reusability**: Scripts can be called from other workflows or locally
+- **Testability**: Scripts can be tested independently of the workflow
+- **Maintainability**: Easier to update and debug than inline heredocs
+- **Code Deduplication**: Eliminates 80 lines of duplicated create_temp_env function
+- **Workflow Reduction**: lint.yml reduced from 666 → 308 lines (54% reduction)
+
 ### Modular Deployment Scripts
 
 The deploy workflow uses modular bash scripts in `scripts/deployment/` for all major operations:
@@ -312,9 +347,16 @@ This repository contains:
 ```
 ├── .github/
 │   └── workflows/
-│       ├── lint.yml              # Reusable lint workflow
+│       ├── lint.yml              # Reusable lint workflow (308 lines, 54% reduction)
 │       └── deploy.yml            # Reusable deploy workflow (783 lines, 69% reduction)
 ├── scripts/
+│   ├── linting/                  # Modular linting scripts
+│   │   ├── lib/
+│   │   │   ├── env-helpers.sh   # Environment file generation (73 lines)
+│   │   │   └── common.sh        # Utilities and logging (78 lines)
+│   │   ├── validate-stack.sh    # Stack validation (172 lines)
+│   │   ├── lint-summary.sh      # Summary generation (239 lines)
+│   │   └── .shellcheckrc        # ShellCheck configuration
 │   ├── deployment/               # Modular deployment scripts
 │   │   ├── lib/
 │   │   │   ├── ssh-helpers.sh   # Retry mechanisms (68 lines)
@@ -324,6 +366,7 @@ This repository contains:
 │   │   ├── detect-removed-stacks.sh  # Stack removal detection (328 lines)
 │   │   ├── cleanup-stack.sh     # Individual stack cleanup (87 lines)
 │   │   ├── rollback-stacks.sh   # Rollback automation (495 lines)
+│   │   ├── .shellcheckrc        # ShellCheck configuration
 │   │   └── IMPLEMENTATION_GUIDE.md  # Refactoring documentation
 │   └── testing/
 │       ├── test-workflow.sh     # Workflow testing script
