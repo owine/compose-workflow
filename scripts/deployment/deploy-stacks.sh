@@ -97,9 +97,15 @@ log_info "Target ref: $TARGET_REF"
 # Execute deployment via SSH with retry
 # Use 'env' on remote side to set environment variables for the remote bash session
 # Use printf %q to properly escape arguments for eval in ssh_retry
+# Empty COMPOSE_ARGS uses placeholder to survive eval
 STACKS_ESCAPED=$(printf '%q ' $STACKS)
 TARGET_REF_ESCAPED=$(printf '%q' "$TARGET_REF")
-COMPOSE_ARGS_ESCAPED=$(printf '%q' "$COMPOSE_ARGS")
+
+if [ -z "$COMPOSE_ARGS" ]; then
+  COMPOSE_ARGS_ESCAPED="__EMPTY__"
+else
+  COMPOSE_ARGS_ESCAPED=$(printf '%q' "$COMPOSE_ARGS")
+fi
 
 ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $STACKS_ESCAPED $TARGET_REF_ESCAPED $COMPOSE_ARGS_ESCAPED" << 'EOF'
   set -e
@@ -117,21 +123,19 @@ ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_S
 
   TOTAL_ARGS=$#
 
-  # Debug: Show what arguments were received
-  echo "DEBUG: Received $TOTAL_ARGS arguments:"
-  for i in $(seq 1 $TOTAL_ARGS); do
-    eval "arg=\${$i}"
-    echo "  \$$i = [$arg]"
-  done
-
   # Validate minimum arguments (at least 1 stack + TARGET_REF + COMPOSE_ARGS)
   if [ $TOTAL_ARGS -lt 3 ]; then
     echo "❌ Insufficient arguments: expected at least 3 (stacks, target-ref, compose-args), got $TOTAL_ARGS"
     exit 1
   fi
 
-  # Last argument is always COMPOSE_ARGS (could be empty)
+  # Last argument is always COMPOSE_ARGS (could be empty placeholder)
   COMPOSE_ARGS="${!TOTAL_ARGS}"
+
+  # Convert __EMPTY__ placeholder back to empty string
+  if [ "$COMPOSE_ARGS" = "__EMPTY__" ]; then
+    COMPOSE_ARGS=""
+  fi
 
   # Second-to-last argument is always TARGET_REF
   TARGET_REF="${@:$((TOTAL_ARGS-1)):1}"
