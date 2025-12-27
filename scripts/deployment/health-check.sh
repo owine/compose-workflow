@@ -83,16 +83,19 @@ ESCAPED_CRITICAL_SERVICES="${ESCAPED_CRITICAL_SERVICES//\]/\\]}"
 STACKS_ESCAPED=$(printf '%q ' $STACKS)
 HAS_DOCKGE_ESCAPED=$(printf '%q' "$HAS_DOCKGE")
 
-# Pass OP_TOKEN via stdin (more secure than env vars in process list)
+# Pass OP_TOKEN as positional argument (more secure than env vars in process list)
+# Token passed as $1, appears in SSH command locally but not in remote ps output
 set +e
 HEALTH_RESULT=$({
-  echo "$OP_TOKEN"
   cat << 'EOF'
   set -e
 
-  # Read OP_TOKEN from first line of stdin (passed securely)
-  read -r OP_SERVICE_ACCOUNT_TOKEN
+  # Get OP_TOKEN from first positional argument (passed securely via SSH)
+  OP_SERVICE_ACCOUNT_TOKEN="$1"
   export OP_SERVICE_ACCOUNT_TOKEN
+
+  # Shift to get actual script arguments (stacks, has-dockge)
+  shift
 
   # Get arguments passed to script (excluding sensitive OP_TOKEN)
   TOTAL_ARGS=$#
@@ -110,7 +113,7 @@ HEALTH_RESULT=$({
     fi
   done
 
-  # OP_SERVICE_ACCOUNT_TOKEN was read from stdin above (more secure than env vars)
+  # OP_SERVICE_ACCOUNT_TOKEN was passed as $1 (more secure than long-lived env vars)
   # HEALTH_TIMEOUT, COMMAND_TIMEOUT, and CRITICAL_SERVICES are passed via environment variables
 
   # Set timeout configuration with defaults
@@ -556,7 +559,7 @@ HEALTH_RESULT=$({
     exit 0
   fi
 EOF
-} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES=\"$ESCAPED_CRITICAL_SERVICES\" /bin/bash -s $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED")
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES=\"$ESCAPED_CRITICAL_SERVICES\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED")
 HEALTH_EXIT_CODE=$?
 set -e
 

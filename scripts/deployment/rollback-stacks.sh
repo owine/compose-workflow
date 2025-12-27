@@ -119,17 +119,20 @@ else
   CRITICAL_SERVICES_ESCAPED=$(printf '%q' "$CRITICAL_SERVICES")
 fi
 
-# Pass OP_TOKEN via stdin (more secure than env vars in process list)
+# Pass OP_TOKEN as positional argument (more secure than env vars in process list)
+# Token passed as $1, appears in SSH command locally but not in remote ps output
 ROLLBACK_RESULT=$({
-  echo "$OP_TOKEN"
   cat << 'EOF'
   set -e
 
-  # Read OP_TOKEN from first line of stdin (passed securely)
-  read -r OP_SERVICE_ACCOUNT_TOKEN
+  # Get OP_TOKEN from first positional argument (passed securely via SSH)
+  OP_SERVICE_ACCOUNT_TOKEN="$1"
   export OP_SERVICE_ACCOUNT_TOKEN
 
-  # Get arguments passed to script
+  # Shift to get actual script arguments
+  shift
+
+  # Get arguments passed to script (after shifting past OP_TOKEN)
   PREVIOUS_SHA="$1"
   COMPOSE_ARGS="$2"
   CRITICAL_SERVICES="$3"
@@ -138,7 +141,6 @@ ROLLBACK_RESULT=$({
   [ "$COMPOSE_ARGS" = "__EMPTY__" ] && COMPOSE_ARGS=""
   [ "$CRITICAL_SERVICES" = "__EMPTY__" ] && CRITICAL_SERVICES=""
 
-  # OP_SERVICE_ACCOUNT_TOKEN was read from stdin above (more secure than env vars)
   # Timeouts are passed via 'env' command on remote side
   # They are already in the environment, no need to export again
 
@@ -492,7 +494,7 @@ ROLLBACK_RESULT=$({
 
   echo "🎉 All stacks rolled back successfully!"
 EOF
-} | ssh_retry 3 10 "ssh $SSH_USER@$SSH_HOST env GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $PREVIOUS_SHA_ESCAPED $COMPOSE_ARGS_ESCAPED $CRITICAL_SERVICES_ESCAPED")
+} | ssh_retry 3 10 "ssh $SSH_USER@$SSH_HOST env GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s \"$OP_TOKEN\" $PREVIOUS_SHA_ESCAPED $COMPOSE_ARGS_ESCAPED $CRITICAL_SERVICES_ESCAPED")
 
 # Extract rollback result and discovered stacks
 echo "$ROLLBACK_RESULT"

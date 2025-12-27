@@ -59,15 +59,17 @@ log_info "Cleaning up stack: $STACK_NAME"
 # Use printf %q to properly escape argument for eval in ssh_retry
 STACK_NAME_ESCAPED=$(printf '%q' "$STACK_NAME")
 
-# Pass OP_TOKEN via stdin (more secure than env vars in process list)
+# Pass OP_TOKEN as positional argument (more secure than env vars in process list)
+# Token passed as $1, appears in SSH command locally but not in remote ps output
 {
-  echo "$OP_TOKEN"
   cat << 'EOF'
-  # Read OP_TOKEN from first line of stdin (passed securely)
-  read -r OP_SERVICE_ACCOUNT_TOKEN
+  set -e
+
+  # Get OP_TOKEN from first positional argument (passed securely via SSH)
+  OP_SERVICE_ACCOUNT_TOKEN="$1"
   export OP_SERVICE_ACCOUNT_TOKEN
 
-  STACK="$1"
+  STACK="$2"
 
   # Check if stack directory exists
   if [ ! -d "/opt/compose/$STACK" ]; then
@@ -84,7 +86,6 @@ STACK_NAME_ESCAPED=$(printf '%q' "$STACK_NAME")
   fi
 
   # Run docker compose down with 1Password
-  # Note: OP_SERVICE_ACCOUNT_TOKEN was read from stdin above (more secure than env vars)
   if op run --env-file=/opt/compose/compose.env -- docker compose -f ./compose.yaml down; then
     echo "✅ Successfully cleaned up $STACK"
   else
@@ -92,7 +93,7 @@ STACK_NAME_ESCAPED=$(printf '%q' "$STACK_NAME")
     exit 1
   fi
 EOF
-} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST /bin/bash -s $STACK_NAME_ESCAPED"
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST /bin/bash -s \"$OP_TOKEN\" $STACK_NAME_ESCAPED"
 
 log_success "Stack $STACK_NAME cleaned up successfully"
 exit 0
