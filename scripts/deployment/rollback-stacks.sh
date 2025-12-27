@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Script Name: rollback-stacks.sh
 # Purpose: Rollback Docker Compose stacks to previous commit with parallel execution
-# Usage: ./rollback-stacks.sh --previous-sha abc123 --has-dockge true --compose-args "" --critical-services '[]' --ssh-user user --ssh-host host --op-token token
+# Usage: ./rollback-stacks.sh --previous-sha abc123 --compose-args "" --critical-services '[]' --ssh-user user --ssh-host host --op-token token
 
 set -euo pipefail
 
@@ -14,7 +14,6 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 # Default values
 PREVIOUS_SHA=""
-HAS_DOCKGE="false"
 COMPOSE_ARGS=""
 CRITICAL_SERVICES="[]"
 SSH_USER=""
@@ -32,10 +31,6 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --previous-sha)
       PREVIOUS_SHA="$2"
-      shift 2
-      ;;
-    --has-dockge)
-      HAS_DOCKGE="$2"
       shift 2
       ;;
     --compose-args)
@@ -106,31 +101,15 @@ validate_sha "$PREVIOUS_SHA" || exit 1
 
 log_success "Previous SHA validation passed: $PREVIOUS_SHA"
 log_info "Initiating rollback to $PREVIOUS_SHA"
-log_info "Has Dockge: $HAS_DOCKGE"
-
-# Rollback Dockge first if needed (must happen before repository rollback)
-if [ "$HAS_DOCKGE" = "true" ]; then
-  "$SCRIPT_DIR/deploy-dockge.sh" \
-    --ssh-user "$SSH_USER" \
-    --ssh-host "$SSH_HOST" \
-    --op-token "$OP_TOKEN" \
-    --image-timeout "$IMAGE_PULL_TIMEOUT" \
-    --startup-timeout "$SERVICE_STARTUP_TIMEOUT" \
-    --compose-args "$COMPOSE_ARGS" || {
-      log_error "Dockge rollback failed"
-      exit 1
-    }
-fi
 
 # Execute rollback via SSH with retry
-ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s \"$HAS_DOCKGE\" \"$PREVIOUS_SHA\" \"$COMPOSE_ARGS\" \"$CRITICAL_SERVICES\"" << 'EOF'
+ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s \"$PREVIOUS_SHA\" \"$COMPOSE_ARGS\" \"$CRITICAL_SERVICES\"" << 'EOF'
   set -e
 
   # Get arguments passed to script (excluding sensitive OP_TOKEN)
-  HAS_DOCKGE="$1"
-  PREVIOUS_SHA="$2"
-  COMPOSE_ARGS="$3"
-  CRITICAL_SERVICES="$4"
+  PREVIOUS_SHA="$1"
+  COMPOSE_ARGS="$2"
+  CRITICAL_SERVICES="$3"
 
   # OP_SERVICE_ACCOUNT_TOKEN and timeouts are passed via 'env' command on remote side
   # They are already in the environment, no need to export again

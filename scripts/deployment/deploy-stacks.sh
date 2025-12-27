@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Script Name: deploy-stacks.sh
 # Purpose: Deploy Docker Compose stacks with parallel execution and comprehensive error handling
-# Usage: ./deploy-stacks.sh --stacks "stack1 stack2" --has-dockge true --target-ref abc123 --ssh-user user --ssh-host host --op-token token
+# Usage: ./deploy-stacks.sh --stacks "stack1 stack2" --target-ref abc123 --ssh-user user --ssh-host host --op-token token
 
 set -euo pipefail
 
@@ -14,7 +14,6 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 # Default values
 STACKS=""
-HAS_DOCKGE="false"
 TARGET_REF=""
 COMPOSE_ARGS=""
 SSH_USER=""
@@ -32,10 +31,6 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --stacks)
       STACKS="$2"
-      shift 2
-      ;;
-    --has-dockge)
-      HAS_DOCKGE="$2"
       shift 2
       ;;
     --target-ref)
@@ -98,25 +93,10 @@ require_var OP_TOKEN || exit 1
 
 log_info "Starting deployment for stacks: $STACKS"
 log_info "Target ref: $TARGET_REF"
-log_info "Has Dockge: $HAS_DOCKGE"
-
-# Deploy Dockge first if needed (must happen before repository update)
-if [ "$HAS_DOCKGE" = "true" ]; then
-  "$SCRIPT_DIR/deploy-dockge.sh" \
-    --ssh-user "$SSH_USER" \
-    --ssh-host "$SSH_HOST" \
-    --op-token "$OP_TOKEN" \
-    --image-timeout "$IMAGE_PULL_TIMEOUT" \
-    --startup-timeout "$SERVICE_STARTUP_TIMEOUT" \
-    --compose-args "$COMPOSE_ARGS" || {
-      log_error "Dockge deployment failed"
-      exit 1
-    }
-fi
 
 # Execute deployment via SSH with retry
 # Use 'env' on remote side to set environment variables for the remote bash session
-ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $STACKS \"$HAS_DOCKGE\" \"$TARGET_REF\" \"$COMPOSE_ARGS\"" << 'EOF'
+ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $STACKS \"$TARGET_REF\" \"$COMPOSE_ARGS\"" << 'EOF'
   set -e
 
   # Performance optimizations
@@ -127,34 +107,43 @@ ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_S
   export COMPOSE_PARALLEL_LIMIT=8
 
   # Get arguments passed to script (excluding sensitive OP_TOKEN)
-  # Arguments: stack1 stack2 stack3 ... HAS_DOCKGE TARGET_REF [COMPOSE_ARGS]
+  # Arguments: stack1 stack2 stack3 ... TARGET_REF [COMPOSE_ARGS]
   # COMPOSE_ARGS might be empty, so we need to handle variable arg count
 
   TOTAL_ARGS=$#
 
-  # Find HAS_DOCKGE by looking for 'true' or 'false' in the args
-  HAS_DOCKGE=""
-  TARGET_REF=""
-  COMPOSE_ARGS=""
-
-  # The last few args should be: HAS_DOCKGE TARGET_REF [COMPOSE_ARGS]
-  # HAS_DOCKGE is always 'true' or 'false'
-  # TARGET_REF is a commit SHA (starts with letter/number)
+  # Extract stacks, target-ref, and optional compose-args
+  # The last 1-2 args are: TARGET_REF [COMPOSE_ARGS]
+  # TARGET_REF is a commit SHA (40 hex chars)
   # COMPOSE_ARGS is optional and could be empty
 
-  for i in $(seq 1 $TOTAL_ARGS); do
-    ARG="${!i}"
-    if [ "$ARG" = "true" ] || [ "$ARG" = "false" ]; then
-      HAS_DOCKGE="$ARG"
-      TARGET_REF="${@:$((i+1)):1}"
-      if [ $((i+2)) -le $TOTAL_ARGS ]; then
-        COMPOSE_ARGS="${@:$((i+2)):1}"
+  # Get the second-to-last argument as TARGET_REF
+  if [ $TOTAL_ARGS -ge 2 ]; then
+    TARGET_REF="${@:$((TOTAL_ARGS-1)):1}"
+
+    # If there's a third-from-last argument, it could be COMPOSE_ARGS
+    if [ $TOTAL_ARGS -ge 3 ]; then
+      LAST_ARG="${!TOTAL_ARGS}"
+      # Check if last arg looks like compose args (contains hyphens or equals)
+      if [[ "$LAST_ARG" =~ ^- ]] || [[ "$LAST_ARG" =~ = ]]; then
+        COMPOSE_ARGS="$LAST_ARG"
+        # Stacks are all args except last 2
+        STACKS="${@:1:$((TOTAL_ARGS-2))}"
+      else
+        # Last arg is not compose args, so it must be a stack name
+        COMPOSE_ARGS=""
+        # Stacks are all args except last 1 (TARGET_REF)
+        STACKS="${@:1:$((TOTAL_ARGS-1))}"
       fi
-      # All args before this position are stack names
-      STACKS="${@:1:$((i-1))}"
-      break
+    else
+      # Only 2 args total, so stacks is first arg, TARGET_REF is second
+      COMPOSE_ARGS=""
+      STACKS="${@:1:$((TOTAL_ARGS-1))}"
     fi
-  done
+  else
+    echo "❌ Insufficient arguments provided"
+    exit 1
+  fi
 
 
   # OP_SERVICE_ACCOUNT_TOKEN and timeouts are passed via 'env' command on remote side
@@ -169,8 +158,6 @@ ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_S
   SERVICE_STARTUP_TIMEOUT=${SERVICE_STARTUP_TIMEOUT:-120}
   VALIDATION_ENV_TIMEOUT=${VALIDATION_ENV_TIMEOUT:-30}
   VALIDATION_SYNTAX_TIMEOUT=${VALIDATION_SYNTAX_TIMEOUT:-30}
-
-  # Note: Dockge deployment is now handled by deploy-dockge.sh before this SSH session
 
   echo "Updating repository to $TARGET_REF..."
 

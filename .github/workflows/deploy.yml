@@ -483,14 +483,26 @@ jobs:
 
           echo "✅ Cleanup notification sent"
 
+      - name: Deploy Dockge
+        id: deploy-dockge
+        if: steps.backup.outputs.deployment_needed == 'true' && inputs.has-dockge == true
+        continue-on-error: true
+        run: |
+          ./.compose-workflow/scripts/deployment/deploy-dockge.sh \
+            --ssh-user "${{ secrets.SSH_USER }}" \
+            --ssh-host "${{ secrets.SSH_HOST }}" \
+            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
+            --image-timeout "${{ inputs.image-pull-timeout }}" \
+            --startup-timeout "${{ inputs.service-startup-timeout }}" \
+            --compose-args "${{ inputs.args || '' }}"
+
       - name: Deploy All Stacks
         id: deploy
-        if: steps.backup.outputs.deployment_needed == 'true'
+        if: steps.backup.outputs.deployment_needed == 'true' && (inputs.has-dockge == false || steps.deploy-dockge.outcome == 'success')
         continue-on-error: true
         run: |
           ./.compose-workflow/scripts/deployment/deploy-stacks.sh \
             --stacks "${{ join(fromJSON(inputs.stacks), ' ') }}" \
-            --has-dockge "${{ inputs.has-dockge }}" \
             --target-ref "${{ inputs.target-ref }}" \
             --compose-args "${{ inputs.args || '' }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
@@ -530,9 +542,23 @@ jobs:
           EOF
           echo "::endgroup::"
 
+      - name: Rollback Dockge
+        id: rollback-dockge
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure') && inputs.has-dockge == true
+        continue-on-error: true
+        run: |
+          echo "🔄 Rolling back Dockge to previous version..."
+          ./.compose-workflow/scripts/deployment/deploy-dockge.sh \
+            --ssh-user "${{ secrets.SSH_USER }}" \
+            --ssh-host "${{ secrets.SSH_HOST }}" \
+            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
+            --image-timeout "${{ inputs.image-pull-timeout }}" \
+            --startup-timeout "${{ inputs.service-startup-timeout }}" \
+            --compose-args "${{ inputs.args || '' }}"
+
       - name: Rollback to Previous Version
         id: rollback
-        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure')
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure') && (inputs.has-dockge == false || steps.rollback-dockge.outcome == 'success')
         continue-on-error: true
         run: |
           echo "🔄 **INITIATING ROLLBACK**"
@@ -541,7 +567,6 @@ jobs:
 
           ./.compose-workflow/scripts/deployment/rollback-stacks.sh \
             --previous-sha "${{ steps.backup.outputs.previous_sha }}" \
-            --has-dockge "${{ inputs.has-dockge }}" \
             --compose-args "${{ inputs.args || '' }}" \
             --critical-services '${{ inputs.critical-services }}' \
             --ssh-user "${{ secrets.SSH_USER }}" \
