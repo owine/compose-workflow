@@ -107,43 +107,25 @@ ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_S
   export COMPOSE_PARALLEL_LIMIT=8
 
   # Get arguments passed to script (excluding sensitive OP_TOKEN)
-  # Arguments: stack1 stack2 stack3 ... TARGET_REF [COMPOSE_ARGS]
-  # COMPOSE_ARGS might be empty, so we need to handle variable arg count
+  # Arguments: stack1 [stack2 ...] TARGET_REF COMPOSE_ARGS
+  # COMPOSE_ARGS is always passed (could be empty string "")
 
   TOTAL_ARGS=$#
 
-  # Extract stacks, target-ref, and optional compose-args
-  # The last 1-2 args are: TARGET_REF [COMPOSE_ARGS]
-  # TARGET_REF is a commit SHA (40 hex chars)
-  # COMPOSE_ARGS is optional and could be empty
-
-  # Get the second-to-last argument as TARGET_REF
-  if [ $TOTAL_ARGS -ge 2 ]; then
-    TARGET_REF="${@:$((TOTAL_ARGS-1)):1}"
-
-    # If there's a third-from-last argument, it could be COMPOSE_ARGS
-    if [ $TOTAL_ARGS -ge 3 ]; then
-      LAST_ARG="${!TOTAL_ARGS}"
-      # Check if last arg looks like compose args (contains hyphens or equals)
-      if [[ "$LAST_ARG" =~ ^- ]] || [[ "$LAST_ARG" =~ = ]]; then
-        COMPOSE_ARGS="$LAST_ARG"
-        # Stacks are all args except last 2
-        STACKS="${@:1:$((TOTAL_ARGS-2))}"
-      else
-        # Last arg is not compose args, so it must be a stack name
-        COMPOSE_ARGS=""
-        # Stacks are all args except last 1 (TARGET_REF)
-        STACKS="${@:1:$((TOTAL_ARGS-1))}"
-      fi
-    else
-      # Only 2 args total, so stacks is first arg, TARGET_REF is second
-      COMPOSE_ARGS=""
-      STACKS="${@:1:$((TOTAL_ARGS-1))}"
-    fi
-  else
-    echo "❌ Insufficient arguments provided"
+  # Validate minimum arguments (at least 1 stack + TARGET_REF + COMPOSE_ARGS)
+  if [ $TOTAL_ARGS -lt 3 ]; then
+    echo "❌ Insufficient arguments: expected at least 3 (stacks, target-ref, compose-args), got $TOTAL_ARGS"
     exit 1
   fi
+
+  # Last argument is always COMPOSE_ARGS (could be empty)
+  COMPOSE_ARGS="${!TOTAL_ARGS}"
+
+  # Second-to-last argument is always TARGET_REF
+  TARGET_REF="${@:$((TOTAL_ARGS-1)):1}"
+
+  # Everything before the last 2 arguments are stack names
+  STACKS="${@:1:$((TOTAL_ARGS-2))}"
 
 
   # OP_SERVICE_ACCOUNT_TOKEN and timeouts are passed via 'env' command on remote side
