@@ -108,6 +108,20 @@ log_success "Previous SHA validation passed: $PREVIOUS_SHA"
 log_info "Initiating rollback to $PREVIOUS_SHA"
 log_info "Has Dockge: $HAS_DOCKGE"
 
+# Rollback Dockge first if needed (must happen before repository rollback)
+if [ "$HAS_DOCKGE" = "true" ]; then
+  "$SCRIPT_DIR/deploy-dockge.sh" \
+    --ssh-user "$SSH_USER" \
+    --ssh-host "$SSH_HOST" \
+    --op-token "$OP_TOKEN" \
+    --image-timeout "$IMAGE_PULL_TIMEOUT" \
+    --startup-timeout "$SERVICE_STARTUP_TIMEOUT" \
+    --compose-args "$COMPOSE_ARGS" || {
+      log_error "Dockge rollback failed"
+      exit 1
+    }
+fi
+
 # Execute rollback via SSH with retry
 ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s \"$HAS_DOCKGE\" \"$PREVIOUS_SHA\" \"$COMPOSE_ARGS\" \"$CRITICAL_SERVICES\"" << 'EOF'
   set -e
@@ -171,24 +185,7 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
   # Will be converted to space-delimited in rollback-health step for compatibility
   echo "DISCOVERED_ROLLBACK_STACKS=$ROLLBACK_STACKS"
 
-  # Deploy Dockge first if needed
-  if [ "$HAS_DOCKGE" = "true" ]; then
-    echo "🔄 Rolling back Dockge..."
-    cd /opt/dockge
-
-    # Add timeout protection for Dockge operations
-    if ! timeout $IMAGE_PULL_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-      echo "❌ Dockge image pull timed out after ${IMAGE_PULL_TIMEOUT}s"
-      exit 1
-    fi
-
-    if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
-      echo "❌ Dockge startup timed out after ${SERVICE_STARTUP_TIMEOUT}s"
-      exit 1
-    fi
-
-    echo "✅ Dockge rolled back successfully"
-  fi
+  # Note: Dockge rollback is now handled by deploy-dockge.sh before this SSH session
 
   # Shared function to deploy or rollback a single stack
   # This eliminates code duplication between deploy and rollback operations

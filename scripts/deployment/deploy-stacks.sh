@@ -100,6 +100,20 @@ log_info "Starting deployment for stacks: $STACKS"
 log_info "Target ref: $TARGET_REF"
 log_info "Has Dockge: $HAS_DOCKGE"
 
+# Deploy Dockge first if needed (must happen before repository update)
+if [ "$HAS_DOCKGE" = "true" ]; then
+  "$SCRIPT_DIR/deploy-dockge.sh" \
+    --ssh-user "$SSH_USER" \
+    --ssh-host "$SSH_HOST" \
+    --op-token "$OP_TOKEN" \
+    --image-timeout "$IMAGE_PULL_TIMEOUT" \
+    --startup-timeout "$SERVICE_STARTUP_TIMEOUT" \
+    --compose-args "$COMPOSE_ARGS" || {
+      log_error "Dockge deployment failed"
+      exit 1
+    }
+fi
+
 # Execute deployment via SSH with retry
 # Use 'env' on remote side to set environment variables for the remote bash session
 ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $STACKS \"$HAS_DOCKGE\" \"$TARGET_REF\" \"$COMPOSE_ARGS\"" << 'EOF'
@@ -156,23 +170,7 @@ ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_S
   VALIDATION_ENV_TIMEOUT=${VALIDATION_ENV_TIMEOUT:-30}
   VALIDATION_SYNTAX_TIMEOUT=${VALIDATION_SYNTAX_TIMEOUT:-30}
 
-  if [ "$HAS_DOCKGE" = "true" ]; then
-    echo "🚀 Deploying Dockge..."
-    cd /opt/dockge
-
-    # Add timeout protection for Dockge operations
-    if ! timeout $IMAGE_PULL_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-      echo "❌ Dockge image pull timed out after ${IMAGE_PULL_TIMEOUT}s"
-      exit 1
-    fi
-
-    if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
-      echo "❌ Dockge startup timed out after ${SERVICE_STARTUP_TIMEOUT}s"
-      exit 1
-    fi
-
-    echo "✅ Dockge deployed successfully"
-  fi
+  # Note: Dockge deployment is now handled by deploy-dockge.sh before this SSH session
 
   echo "Updating repository to $TARGET_REF..."
 
