@@ -57,7 +57,10 @@ log_info "Cleaning up stack: $STACK_NAME"
 
 # Execute cleanup via SSH with retry
 # Token passed as environment variable to avoid exposure in process args
-ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" /bin/bash -s \"$STACK_NAME\"" << 'EOF'
+# Use printf %q to properly escape argument for eval in ssh_retry
+STACK_NAME_ESCAPED=$(printf '%q' "$STACK_NAME")
+
+ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" /bin/bash -s $STACK_NAME_ESCAPED" << 'EOF'
   STACK="$1"
 
   # Check if stack directory exists
