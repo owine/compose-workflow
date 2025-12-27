@@ -1,11 +1,12 @@
 # Deployment Script Extraction - Implementation Guide
 
-## Status: Phase 4 Complete ✅
+## Status: Phase 5 Complete ✅
 
 - Phase 1: Foundation library created and committed (b2effaa, 41a80ed)
 - Phase 2: Health check extraction complete (f6ae6d1, c60ce75) - EXPRESSION LIMIT FIXED ✅
 - Phase 3: Deployment extraction complete (63871ac, 72cd05f) - Further workflow simplification ✅
-- Phase 4: Stack removal detection complete (15a1cc0) - Modular detection and cleanup ✅
+- Phase 4: Stack removal detection complete (15a1cc0, 7b3e28e) - Modular detection and cleanup ✅
+- Phase 5: Rollback extraction complete (70ae188) - Workflow now 851 lines (67% reduction) ✅
 
 ## Problem Statement
 
@@ -304,12 +305,13 @@ SSH_USER=test SSH_HOST=test ./scripts/deployment/health-check.sh \
 - Health check heredoc: 24,812 chars ❌ EXCEEDS LIMIT
 - Maintainability: Low (all inline)
 
-### After Refactor
-- Workflow: ~600-800 lines, ~40,000 bytes ✅
+### After Phase 5 (Current State)
+- Workflow: 851 lines ✅ **67% REDUCTION**
 - Largest heredoc: <1,000 chars ✅ UNDER LIMIT
 - Maintainability: High (modular scripts)
 - Reusability: Scripts can be used elsewhere
 - Testability: Scripts testable independently
+- Phase 6 (cleanup) should reduce to ~600-800 lines
 
 ---
 
@@ -343,7 +345,7 @@ To continue this refactor:
 - [x] Phase 2: Health check extraction ✅ **EXPRESSION LIMIT FIXED**
 - [x] Phase 3: Deployment extraction ✅ **WORKFLOW SIMPLIFIED**
 - [x] Phase 4: Stack removal extraction ✅ **MODULAR DETECTION**
-- [ ] Phase 5: Rollback extraction
+- [x] Phase 5: Rollback extraction ✅ **ROLLBACK MODULARIZED**
 - [ ] Phase 6: Cleanup and validation
 
 ---
