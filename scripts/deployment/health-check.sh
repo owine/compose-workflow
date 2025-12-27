@@ -289,19 +289,22 @@ HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SS
     cd /opt/dockge
 
     # Retry logic for Dockge with health check verification
-    local dockge_max_attempts=3
-    local dockge_attempt=1
-    local dockge_wait=3
-    local DOCKGE_TOTAL
-    local dockge_healthy dockge_starting dockge_unhealthy dockge_no_health
-    local dockge_running dockge_healthy_total
+    dockge_max_attempts=3
+    dockge_attempt=1
+    dockge_wait=3
+    DOCKGE_TOTAL=""
+    dockge_healthy=""
+    dockge_starting=""
+    dockge_unhealthy=""
+    dockge_no_health=""
+    dockge_running=""
+    dockge_healthy_total=""
 
     # Get total services
     DOCKGE_TOTAL=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
 
     while [ $dockge_attempt -le $dockge_max_attempts ]; do
       # Get Dockge state and health
-      local dockge_ps_output
       dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
       # Parse health states
