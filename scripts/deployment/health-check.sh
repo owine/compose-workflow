@@ -7,6 +7,8 @@ set -euo pipefail
 
 # Get script directory and source libraries
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ssh-helpers.sh
+# shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/ssh-helpers.sh"
 source "$SCRIPT_DIR/lib/common.sh"
 
@@ -568,7 +570,7 @@ if echo "$HEALTH_RESULT" | grep -q "GITHUB_OUTPUT_START"; then
 else
   log_warning "GITHUB_OUTPUT_START marker not found, attempting to read from temp file..."
   # Try to read from temp file on remote server
-  TEMP_FILE_CONTENT=$(ssh -o "StrictHostKeyChecking no" $SSH_USER@$SSH_HOST 'cat /tmp/github_health_check_outputs.txt 2>/dev/null' || echo "")
+  TEMP_FILE_CONTENT=$(ssh -o "StrictHostKeyChecking no" "$SSH_USER@$SSH_HOST" 'cat /tmp/github_health_check_outputs.txt 2>/dev/null' || echo "")
 
   if [ -n "$TEMP_FILE_CONTENT" ]; then
     log_success "Successfully read outputs from temp file"
