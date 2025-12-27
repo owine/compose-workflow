@@ -66,6 +66,7 @@ This repository provides two main reusable workflows:
 6. **SSH Optimization**: Connection multiplexing and retry mechanisms
 7. **Parallel Execution**: All lint jobs (GitGuardian, YAML lint) run concurrently
 8. **Stack Removal Detection**: Automatic cleanup of removed stacks with fail-safe operation
+9. **Dockge Workflow Integration**: Dockge deployment handled at workflow level for cleaner separation of concerns
 
 ### Benefits of Centralization
 
@@ -172,20 +173,37 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
   - Utility functions (`format_list`, `require_var`)
 
 #### Deployment Scripts
-- **health-check.sh** - Service health verification (584 lines)
-  - Stack-specific service counting with accurate compose file detection
-  - Dynamic retry logic based on critical service failures
-  - Comprehensive health status reporting (healthy/degraded/failed stacks)
-  - Docker health status parsing (healthy/starting/unhealthy containers)
-  - Dockge integration when enabled
 
-- **deploy-stacks.sh** - Deployment orchestration (690 lines)
+- **deploy-dockge.sh** - Dockge container management deployment (110 lines)
+  - Dedicated script for Dockge deployment operations
+  - Called as separate workflow step before stack deployment
+  - Configurable image pull and startup timeouts
+  - Used for both initial deployment and rollback scenarios
+
+- **deploy-stacks.sh** - Stack deployment orchestration (~425 lines)
   - Parallel stack deployment with background processes
   - Exit code file-based error detection
   - Comprehensive logging with stack-specific output
   - Git operations with configurable timeouts
   - Image pull and service startup with retry logic
-  - Compose syntax and environment validation
+  - Pre-deployment validation for all stacks
+  - **Note**: No longer handles Dockge deployment (moved to workflow level)
+
+- **rollback-stacks.sh** - Rollback automation (~425 lines)
+  - SHA validation and git operations
+  - Dynamic stack discovery from previous commit
+  - Parallel rollback execution with PID tracking
+  - Critical service failure detection
+  - Comprehensive error reporting
+  - **Note**: No longer handles Dockge rollback (moved to workflow level)
+
+- **health-check.sh** - Service health verification (~590 lines)
+  - Stack-specific service counting with accurate compose file detection
+  - Dynamic retry logic based on critical service failures
+  - Comprehensive health status reporting (healthy/degraded/failed stacks)
+  - Docker health status parsing (healthy/starting/unhealthy containers)
+  - Dockge health integration when enabled
+  - Escaped parameter handling to prevent shell glob expansion
 
 - **detect-removed-stacks.sh** - Stack removal detection (328 lines)
   - Three-method detection system (git diff, tree comparison, discovery analysis)
@@ -197,13 +215,6 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
   - Single stack removal helper
   - 1Password integration for environment variables
   - Graceful handling of missing stacks
-
-- **rollback-stacks.sh** - Rollback automation (495 lines)
-  - SHA validation and git operations
-  - Dynamic stack discovery from previous commit
-  - Parallel rollback execution with PID tracking
-  - Critical service failure detection
-  - Comprehensive error reporting
 
 #### Script Benefits
 - **Modularity**: Each script has a single, well-defined purpose
