@@ -73,14 +73,14 @@ log_info "Image pull timeout: ${IMAGE_PULL_TIMEOUT}s"
 log_info "Service startup timeout: ${SERVICE_STARTUP_TIMEOUT}s"
 
 # Execute Dockge deployment via SSH
-# Pass OP_TOKEN via stdin (more secure than env vars in process list)
+# Pass OP_TOKEN as positional argument (more secure than env vars in process list)
+# Token passed as $1, appears in SSH command locally but not in remote ps output
 {
-  echo "$OP_TOKEN"
   cat << 'EOF'
   set -e
 
-  # Read OP_TOKEN from first line of stdin (passed securely)
-  read -r OP_SERVICE_ACCOUNT_TOKEN
+  # Get OP_TOKEN from first positional argument (passed securely via SSH)
+  OP_SERVICE_ACCOUNT_TOKEN="$1"
   export OP_SERVICE_ACCOUNT_TOKEN
 
   # Change to Dockge directory
@@ -105,7 +105,7 @@ log_info "Service startup timeout: ${SERVICE_STARTUP_TIMEOUT}s"
 
   echo "✅ Dockge deployed successfully"
 EOF
-} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" COMPOSE_ARGS=\"$COMPOSE_ARGS\" /bin/bash -s"
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" COMPOSE_ARGS=\"$COMPOSE_ARGS\" /bin/bash -s \"$OP_TOKEN\""
 
 # Check SSH command exit status
 SSH_EXIT=$?

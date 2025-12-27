@@ -108,16 +108,18 @@ else
   COMPOSE_ARGS_ESCAPED=$(printf '%q' "$COMPOSE_ARGS")
 fi
 
-# Pass OP_TOKEN via stdin (more secure than env vars in process list)
-# Concatenate token as first line, then the deployment script
+# Pass OP_TOKEN as positional argument (more secure than env vars in process list)
+# Token passed as $1, appears in SSH command locally but not in remote ps output
 {
-  echo "$OP_TOKEN"
   cat << 'EOF'
   set -e
 
-  # Read OP_TOKEN from first line of stdin (passed securely)
-  read -r OP_SERVICE_ACCOUNT_TOKEN
+  # Get OP_TOKEN from first positional argument (passed securely via SSH)
+  OP_SERVICE_ACCOUNT_TOKEN="$1"
   export OP_SERVICE_ACCOUNT_TOKEN
+
+  # Shift to get actual script arguments (stacks, target-ref, compose-args)
+  shift
 
   # Performance optimizations
   export DOCKER_BUILDKIT=1
@@ -152,7 +154,7 @@ fi
   # Everything before the last 2 arguments are stack names
   STACKS="${@:1:$((TOTAL_ARGS-2))}"
 
-  # OP_SERVICE_ACCOUNT_TOKEN was read from stdin above (more secure than env vars)
+  # OP_SERVICE_ACCOUNT_TOKEN was passed as $1 (more secure than long-lived env vars)
   # Timeouts are passed via 'env' command on remote side
   GIT_FETCH_TIMEOUT=${GIT_FETCH_TIMEOUT:-60}
   GIT_CHECKOUT_TIMEOUT=${GIT_CHECKOUT_TIMEOUT:-30}
@@ -410,7 +412,7 @@ fi
 
   echo "🎉 All stacks deployed successfully in parallel!"
 EOF
-} | ssh_retry 3 10 "ssh $SSH_USER@$SSH_HOST env GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $STACKS_ESCAPED $TARGET_REF_ESCAPED $COMPOSE_ARGS_ESCAPED"
+} | ssh_retry 3 10 "ssh $SSH_USER@$SSH_HOST env GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $TARGET_REF_ESCAPED $COMPOSE_ARGS_ESCAPED"
 
 log_success "Deployment completed successfully"
 exit 0
