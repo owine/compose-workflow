@@ -40,3 +40,51 @@ jobs:
 
       - name: Run actionlint
         uses: raven-actions/actionlint@963d4779ef039e217e5d0e6fd73ce9ab7764e493 # v2.1.0
+
+  shellcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - name: Run shellcheck on deployment scripts
+        id: shellcheck
+        continue-on-error: true
+        run: |
+          echo "🐚 Validating shell scripts..."
+
+          # Find all shell scripts in scripts/deployment
+          SCRIPTS=$(find scripts/deployment -name "*.sh" -type f | sort)
+
+          if [ -z "$SCRIPTS" ]; then
+            echo "⚠️  No shell scripts found in scripts/deployment/"
+            exit 0
+          fi
+
+          echo "📁 Found $(echo "$SCRIPTS" | wc -l) shell script(s):"
+          # shellcheck disable=SC2001
+          echo "$SCRIPTS" | sed 's/^/  • /'
+          echo ""
+
+          # Run shellcheck on all scripts
+          FAILED=0
+          for script in $SCRIPTS; do
+            if ! shellcheck "$script"; then
+              FAILED=1
+            fi
+          done
+
+          exit $FAILED
+
+      - name: Report results
+        if: always()
+        run: |
+          if [ "${{ steps.shellcheck.outcome }}" = "success" ]; then
+            echo "✅ All shell scripts follow best practices"
+          else
+            echo "❌ Shell script issues found"
+            echo "Please fix the issues above"
+            echo "Test locally: shellcheck scripts/deployment/**/*.sh"
+            exit 1
+          fi

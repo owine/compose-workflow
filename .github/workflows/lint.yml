@@ -154,70 +154,6 @@ jobs:
       - name: Run actionlint
         uses: raven-actions/actionlint@963d4779ef039e217e5d0e6fd73ce9ab7764e493 # v2.1.0
 
-  shellcheck:
-    name: Shell script validation
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Checkout compose-workflow repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-        with:
-          repository: owine/compose-workflow
-          ref: main
-
-      - name: Display version information
-        run: |
-          echo "📋 ShellCheck Validation"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Repository: compose-workflow (deployment scripts)"
-          echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-      - name: Run shellcheck on deployment scripts
-        run: |
-          echo "🐚 Starting ShellCheck validation for deployment scripts..."
-          echo ""
-
-          # Find and validate all shell scripts
-          SCRIPTS=$(find scripts/deployment -name "*.sh" -type f | sort)
-
-          if [ -z "$SCRIPTS" ]; then
-            echo "⚠️  No shell scripts found in scripts/deployment/"
-            exit 0
-          fi
-
-          echo "📁 Scripts to validate:"
-          # shellcheck disable=SC2001
-          echo "$SCRIPTS" | sed 's/^/  • /'
-          echo ""
-
-          # Run shellcheck on all scripts
-          FAILED=0
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          for script in $SCRIPTS; do
-            echo "🔍 Checking: $script"
-            if shellcheck "$script"; then
-              echo "   ✅ PASSED"
-            else
-              echo "   ❌ FAILED"
-              FAILED=1
-            fi
-            echo ""
-          done
-
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          if [ $FAILED -eq 0 ]; then
-            echo "🎉 ALL SHELL SCRIPTS PASSED VALIDATION"
-            echo "   All deployment scripts follow best practices"
-          else
-            echo "💥 SHELL SCRIPT VALIDATION FAILED"
-            echo "   Fix the issues shown above"
-            echo "   Run locally: shellcheck scripts/deployment/**/*.sh"
-            exit 1
-          fi
-
   lint:
     strategy:
       matrix:
@@ -422,7 +358,7 @@ jobs:
   lint-summary:
     name: Lint Summary
     runs-on: ubuntu-24.04
-    needs: [scanning, actionlint, shellcheck, lint]
+    needs: [scanning, actionlint, lint]
     if: always()
     timeout-minutes: 5
     steps:
@@ -522,26 +458,6 @@ jobs:
             *)
               echo "❓ UNKNOWN - Unexpected actionlint result: ${{ needs.actionlint.result }}"
               ACTIONLINT_OK=false
-              ;;
-          esac
-
-          echo ""
-
-          # ShellCheck Shell Script Validation Results
-          echo "🐚 SHELL SCRIPT VALIDATION (SHELLCHECK)"
-          echo "───────────────────────────────────────────────────────────────────────────────────"
-          case "${{ needs.shellcheck.result }}" in
-            "success")
-              echo "✅ PASSED - All deployment scripts follow best practices"
-              SHELLCHECK_OK=true
-              ;;
-            "failure")
-              echo "❌ FAILED - Shell script issues detected"
-              SHELLCHECK_OK=false
-              ;;
-            *)
-              echo "❓ UNKNOWN - Unexpected shellcheck result: ${{ needs.shellcheck.result }}"
-              SHELLCHECK_OK=false
               ;;
           esac
 
@@ -664,7 +580,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           # Final determination
-          if [[ "$SCANNING_OK" == "true" && "$ACTIONLINT_OK" == "true" && "$SHELLCHECK_OK" == "true" && "$LINT_OK" == "true" ]]; then
+          if [[ "$SCANNING_OK" == "true" && "$ACTIONLINT_OK" == "true" && "$LINT_OK" == "true" ]]; then
             echo "🎉 FINAL STATUS: ALL VALIDATION CHECKS PASSED"
             echo "   Repository is ready for deployment"
             exit 0
@@ -675,7 +591,6 @@ jobs:
             echo "   Failed components:"
             [[ "$SCANNING_OK" != "true" ]] && echo "   • GitGuardian security scanning"
             [[ "$ACTIONLINT_OK" != "true" ]] && echo "   • Workflow validation (actionlint)"
-            [[ "$SHELLCHECK_OK" != "true" ]] && echo "   • Shell script validation (shellcheck)"
             [[ "$LINT_OK" != "true" ]] && echo "   • Code quality validation (see detailed errors above)"
             echo ""
             exit 1
@@ -684,7 +599,7 @@ jobs:
   notify:
     name: Discord Notification
     runs-on: ubuntu-24.04
-    needs: [scanning, actionlint, shellcheck, lint, lint-summary]
+    needs: [scanning, actionlint, lint, lint-summary]
     if: always()
     steps:
       - name: Configure 1Password Service Account
@@ -713,7 +628,6 @@ jobs:
 
             **🔒 Security Scan:** ${{ needs.scanning.result == 'success' && '✅ No secrets detected' || needs.scanning.result == 'skipped' && '⏭️ Skipped (PR/manual)' || '❌ Issues found' }}
             **⚙️ Workflow Validation:** ${{ needs.actionlint.result == 'success' && '✅ All workflows valid' || '❌ Issues detected' }}
-            **🐚 Shell Scripts:** ${{ needs.shellcheck.result == 'success' && '✅ Best practices followed' || '❌ Issues detected' }}
             **📋 Code Quality:** ${{ needs.lint.result == 'success' && '✅ All stacks valid' || '❌ Issues detected' }}
 
             **📂 Validated Stacks:** `${{ join(fromJson(inputs.stacks), '`, `') }}`
@@ -726,13 +640,6 @@ jobs:
             • Review the **Workflow Validation** job for details
             • Fix workflow syntax, shellcheck, or expression errors
             • Test locally: `actionlint .github/workflows/*.yml`' || '' }}
-
-            ${{ needs.shellcheck.result == 'failure' && '
-            **🐚 Shell Script Issues:**
-            • Shell script best practices violations detected
-            • Review the **Shell Script Validation** job for details
-            • Fix quoting, variable usage, or syntax issues
-            • Test locally: `shellcheck scripts/deployment/**/*.sh`' || '' }}
 
             ${{ needs.lint.result == 'failure' && '
             **🚨 Action Required:**
