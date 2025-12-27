@@ -57,7 +57,7 @@ log_info "Cleaning up stack: $STACK_NAME"
 
 # Execute cleanup via SSH with retry
 # Token passed as environment variable to avoid exposure in process args
-ssh_retry 3 5 "OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$STACK_NAME\"" << 'EOF'
+ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" /bin/bash -s \"$STACK_NAME\"" << 'EOF'
   STACK="$1"
 
   # Check if stack directory exists
@@ -75,7 +75,7 @@ ssh_retry 3 5 "OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" ssh -o \"StrictHostKeyChec
   fi
 
   # Run docker compose down with 1Password
-  # Note: OP_SERVICE_ACCOUNT_TOKEN is set by the wrapper script
+  # Note: OP_SERVICE_ACCOUNT_TOKEN is passed via 'env' command on remote side
   if op run --env-file=/opt/compose/compose.env -- docker compose -f ./compose.yaml down; then
     echo "✅ Successfully cleaned up $STACK"
   else
