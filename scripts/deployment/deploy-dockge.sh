@@ -73,8 +73,15 @@ log_info "Image pull timeout: ${IMAGE_PULL_TIMEOUT}s"
 log_info "Service startup timeout: ${SERVICE_STARTUP_TIMEOUT}s"
 
 # Execute Dockge deployment via SSH
-ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" COMPOSE_ARGS=\"$COMPOSE_ARGS\" /bin/bash -s" << 'EOF'
+# Pass OP_TOKEN via stdin (more secure than env vars in process list)
+{
+  echo "$OP_TOKEN"
+  cat << 'EOF'
   set -e
+
+  # Read OP_TOKEN from first line of stdin (passed securely)
+  read -r OP_SERVICE_ACCOUNT_TOKEN
+  export OP_SERVICE_ACCOUNT_TOKEN
 
   # Change to Dockge directory
   if ! cd /opt/dockge; then
@@ -83,14 +90,14 @@ ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SE
   fi
 
   echo "Pulling Dockge images..."
-  # shellcheck disable=SC2086
+  # shellcheck disable=SC2086 # COMPOSE_ARGS intentionally unquoted for word splitting
   if ! timeout "$IMAGE_PULL_TIMEOUT" op run --env-file=/opt/compose/compose.env -- docker compose pull; then
     echo "❌ Dockge image pull timed out after ${IMAGE_PULL_TIMEOUT}s"
     exit 1
   fi
 
   echo "Starting Dockge services..."
-  # shellcheck disable=SC2086
+  # shellcheck disable=SC2086 # COMPOSE_ARGS intentionally unquoted for word splitting
   if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
     echo "❌ Dockge startup timed out after ${SERVICE_STARTUP_TIMEOUT}s"
     exit 1
@@ -98,6 +105,7 @@ ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SE
 
   echo "✅ Dockge deployed successfully"
 EOF
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" COMPOSE_ARGS=\"$COMPOSE_ARGS\" /bin/bash -s"
 
 # Check SSH command exit status
 SSH_EXIT=$?

@@ -149,38 +149,72 @@ jobs:
             fi
           done
 
-          # Validate target-ref format
+          # Validate target-ref format using git check-ref-format for accurate validation
           TARGET_REF="${{ inputs.target-ref }}"
-          # Check if it's a valid commit SHA (7-40 hex chars) or branch/tag name
-          if [[ "$TARGET_REF" =~ ^[a-fA-F0-9]{7,40}$ ]] || [[ "$TARGET_REF" =~ ^[a-zA-Z0-9_-]+$ ]] || [[ "$TARGET_REF" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$ ]]; then
-            echo "✅ Target-ref format valid: $TARGET_REF"
+
+          # First check if it's a commit SHA (7-40 hex chars)
+          if [[ "$TARGET_REF" =~ ^[a-fA-F0-9]{7,40}$ ]]; then
+            echo "✅ Target-ref is a valid commit SHA: $TARGET_REF"
+          # Otherwise validate as a git reference (branch/tag)
+          elif git check-ref-format --allow-onelevel "$TARGET_REF" 2>/dev/null; then
+            echo "✅ Target-ref is a valid git reference: $TARGET_REF"
           else
             echo "::error::Invalid target-ref format: $TARGET_REF"
-            echo "::error::Expected: commit SHA (7-40 hex chars) or branch/tag name"
+            echo "::error::Expected: commit SHA (7-40 hex chars) or valid git reference"
+            echo "::error::Git references must not contain spaces, ~, ^, :, ?, *, [, \\, or .."
             exit 1
           fi
 
-          # Validate and sanitize compose args
+          # Validate compose args using whitelist approach (more secure than blacklist)
           COMPOSE_ARGS="${{ inputs.args }}"
           if [[ -n "$COMPOSE_ARGS" ]]; then
-            # Check for dangerous characters and patterns
-            if [[ "$COMPOSE_ARGS" =~ [\;\&\|\`\$\\] ]]; then
-              echo "::error::Compose args contain potentially dangerous characters: $COMPOSE_ARGS"
-              echo "::error::Prohibited characters: ; & | \` $ \\"
+            echo "🔍 Validating compose args: $COMPOSE_ARGS"
+
+            # Whitelist of allowed docker compose up arguments
+            ALLOWED_ARGS=(
+              "--force-recreate" "--no-recreate"
+              "--build" "--no-build"
+              "--pull" "--no-pull"
+              "--quiet-pull"
+              "--no-deps"
+              "--remove-orphans"
+              "--wait" "--no-wait"
+              "--wait-timeout"
+              "--no-start"
+              "--attach" "--no-attach"
+              "--attach-dependencies"
+            )
+
+            # Split args and validate each one
+            VALIDATION_FAILED=false
+            for arg in $COMPOSE_ARGS; do
+              # Check if it's a numeric value (for --wait-timeout)
+              if [[ "$arg" =~ ^[0-9]+$ ]]; then
+                continue
+              fi
+
+              # Check if it's in the whitelist
+              FOUND=false
+              for allowed in "${ALLOWED_ARGS[@]}"; do
+                if [[ "$arg" == "$allowed" ]]; then
+                  FOUND=true
+                  break
+                fi
+              done
+
+              if [[ "$FOUND" == "false" ]]; then
+                echo "::error::Unrecognized or prohibited compose argument: $arg"
+                VALIDATION_FAILED=true
+              fi
+            done
+
+            if [[ "$VALIDATION_FAILED" == "true" ]]; then
+              echo "::error::Only whitelisted docker compose up arguments are allowed"
+              echo "::error::Allowed: ${ALLOWED_ARGS[*]} (and numeric values for timeouts)"
               exit 1
             fi
-            # Check for suspicious patterns
-            if [[ "$COMPOSE_ARGS" =~ (rm|kill|shutdown|reboot|format|dd|\>|\<|sudo|su) ]]; then
-              echo "::error::Compose args contain prohibited commands: $COMPOSE_ARGS"
-              exit 1
-            fi
-            # Validate against known docker compose options - allow hyphens, spaces, and equals for arguments
-            if [[ "$COMPOSE_ARGS" =~ ^[a-zA-Z0-9[:space:]_=.-]+$ ]]; then
-              echo "✅ Compose args format valid: $COMPOSE_ARGS"
-            else
-              echo "::error::Compose args contain invalid characters: $COMPOSE_ARGS"
-              exit 1
-            fi
+
+            echo "✅ Compose args validation passed: $COMPOSE_ARGS"
           fi
 
           # Validate webhook URL format
@@ -279,10 +313,19 @@ jobs:
         with:
           unset-previous: true
 
+      - name: Configure SSH known hosts
+        run: |
+          # Add deployment server to known_hosts for security
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "🔐 Adding deployment server to known_hosts..."
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 600 ~/.ssh/known_hosts
+          echo "✅ Known hosts configured"
+
       - name: Optimize SSH connections
         run: |
           # Configure SSH connection multiplexing for better performance
-          mkdir -p ~/.ssh
           cat >> ~/.ssh/config << EOF
           Host deployment-server
             HostName ${{ secrets.SSH_HOST }}
@@ -296,16 +339,22 @@ jobs:
             TCPKeepAlive yes
           EOF
 
-          # Create control socket directory and pre-establish SSH connection
+          # Create control socket directory and establish master connection
           mkdir -p ~/.ssh/sockets
-          echo "🔗 Pre-establishing SSH connection for multiplexing..."
-          ssh -o "StrictHostKeyChecking no" deployment-server -O check 2>/dev/null || \
-          ssh -o "StrictHostKeyChecking no" deployment-server -O forward -N &
+          echo "🔗 Establishing SSH master connection for multiplexing..."
+          ssh -o "ControlMaster yes" \
+              -o "ControlPath ~/.ssh/sockets/%r@%h:%p" \
+              -o "ControlPersist 600" \
+              -N -f deployment-server || {
+            echo "::warning::Failed to establish SSH master connection, will use direct connections"
+          }
 
-          # Give the connection a moment to establish
-          sleep 2
-
-          echo "✅ SSH connection optimization configured"
+          # Verify connection
+          if ssh -o "ControlPath ~/.ssh/sockets/%r@%h:%p" -O check deployment-server 2>/dev/null; then
+            echo "✅ SSH master connection established"
+          else
+            echo "::warning::SSH multiplexing not available"
+          fi
 
       - name: Checkout repository for change detection
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
@@ -327,7 +376,7 @@ jobs:
 
           # Get current deployment SHA with error handling
           echo "🔍 Checking current deployment SHA for change detection..."
-          if CURRENT_SHA=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD 2>/dev/null'"); then
+          if CURRENT_SHA=$(ssh_retry 3 5 "ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD 2>/dev/null'"); then
             # Validate SHA format
             if [[ "$CURRENT_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
               echo "✅ Current deployed SHA: $CURRENT_SHA"
@@ -361,7 +410,7 @@ jobs:
 
           # Get current deployment SHA with error handling
           echo "🔍 Checking current deployment SHA..."
-          if CURRENT_SHA=$(ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD 2>/dev/null'"); then
+          if CURRENT_SHA=$(ssh_retry 3 5 "ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd /opt/compose && git rev-parse HEAD 2>/dev/null'"); then
             # Validate SHA format
             if [[ "$CURRENT_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
               echo "✅ Current deployed SHA: $CURRENT_SHA"
@@ -476,12 +525,16 @@ jobs:
               }]
             }')
 
-          # Send Discord notification
-          curl -X POST "$WEBHOOK_URL" \
+          # Send Discord notification with timeout protection
+          if curl -X POST "$WEBHOOK_URL" \
+            --connect-timeout 10 \
+            --max-time 30 \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
-
-          echo "✅ Cleanup notification sent"
+            -d "$PAYLOAD"; then
+            echo "✅ Cleanup notification sent"
+          else
+            echo "::warning::Discord cleanup notification failed (timeout or network error)"
+          fi
 
       - name: Deploy Dockge
         id: deploy-dockge
@@ -536,7 +589,7 @@ jobs:
         continue-on-error: true
         run: |
           echo "::group::Cleaning up unused Docker images"
-          ssh -o "StrictHostKeyChecking no" ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << EOF
             echo "🧹 Cleaning up unused Docker images..."
             docker image prune -f
             echo "✅ Cleanup completed"
@@ -595,8 +648,8 @@ jobs:
           # This ensures we check the stacks that were actually rolled back (from previous commit)
           DISCOVERED_STACKS="${{ steps.rollback.outputs.discovered_rollback_stacks }}"
           if [ -n "$DISCOVERED_STACKS" ]; then
-            # Convert null-delimited stacks to space-delimited
-            readarray -d $'\0' -t STACKS_ARRAY <<< "$DISCOVERED_STACKS"
+            # Convert newline-delimited stacks to space-delimited
+            readarray -t STACKS_ARRAY <<< "$DISCOVERED_STACKS"
             STACKS="${STACKS_ARRAY[*]}"
             echo "✅ Using discovered rollback stacks: $STACKS"
           else
@@ -662,7 +715,7 @@ jobs:
         run: |
           # Close SSH connection multiplexing
           echo "🧹 Cleaning up SSH connections..."
-          ssh -o "StrictHostKeyChecking no" deployment-server -O exit 2>/dev/null || true
+          ssh deployment-server -O exit 2>/dev/null || true
 
           # Clean up SSH control sockets
           rm -f ~/.ssh/sockets/* 2>/dev/null || true
@@ -733,7 +786,10 @@ jobs:
       - name: Get commit message
         id: commit-msg
         run: |
-          COMMIT_MSG=$(curl -s -H "Authorization: token ${{ github.token }}" \
+          COMMIT_MSG=$(curl -s \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -H "Authorization: token ${{ github.token }}" \
             "https://api.github.com/repos/${{ github.repository }}/commits/${{ inputs.target-ref }}" \
             | jq -r '.commit.message // "No commit message available"' \
             | head -1)

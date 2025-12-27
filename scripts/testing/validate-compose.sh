@@ -1,9 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Docker Compose validation script for local testing
 # Validates compose files before deployment
 
+# shellcheck disable=SC2034 # SCRIPT_DIR reserved for future use in script path operations
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Color codes
@@ -224,6 +225,7 @@ main() {
                 shift
                 ;;
             -v|--verbose)
+                # shellcheck disable=SC2034 # verbose reserved for future verbose logging implementation
                 verbose="true"
                 shift
                 ;;
@@ -286,7 +288,12 @@ main() {
             fi
             
             # Check if it contains a compose file
-            if ls "$stack_dir"/*.{yml,yaml} 2>/dev/null | grep -E "(compose|docker-compose)" >/dev/null; then
+            has_compose=false
+            for file in "$stack_dir"/*.yml "$stack_dir"/*.yaml; do
+                [ -f "$file" ] && [[ $(basename "$file") =~ (compose|docker-compose) ]] && has_compose=true && break
+            done
+
+            if [ "$has_compose" = "true" ]; then
                 total_stacks=$((total_stacks + 1))
                 validated_stacks+=("$stack_name")
                 

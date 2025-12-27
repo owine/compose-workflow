@@ -68,10 +68,29 @@ ssh_retry() {
 }
 
 # Simple SSH execution wrapper
+# Note: Relies on known_hosts being pre-configured in the workflow
 ssh_exec() {
   local ssh_user=$1
   local ssh_host=$2
   local command=$3
 
-  ssh -o "StrictHostKeyChecking no" "${ssh_user}@${ssh_host}" "$command"
+  # shellcheck disable=SC2029 # Command intentionally expands on client side before remote execution
+  ssh "${ssh_user}@${ssh_host}" "$command"
+}
+
+# Execute SSH command with secret passed via stdin (more secure than env vars)
+# Usage: ssh_exec_with_secret <ssh_user> <ssh_host> <secret> <command>
+# The secret will be available as OP_SERVICE_ACCOUNT_TOKEN in the remote command
+ssh_exec_with_secret() {
+  local ssh_user=$1
+  local ssh_host=$2
+  local secret=$3
+  local command=$4
+
+  # Pass secret via stdin, read it in the remote bash session
+  echo "$secret" | ssh "${ssh_user}@${ssh_host}" bash -c "
+    read -r OP_SERVICE_ACCOUNT_TOKEN
+    export OP_SERVICE_ACCOUNT_TOKEN
+    $command
+  "
 }
