@@ -78,7 +78,7 @@ log_info "Health check timeout: ${HEALTH_TIMEOUT}s, Command timeout: ${COMMAND_T
 export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
 
 set +e
-HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES='$CRITICAL_SERVICES' /bin/bash -s $STACKS \"$HAS_DOCKGE\"" << 'EOF'
+HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES=\"$CRITICAL_SERVICES\" /bin/bash -s $STACKS \"$HAS_DOCKGE\"" << 'EOF'
   set -e
 
   # Get arguments passed to script (excluding sensitive OP_TOKEN)
