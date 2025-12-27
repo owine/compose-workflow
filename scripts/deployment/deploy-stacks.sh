@@ -117,6 +117,13 @@ ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_S
 
   TOTAL_ARGS=$#
 
+  # Debug: Show what arguments were received
+  echo "DEBUG: Received $TOTAL_ARGS arguments:"
+  for i in $(seq 1 $TOTAL_ARGS); do
+    eval "arg=\${$i}"
+    echo "  \$$i = [$arg]"
+  done
+
   # Validate minimum arguments (at least 1 stack + TARGET_REF + COMPOSE_ARGS)
   if [ $TOTAL_ARGS -lt 3 ]; then
     echo "❌ Insufficient arguments: expected at least 3 (stacks, target-ref, compose-args), got $TOTAL_ARGS"
