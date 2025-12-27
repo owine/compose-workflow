@@ -312,11 +312,18 @@ jobs:
         with:
           fetch-depth: 0  # Fetch full history for accurate change detection
 
+      - name: Checkout compose-workflow for deployment scripts
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          repository: owine/compose-workflow
+          ref: main
+          path: .compose-workflow
+
       - name: Determine previous deployment SHA
         id: determine-previous
         run: |
           # Use retry mechanism for SSH connection
-          source ./scripts/deployment/lib/ssh-helpers.sh
+          source ./.compose-workflow/scripts/deployment/lib/ssh-helpers.sh
 
           # Get current deployment SHA with error handling
           echo "🔍 Checking current deployment SHA for change detection..."
@@ -350,7 +357,7 @@ jobs:
         run: |
           echo "::group::Preparing deployment backup"
           # Use retry mechanism for SSH connection
-          source ./scripts/deployment/lib/ssh-helpers.sh
+          source ./.compose-workflow/scripts/deployment/lib/ssh-helpers.sh
 
           # Get current deployment SHA with error handling
           echo "🔍 Checking current deployment SHA..."
@@ -426,7 +433,7 @@ jobs:
         if: steps.backup.outputs.deployment_needed == 'true'
         continue-on-error: false
         run: |
-          ./scripts/deployment/detect-removed-stacks.sh \
+          ./.compose-workflow/scripts/deployment/detect-removed-stacks.sh \
             --current-sha "${{ steps.backup.outputs.previous_sha }}" \
             --target-ref "${{ inputs.target-ref }}" \
             --deleted-files '${{ steps.changed-files.outputs.deleted_files }}' \
@@ -481,7 +488,7 @@ jobs:
         if: steps.backup.outputs.deployment_needed == 'true'
         continue-on-error: true
         run: |
-          ./scripts/deployment/deploy-stacks.sh \
+          ./.compose-workflow/scripts/deployment/deploy-stacks.sh \
             --stacks "${{ join(fromJSON(inputs.stacks), ' ') }}" \
             --has-dockge "${{ inputs.has-dockge }}" \
             --target-ref "${{ inputs.target-ref }}" \
@@ -500,7 +507,7 @@ jobs:
         id: health
         if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
         run: |
-          ./scripts/deployment/health-check.sh \
+          ./.compose-workflow/scripts/deployment/health-check.sh \
             --stacks "${{ join(fromJSON(inputs.stacks), ' ') }}" \
             --has-dockge "${{ inputs.has-dockge }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
@@ -532,7 +539,7 @@ jobs:
           echo "Previous SHA: ${{ steps.backup.outputs.previous_sha }}"
           echo "Failed SHA: ${{ inputs.target-ref }}"
 
-          ./scripts/deployment/rollback-stacks.sh \
+          ./.compose-workflow/scripts/deployment/rollback-stacks.sh \
             --previous-sha "${{ steps.backup.outputs.previous_sha }}" \
             --has-dockge "${{ inputs.has-dockge }}" \
             --compose-args "${{ inputs.args || '' }}" \
@@ -576,7 +583,7 @@ jobs:
           TEMP_OUTPUT=$(mktemp)
 
           # Call health-check.sh with rollback context
-          if GITHUB_OUTPUT="$TEMP_OUTPUT" ./scripts/deployment/health-check.sh \
+          if GITHUB_OUTPUT="$TEMP_OUTPUT" ./.compose-workflow/scripts/deployment/health-check.sh \
             --stacks "$STACKS" \
             --has-dockge "${{ inputs.has-dockge }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
