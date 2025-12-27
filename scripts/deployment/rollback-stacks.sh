@@ -109,7 +109,7 @@ log_info "Initiating rollback to $PREVIOUS_SHA"
 log_info "Has Dockge: $HAS_DOCKGE"
 
 # Execute rollback via SSH with retry
-ROLLBACK_RESULT=$(ssh_retry 3 10 "GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$HAS_DOCKGE\" \"$PREVIOUS_SHA\" \"$COMPOSE_ARGS\" \"$CRITICAL_SERVICES\"" << 'EOF'
+ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s \"$HAS_DOCKGE\" \"$PREVIOUS_SHA\" \"$COMPOSE_ARGS\" \"$CRITICAL_SERVICES\"" << 'EOF'
   set -e
 
   # Get arguments passed to script (excluding sensitive OP_TOKEN)
@@ -118,8 +118,8 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_C
   COMPOSE_ARGS="$3"
   CRITICAL_SERVICES="$4"
 
-  # OP_TOKEN and timeouts are passed via environment variables from the SSH command line above
-  export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN}"
+  # OP_SERVICE_ACCOUNT_TOKEN and timeouts are passed via 'env' command on remote side
+  # They are already in the environment, no need to export again
 
   # Consolidate timeout values for easier maintenance
   GIT_FETCH_TIMEOUT=${GIT_FETCH_TIMEOUT:-60}
