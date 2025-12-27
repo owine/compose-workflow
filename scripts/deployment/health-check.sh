@@ -77,8 +77,12 @@ log_info "Health check timeout: ${HEALTH_TIMEOUT}s, Command timeout: ${COMMAND_T
 # Export OP_TOKEN for the remote script to use
 export OP_SERVICE_ACCOUNT_TOKEN="$OP_TOKEN"
 
+# Escape CRITICAL_SERVICES to prevent glob expansion on remote shell
+ESCAPED_CRITICAL_SERVICES="${CRITICAL_SERVICES//\[/\\[}"
+ESCAPED_CRITICAL_SERVICES="${ESCAPED_CRITICAL_SERVICES//\]/\\]}"
+
 set +e
-HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES=\"$CRITICAL_SERVICES\" /bin/bash -s $STACKS \"$HAS_DOCKGE\"" << 'EOF'
+HEALTH_RESULT=$(ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES=\"$ESCAPED_CRITICAL_SERVICES\" /bin/bash -s $STACKS \"$HAS_DOCKGE\"" << 'EOF'
   set -e
 
   # Get arguments passed to script (excluding sensitive OP_TOKEN)
