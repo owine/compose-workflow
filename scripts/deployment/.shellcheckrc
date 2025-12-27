@@ -1,0 +1,4 @@
+# ShellCheck configuration for deployment scripts
+# Disable SC1091 - Not following sourced files
+# This is intentional as library files are in a known location (lib/)
+disable=SC1091

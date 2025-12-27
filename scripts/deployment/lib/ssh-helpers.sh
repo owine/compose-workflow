@@ -8,19 +8,19 @@ set -euo pipefail
 retry() {
   local max_attempts=$1
   local delay=$2
-  local command="${@:3}"
+  local command="${*:3}"
   local attempt=1
 
-  while [ $attempt -le $max_attempts ]; do
+  while [ "$attempt" -le "$max_attempts" ]; do
     echo "Attempt $attempt of $max_attempts: $command"
     if eval "$command"; then
       echo "✅ Command succeeded on attempt $attempt"
       return 0
     else
       echo "❌ Command failed on attempt $attempt"
-      if [ $attempt -lt $max_attempts ]; then
+      if [ "$attempt" -lt "$max_attempts" ]; then
         echo "⏳ Waiting ${delay}s before retry..."
-        sleep $delay
+        sleep "$delay"
         delay=$((delay * 2))  # Exponential backoff
       fi
       attempt=$((attempt + 1))
@@ -35,11 +35,11 @@ retry() {
 ssh_retry() {
   local max_attempts=$1
   local delay=$2
-  local ssh_cmd="${@:3}"
+  local ssh_cmd="${*:3}"
   local attempt=1
   local last_exit_code=1
 
-  while [ $attempt -le $max_attempts ]; do
+  while [ "$attempt" -le "$max_attempts" ]; do
     echo "SSH Attempt $attempt of $max_attempts" >&2
     if eval "$ssh_cmd"; then
       echo "✅ SSH command succeeded on attempt $attempt" >&2
@@ -55,9 +55,9 @@ ssh_retry() {
         *) echo "Unknown error code: $last_exit_code" >&2 ;;
       esac
 
-      if [ $attempt -lt $max_attempts ]; then
+      if [ "$attempt" -lt "$max_attempts" ]; then
         echo "⏳ Waiting ${delay}s before SSH retry..." >&2
-        sleep $delay
+        sleep "$delay"
       fi
       attempt=$((attempt + 1))
     fi

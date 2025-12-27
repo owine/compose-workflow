@@ -7,7 +7,9 @@ set -euo pipefail
 
 # Get script directory and source libraries
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ssh-helpers.sh
 source "$SCRIPT_DIR/lib/ssh-helpers.sh"
+# shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
 # Default values
