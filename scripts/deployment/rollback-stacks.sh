@@ -104,9 +104,20 @@ log_info "Initiating rollback to $PREVIOUS_SHA"
 
 # Execute rollback via SSH with retry
 # Use printf %q to properly escape arguments for eval in ssh_retry
+# Empty strings use placeholder to survive eval
 PREVIOUS_SHA_ESCAPED=$(printf '%q' "$PREVIOUS_SHA")
-COMPOSE_ARGS_ESCAPED=$(printf '%q' "$COMPOSE_ARGS")
-CRITICAL_SERVICES_ESCAPED=$(printf '%q' "$CRITICAL_SERVICES")
+
+if [ -z "$COMPOSE_ARGS" ]; then
+  COMPOSE_ARGS_ESCAPED="__EMPTY__"
+else
+  COMPOSE_ARGS_ESCAPED=$(printf '%q' "$COMPOSE_ARGS")
+fi
+
+if [ -z "$CRITICAL_SERVICES" ]; then
+  CRITICAL_SERVICES_ESCAPED="__EMPTY__"
+else
+  CRITICAL_SERVICES_ESCAPED=$(printf '%q' "$CRITICAL_SERVICES")
+fi
 
 ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env OP_SERVICE_ACCOUNT_TOKEN=\"$OP_TOKEN\" GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s $PREVIOUS_SHA_ESCAPED $COMPOSE_ARGS_ESCAPED $CRITICAL_SERVICES_ESCAPED" << 'EOF'
   set -e
@@ -115,6 +126,10 @@ ROLLBACK_RESULT=$(ssh_retry 3 10 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@
   PREVIOUS_SHA="$1"
   COMPOSE_ARGS="$2"
   CRITICAL_SERVICES="$3"
+
+  # Convert __EMPTY__ placeholders back to empty strings
+  [ "$COMPOSE_ARGS" = "__EMPTY__" ] && COMPOSE_ARGS=""
+  [ "$CRITICAL_SERVICES" = "__EMPTY__" ] && CRITICAL_SERVICES=""
 
   # OP_SERVICE_ACCOUNT_TOKEN and timeouts are passed via 'env' command on remote side
   # They are already in the environment, no need to export again
