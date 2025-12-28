@@ -153,7 +153,7 @@ HEALTH_RESULT=$({
 
     # Cache total service count (doesn't change during health check)
     local total_count
-    total_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+    total_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
 
     if [ "$total_count" -eq 0 ]; then
       echo "❌ $stack: No services defined in compose file"
@@ -181,7 +181,7 @@ HEALTH_RESULT=$({
       # Get container state and health in one call using custom format
       # Format: Service State Health (tab-separated)
       local ps_output
-      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
       # Parse output to count different states and health conditions
       running_healthy=0
@@ -308,11 +308,11 @@ HEALTH_RESULT=$({
     dockge_healthy_total=""
 
     # Get total services
-    DOCKGE_TOTAL=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+    DOCKGE_TOTAL=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
 
     while [ $dockge_attempt -le $dockge_max_attempts ]; do
       # Get Dockge state and health
-      dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+      dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
       # Parse health states
       dockge_healthy=0
@@ -466,8 +466,8 @@ HEALTH_RESULT=$({
   fi
 
   for STACK in $STACKS; do
-    STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
-    STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
+    STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
+    STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
     echo "  $STACK: $STACK_RUNNING/$STACK_TOTAL services"
     TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_TOTAL))
     RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
