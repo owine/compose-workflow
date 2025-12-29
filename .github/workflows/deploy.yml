@@ -58,10 +58,15 @@ on:
         type: number
         default: 15
       critical-services:
-        description: "JSON array of critical service names that should trigger early exit on failure"
+        description: "JSON array of critical service names (only used when auto-detect-critical is false)"
         required: false
         type: string
         default: '[]'
+      auto-detect-critical:
+        description: "Auto-detect critical stacks from compose file labels (default: true, set false to use critical-services input)"
+        required: false
+        type: boolean
+        default: true
       git-fetch-timeout:
         description: "Git fetch operation timeout in seconds (default: 300)"
         required: false
@@ -536,6 +541,16 @@ jobs:
             echo "::warning::Discord cleanup notification failed (timeout or network error)"
           fi
 
+      - name: Detect critical stacks
+        id: detect-critical
+        if: steps.backup.outputs.deployment_needed == 'true' && inputs.auto-detect-critical == true
+        run: |
+          ./.compose-workflow/scripts/deployment/detect-critical-stacks.sh \
+            --stacks "${{ join(fromJSON(inputs.stacks), ' ') }}" \
+            --ssh-user "${{ secrets.SSH_USER }}" \
+            --ssh-host "${{ secrets.SSH_HOST }}" \
+            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+
       - name: Deploy Dockge
         id: deploy-dockge
         if: steps.backup.outputs.deployment_needed == 'true' && inputs.has-dockge == true
@@ -573,6 +588,13 @@ jobs:
         if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
         continue-on-error: true
         run: |
+          # Use auto-detected critical stacks if enabled, otherwise use manual input
+          if [ "${{ inputs.auto-detect-critical }}" = "true" ]; then
+            CRITICAL_SERVICES='${{ steps.detect-critical.outputs.critical_stacks }}'
+          else
+            CRITICAL_SERVICES='${{ inputs.critical-services }}'
+          fi
+
           ./.compose-workflow/scripts/deployment/health-check.sh \
             --stacks "${{ join(fromJSON(inputs.stacks), ' ') }}" \
             --has-dockge "${{ inputs.has-dockge }}" \
@@ -581,7 +603,7 @@ jobs:
             --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
             --health-timeout "${{ inputs.health-check-timeout }}" \
             --command-timeout "${{ inputs.health-check-command-timeout }}" \
-            --critical-services '${{ inputs.critical-services }}'
+            --critical-services "$CRITICAL_SERVICES"
 
       - name: Cleanup unused images
         id: cleanup
@@ -619,10 +641,17 @@ jobs:
           echo "Previous SHA: ${{ steps.backup.outputs.previous_sha }}"
           echo "Failed SHA: ${{ inputs.target-ref }}"
 
+          # Use auto-detected critical stacks if enabled, otherwise use manual input
+          if [ "${{ inputs.auto-detect-critical }}" = "true" ]; then
+            CRITICAL_SERVICES='${{ steps.detect-critical.outputs.critical_stacks }}'
+          else
+            CRITICAL_SERVICES='${{ inputs.critical-services }}'
+          fi
+
           ./.compose-workflow/scripts/deployment/rollback-stacks.sh \
             --previous-sha "${{ steps.backup.outputs.previous_sha }}" \
             --compose-args "${{ inputs.args || '' }}" \
-            --critical-services '${{ inputs.critical-services }}' \
+            --critical-services "$CRITICAL_SERVICES" \
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
             --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
@@ -658,6 +687,13 @@ jobs:
             echo "⚠️ Using input stacks as fallback: $STACKS"
           fi
 
+          # Use auto-detected critical stacks if enabled, otherwise use manual input
+          if [ "${{ inputs.auto-detect-critical }}" = "true" ]; then
+            CRITICAL_SERVICES='${{ steps.detect-critical.outputs.critical_stacks }}'
+          else
+            CRITICAL_SERVICES='${{ inputs.critical-services }}'
+          fi
+
           # Create temporary file to capture health-check.sh outputs
           TEMP_OUTPUT=$(mktemp)
 
@@ -670,7 +706,7 @@ jobs:
             --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
             --health-timeout "${{ inputs.health-check-timeout }}" \
             --command-timeout "${{ inputs.health-check-command-timeout }}" \
-            --critical-services '${{ inputs.critical-services }}'; then
+            --critical-services "$CRITICAL_SERVICES"; then
             echo "✅ Rollback health check completed"
           else
             echo "⚠️ Rollback health check completed with warnings"
