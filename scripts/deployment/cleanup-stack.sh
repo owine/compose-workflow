@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Script Name: cleanup-stack.sh
 # Purpose: Clean up a single removed Docker Compose stack
-# Usage: ./cleanup-stack.sh --stack-name stackname --ssh-user user --ssh-host host --op-token token
+# Usage: ./cleanup-stack.sh --stack-name stackname --ssh-user user --ssh-host host
 
 set -euo pipefail
 
@@ -16,7 +16,6 @@ source "$SCRIPT_DIR/lib/common.sh"
 STACK_NAME=""
 SSH_USER=""
 SSH_HOST=""
-OP_TOKEN=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -34,7 +33,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --op-token)
-      OP_TOKEN="$2"
+      # Deprecated: OP_TOKEN no longer needed for cleanup
       shift 2
       ;;
     *)
@@ -48,7 +47,6 @@ done
 require_var STACK_NAME || exit 1
 require_var SSH_USER || exit 1
 require_var SSH_HOST || exit 1
-require_var OP_TOKEN || exit 1
 
 # Validate stack name format
 validate_stack_name "$STACK_NAME" || exit 1
@@ -59,17 +57,12 @@ log_info "Cleaning up stack: $STACK_NAME"
 # Use printf %q to properly escape argument for eval in ssh_retry
 STACK_NAME_ESCAPED=$(printf '%q' "$STACK_NAME")
 
-# Pass OP_TOKEN as positional argument (more secure than env vars in process list)
-# Token passed as $1, appears in SSH command locally but not in remote ps output
+# Stack cleanup doesn't require 1Password since we're just shutting down containers
 {
   cat << 'EOF'
   set -e
 
-  # Get OP_TOKEN from first positional argument (passed securely via SSH)
-  OP_SERVICE_ACCOUNT_TOKEN="$1"
-  export OP_SERVICE_ACCOUNT_TOKEN
-
-  STACK="$2"
+  STACK="$1"
 
   # Check if stack directory exists
   if [ ! -d "/opt/compose/$STACK" ]; then
@@ -85,15 +78,15 @@ STACK_NAME_ESCAPED=$(printf '%q' "$STACK_NAME")
     exit 0
   fi
 
-  # Run docker compose down with 1Password
-  if op run --env-file=/opt/compose/compose.env -- docker compose -f ./compose.yaml down; then
+  # Run docker compose down without 1Password (no env vars needed for cleanup)
+  if docker compose -f ./compose.yaml down; then
     echo "✅ Successfully cleaned up $STACK"
   else
     echo "❌ Failed to clean up $STACK"
     exit 1
   fi
 EOF
-} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST /bin/bash -s \"$OP_TOKEN\" $STACK_NAME_ESCAPED"
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST /bin/bash -s $STACK_NAME_ESCAPED"
 
 log_success "Stack $STACK_NAME cleaned up successfully"
 exit 0

@@ -79,9 +79,9 @@ log_info "Health check timeout: ${HEALTH_TIMEOUT}s, Command timeout: ${COMMAND_T
 STACKS_ESCAPED=$(printf '%q ' $STACKS)
 HAS_DOCKGE_ESCAPED=$(printf '%q' "$HAS_DOCKGE")
 
-# Note: CRITICAL_SERVICES is passed via environment variable (not positional argument)
-# Environment variables don't undergo shell parsing or glob expansion, so no escaping needed
-# The value must remain valid JSON for jq parsing in the remote script
+# Base64 encode CRITICAL_SERVICES to prevent shell glob expansion
+# Remote shells (especially zsh) treat [] as glob patterns, causing failures
+CRITICAL_SERVICES_B64=$(echo -n "$CRITICAL_SERVICES" | base64 -w 0 2>/dev/null || echo -n "$CRITICAL_SERVICES" | base64)
 
 # Pass OP_TOKEN as positional argument (more secure than env vars in process list)
 # Token passed as $1, appears in SSH command locally but not in remote ps output
@@ -92,6 +92,9 @@ HEALTH_RESULT=$({
 
   # Get OP_TOKEN from first positional argument (passed securely via SSH)
   OP_SERVICE_ACCOUNT_TOKEN="$1"
+
+  # Decode base64-encoded CRITICAL_SERVICES
+  CRITICAL_SERVICES=$(echo "$CRITICAL_SERVICES_B64" | base64 -d)
   export OP_SERVICE_ACCOUNT_TOKEN
 
   # Shift to get actual script arguments (stacks, has-dockge)
@@ -559,7 +562,7 @@ HEALTH_RESULT=$({
     exit 0
   fi
 EOF
-} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES=\"$CRITICAL_SERVICES\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED")
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES_B64=\"$CRITICAL_SERVICES_B64\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED")
 HEALTH_EXIT_CODE=$?
 set -e
 
