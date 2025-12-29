@@ -205,11 +205,8 @@ DETECT_DISCOVERY_EOF
   )
 
   # Execute detection script on remote server
-  # Escape JSON to prevent shell glob expansion of [] characters
-  local deleted_files_escaped
-  deleted_files_escaped=$(printf '%q' "$deleted_files_json")
-
-  echo "$detect_script" | ssh_retry 3 5 "ssh -o 'StrictHostKeyChecking no' $SSH_USER@$SSH_HOST /bin/bash -s $deleted_files_escaped"
+  # Double quote the JSON argument to prevent shell glob expansion on remote server
+  echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$deleted_files_json\""
 }
 
 # === AGGREGATION FUNCTION ===
