@@ -16,7 +16,7 @@ This repository provides centralized, reusable workflows for standardizing CI/CD
 
 ## Available Workflows
 
-### 1. Lint Workflow (`lint.yml`)
+### 1. Compose Lint Workflow (`compose-lint.yml`)
 
 Performs comprehensive validation of Docker Compose configurations with secret detection.
 
@@ -40,7 +40,7 @@ on:
 
 jobs:
   lint:
-    uses: owine/compose-workflow/.github/workflows/lint.yml@main
+    uses: owine/compose-workflow/.github/workflows/compose-lint.yml@main
     secrets: inherit
     with:
       stacks: '["stack1", "stack2", "stack3"]'
@@ -154,7 +154,8 @@ The repository includes testing scripts in `scripts/testing/`:
 
 ```bash
 # Validate workflow syntax
-actionlint .github/workflows/lint.yml
+actionlint .github/workflows/compose-lint.yml
+actionlint .github/workflows/workflow-lint.yml
 actionlint .github/workflows/deploy.yml
 
 # Check YAML formatting

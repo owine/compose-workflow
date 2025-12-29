@@ -14,7 +14,7 @@ This repository contains **reusable GitHub Actions workflows** that provide cent
 
 This repository provides two main reusable workflows:
 
-#### 1. Lint Workflow (`/.github/workflows/lint.yml`)
+#### 1. Compose Lint Workflow (`/.github/workflows/compose-lint.yml`)
 - **Purpose**: Validates Docker Compose files and detects secrets
 - **Features**: 
   - GitGuardian scanning for secret detection (push events only)
@@ -155,7 +155,7 @@ The lint workflow uses modular bash scripts in `scripts/linting/` for all valida
 - **Testability**: Scripts can be tested independently of the workflow
 - **Maintainability**: Easier to update and debug than inline heredocs
 - **Code Deduplication**: Eliminates 80 lines of duplicated create_temp_env function
-- **Workflow Reduction**: lint.yml reduced from 666 → 308 lines (54% reduction)
+- **Workflow Reduction**: compose-lint.yml reduced from 666 → 308 lines (54% reduction)
 
 ### Modular Deployment Scripts
 
@@ -229,11 +229,13 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
 
 ```bash
 # Test workflow syntax
-actionlint .github/workflows/lint.yml
+actionlint .github/workflows/compose-lint.yml
+actionlint .github/workflows/workflow-lint.yml
 actionlint .github/workflows/deploy.yml
 
 # Validate workflow YAML formatting
-yamllint --strict .github/workflows/lint.yml
+yamllint --strict .github/workflows/compose-lint.yml
+yamllint --strict .github/workflows/workflow-lint.yml
 yamllint --strict .github/workflows/deploy.yml
 
 # Test workflows locally
@@ -259,7 +261,7 @@ docker compose -f stack/compose.yaml config
 
 ### Lint Pipeline Features
 
-The lint workflow (`lint.yml`) provides:
+The compose lint workflow (`compose-lint.yml`) provides:
 
 1. **Parallel Execution** - GitGuardian and YAML linting run simultaneously
 2. **GitGuardian Scanning** - Secret detection with 1Password integration (push events only)
@@ -425,7 +427,8 @@ This repository contains:
 ```
 ├── .github/
 │   └── workflows/
-│       ├── lint.yml              # Reusable lint workflow (308 lines, 54% reduction)
+│       ├── compose-lint.yml     # Reusable compose lint workflow (308 lines, 54% reduction)
+│       ├── workflow-lint.yml    # Reusable workflow lint (yamllint for workflows)
 │       └── deploy.yml            # Reusable deploy workflow (783 lines, 69% reduction)
 ├── scripts/
 │   ├── linting/                  # Modular linting scripts
