@@ -469,6 +469,50 @@ EOF
 5. `detect-removed-stacks.sh` - Stack removal detection (328 lines)
 6. `cleanup-stack.sh` - Individual stack cleanup (87 lines)
 7. `rollback-stacks.sh` - Rollback automation (495 lines)
+8. `detect-critical-stacks.sh` - Critical stack auto-detection (133 lines)
+
+### Critical Stack Auto-Detection
+
+**Purpose**: Automatically detect which stacks are critical infrastructure based on compose file labels, eliminating manual configuration in workflows.
+
+**Label Convention**:
+```yaml
+services:
+  traefik:
+    labels:
+      com.compose.tier: infrastructure  # Recommended approach
+      # OR
+      com.compose.critical: true        # Alternative explicit flag
+```
+
+**Detection Logic**:
+1. Scans each stack's `compose.yaml` for supported labels
+2. Supports two label patterns:
+   - `com.compose.tier: infrastructure`
+   - `com.compose.critical: true` or `com.compose.critical: "true"`
+3. Returns JSON array of critical stack names
+
+**Workflow Integration**:
+```yaml
+# Auto-detection enabled by default (can omit auto-detect-critical)
+with:
+  stacks: '["swag", "portainer", "services"]'
+  # Automatic detection runs before deployment
+  # Scans compose files for com.compose.tier: infrastructure labels
+
+# To use manual list instead
+with:
+  stacks: '["stack1", "stack2"]'
+  auto-detect-critical: false
+  critical-services: '["stack1"]'  # Manual override
+```
+
+**Benefits**:
+- Declarative configuration (labels in compose files)
+- No manual list maintenance in workflows
+- Self-documenting infrastructure dependencies
+- Works across all repositories automatically
+- Enabled by default - zero configuration required
 
 ---
 

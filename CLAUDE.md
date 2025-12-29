@@ -284,6 +284,73 @@ The deploy workflow (`deploy.yml`) provides:
 9. **Caching** - Optimized caching for Tailscale and deployment tools
 10. **Rich Discord Notifications** - Comprehensive deployment status with health metrics
 11. **Stack Removal Cleanup** - Detect deleted stacks via git diff and clean up containers before repository update
+12. **Critical Stack Auto-Detection** - Automatically detect critical infrastructure stacks from compose file labels
+
+### Critical Stack Detection
+
+The deploy workflow can automatically detect critical stacks that should trigger early deployment failure if they become unhealthy. This eliminates the need to manually maintain a list of critical stacks in each repository's workflow configuration.
+
+#### Label Convention
+
+Mark stacks as critical by adding labels to any service in the stack's `compose.yaml`:
+
+```yaml
+services:
+  traefik:
+    image: traefik:v3.2@sha256:...
+    labels:
+      # Mark this stack as critical infrastructure
+      com.compose.tier: infrastructure
+      # OR use explicit critical flag
+      com.compose.critical: true
+      # ... other labels
+```
+
+**Supported Labels:**
+- `com.compose.tier: infrastructure` - Marks stack as infrastructure tier (recommended)
+- `com.compose.critical: true` - Explicit critical flag (alternative)
+
+#### Usage in Workflows
+
+Auto-detection is **enabled by default** in all deployments:
+
+```yaml
+jobs:
+  deploy:
+    uses: owine/compose-workflow/.github/workflows/deploy.yml@main
+    secrets: inherit
+    with:
+      stacks: '["swag", "portainer", "dozzle", "services"]'
+      # auto-detect-critical: true  ← Default behavior (can omit)
+```
+
+To use manual critical services list instead:
+
+```yaml
+with:
+  stacks: '["stack1", "stack2", "stack3"]'
+  auto-detect-critical: false
+  critical-services: '["stack1", "stack2"]'  # Manual override
+```
+
+**How auto-detection works:**
+1. Detection step runs before deployment (automatic)
+2. Scans each stack's `compose.yaml` for `com.compose.tier: infrastructure` labels
+3. Builds JSON array of critical stacks
+4. Passes to health check and rollback steps
+5. Deployment fails fast if any critical stack is unhealthy
+
+**Label Convention:**
+Use `com.compose.tier: infrastructure` on individual services (not entire stacks):
+- Syntax: `com.compose.tier: infrastructure` (colon syntax for YAML keys)
+- Alternative: `- com.compose.tier=infrastructure` (equals syntax for arrays)
+
+**Examples of critical services:**
+- **Reverse Proxies**: `swag`, `traefik` - All external access depends on these
+- **Container Management**: `portainer`, `dockge` - Required for manual intervention
+- **Authentication**: `authelia` - SSO gateway for protected services
+- **Monitoring**: `dozzle`, `beszel`, `uptime-kuma`, `smokeping` - Operational visibility
+- **Critical Apps**: `librarymanager` - Mission-critical applications
 
 ## Security Integration
 
