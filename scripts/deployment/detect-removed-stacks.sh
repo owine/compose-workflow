@@ -191,10 +191,15 @@ detect_removed_stacks_discovery() {
   log_info "Running discovery analysis detection..."
 
   # Build detection script
+  # Base64 encode JSON to avoid shell glob expansion issues with brackets
+  local deleted_files_b64
+  deleted_files_b64=$(echo -n "$deleted_files_json" | base64 -w 0 2>/dev/null || echo -n "$deleted_files_json" | base64)
+
   local detect_script
   detect_script=$(cat << 'DETECT_DISCOVERY_EOF'
   set -e
-  DELETED_FILES_JSON="$1"
+  # Decode base64 JSON
+  DELETED_FILES_JSON=$(echo "$1" | base64 -d)
 
   # Parse JSON array and filter for compose.yaml deletions
   # Pattern: one level deep only (stack-name/compose.yaml)
@@ -205,8 +210,8 @@ DETECT_DISCOVERY_EOF
   )
 
   # Execute detection script on remote server
-  # Double quote the JSON argument to prevent shell glob expansion on remote server
-  echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$deleted_files_json\""
+  # Pass base64-encoded JSON to avoid shell glob expansion
+  echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$deleted_files_b64\""
 }
 
 # === AGGREGATION FUNCTION ===
