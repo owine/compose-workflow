@@ -34,6 +34,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --op-token)
+      # shellcheck disable=SC2034  # Reserved for future use, validated for API consistency
       OP_TOKEN="$2"
       shift 2
       ;;
@@ -54,6 +55,7 @@ log_info "Detecting critical stacks from compose file labels..."
 log_info "Scanning stacks: $STACKS"
 
 # Escape stacks for positional argument
+# shellcheck disable=SC2086  # Word splitting intended - each stack becomes separate argument to printf
 STACKS_ESCAPED=$(printf '%q ' $STACKS)
 
 # Execute detection script on remote server
