@@ -74,14 +74,14 @@ log_info "Starting health check for stacks: $STACKS"
 log_info "Health check timeout: ${HEALTH_TIMEOUT}s, Command timeout: ${COMMAND_TIMEOUT}s"
 
 # Execute health check via SSH with retry
-# Escape CRITICAL_SERVICES to prevent glob expansion on remote shell
-ESCAPED_CRITICAL_SERVICES="${CRITICAL_SERVICES//\[/\\[}"
-ESCAPED_CRITICAL_SERVICES="${ESCAPED_CRITICAL_SERVICES//\]/\\]}"
-
 # Use printf %q to properly escape arguments for eval in ssh_retry
 # shellcheck disable=SC2086 # Word splitting is intentional for printf to process each stack
 STACKS_ESCAPED=$(printf '%q ' $STACKS)
 HAS_DOCKGE_ESCAPED=$(printf '%q' "$HAS_DOCKGE")
+
+# Note: CRITICAL_SERVICES is passed via environment variable (not positional argument)
+# Environment variables don't undergo shell parsing or glob expansion, so no escaping needed
+# The value must remain valid JSON for jq parsing in the remote script
 
 # Pass OP_TOKEN as positional argument (more secure than env vars in process list)
 # Token passed as $1, appears in SSH command locally but not in remote ps output
@@ -559,7 +559,7 @@ HEALTH_RESULT=$({
     exit 0
   fi
 EOF
-} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES=\"$ESCAPED_CRITICAL_SERVICES\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED")
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES=\"$CRITICAL_SERVICES\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED")
 HEALTH_EXIT_CODE=$?
 set -e
 

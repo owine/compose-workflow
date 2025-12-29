@@ -297,6 +297,152 @@ SSH_USER=test SSH_HOST=test ./scripts/deployment/health-check.sh \
 - Calling repositories require no changes
 - Behavior identical to current implementation
 
+### Shell Escaping Best Practices
+
+**Critical**: Understand when and how to escape arguments to prevent shell glob expansion and injection attacks.
+
+#### When to Use `printf '%q'` (Positional Arguments)
+
+Use `printf '%q'` for **positional arguments** passed to remote scripts:
+
+```bash
+# Correct: Escape positional arguments
+STACKS_ESCAPED=$(printf '%q ' "${STACKS[@]}")
+HAS_DOCKGE_ESCAPED=$(printf '%q' "$HAS_DOCKGE")
+
+# Pass escaped values as positional arguments
+ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST /bin/bash -s $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED" << 'EOF'
+  # Remote script receives escaped arguments
+  STACKS="$1"
+  HAS_DOCKGE="$2"
+EOF
+```
+
+**Why**: Positional arguments undergo shell parsing and glob expansion. Without escaping, characters like `[]`, `*`, `?` are interpreted as glob patterns.
+
+#### When Escaping is NOT Needed (Environment Variables)
+
+**DO NOT** escape variables passed via `env` or environment variable assignment:
+
+```bash
+# Correct: No escaping needed for environment variables
+ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env CRITICAL_SERVICES=\"$CRITICAL_SERVICES\" /bin/bash -s" << 'EOF'
+  # Remote script receives raw JSON value
+  echo "$CRITICAL_SERVICES" | jq '.[]'
+EOF
+```
+
+**Why**: Environment variables don't undergo shell parsing or glob expansion. The value is passed directly to the remote shell environment. Values must remain valid (e.g., valid JSON) for the remote script to parse.
+
+#### SSH Command Quoting Strategies
+
+**Single vs Double Quotes**: Choose based on where variable expansion should occur.
+
+```bash
+# Pattern 1: Double quotes (expansion on local shell)
+ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST /bin/bash -s \"$arg\""
+# Variables expand locally before SSH transmission
+
+# Pattern 2: Single quotes (no expansion on local shell)
+ssh_retry 3 5 'ssh '"$SSH_USER"'@'"$SSH_HOST"' /bin/bash -s -- "'"$arg"'"'
+# Prevents local glob expansion, variable safely expanded within single-quoted segments
+```
+
+**Use Pattern 2** when passing JSON arrays or values with glob characters (`[]`, `*`):
+
+```bash
+# Correct: Prevents glob expansion of JSON array
+DELETED_FILES='["stack1/compose.yaml", "stack2/compose.yaml"]'
+ssh_retry 3 5 'ssh -o "StrictHostKeyChecking no" '"$SSH_USER"'@'"$SSH_HOST"' /bin/bash -s -- "'"$DELETED_FILES"'"'
+```
+
+**Incorrect**: Double quotes allow glob expansion on local shell:
+
+```bash
+# WRONG: Brackets will be interpreted as glob patterns
+DELETED_FILES='["stack1/compose.yaml"]'
+ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST /bin/bash -s \"$DELETED_FILES\""
+# Error: zsh:1: no matches found: [stack1/compose.yaml]
+```
+
+#### Manual Bracket Escaping (Deprecated)
+
+**AVOID** manual bracket escaping like `${VAR//\[/\\[}`:
+
+```bash
+# WRONG: Manual escaping is error-prone and usually unnecessary
+ESCAPED_VAR="${VAR//\[/\\[}"
+ESCAPED_VAR="${ESCAPED_VAR//\]/\\]}"
+```
+
+**Why**:
+- Environment variables don't need escaping
+- Positional arguments should use `printf '%q'`
+- Manual escaping is fragile and hard to maintain
+
+#### Complete Examples
+
+**Example 1: Passing JSON to Remote Script (Environment Variable)**
+
+```bash
+# JSON value to pass (contains brackets)
+CRITICAL_SERVICES='["dockge", "traefik"]'
+
+# Correct: Use environment variable (no escaping needed)
+ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env CRITICAL_SERVICES=\"$CRITICAL_SERVICES\" /bin/bash -s" << 'EOF'
+  # Remote script parses JSON directly
+  echo "$CRITICAL_SERVICES" | jq -r '.[]'
+EOF
+```
+
+**Example 2: Passing Stack List (Positional Arguments)**
+
+```bash
+# Array of stack names
+STACKS=("stack1" "stack2" "stack-with-special-chars")
+
+# Correct: Escape for positional arguments
+STACKS_ESCAPED=$(printf '%q ' "${STACKS[@]}")
+
+# Pass as positional arguments
+ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST /bin/bash -s $STACKS_ESCAPED" << 'EOF'
+  # Remote script receives escaped values as positional arguments
+  for stack in "$@"; do
+    echo "Processing: $stack"
+  done
+EOF
+```
+
+**Example 3: Passing JSON Array (Positional Argument)**
+
+```bash
+# JSON array with glob characters
+DELETED_FILES='["stack1/compose.yaml", "stack2/compose.yaml"]'
+
+# Correct: Single quotes prevent local glob expansion
+ssh_retry 3 5 'ssh '"$SSH_USER"'@'"$SSH_HOST"' /bin/bash -s -- "'"$DELETED_FILES"'"' << 'EOF'
+  DELETED_FILES_JSON="$1"
+  # Remote script parses JSON
+  echo "$DELETED_FILES_JSON" | jq -r '.[]'
+EOF
+```
+
+#### Quick Reference
+
+| Scenario | Method | Example |
+|----------|--------|---------|
+| Positional arguments | `printf '%q'` | `$(printf '%q ' "${STACKS[@]}")` |
+| Environment variables | No escaping | `env VAR="$VALUE"` |
+| JSON in positional arg | Single quote pattern | `'ssh ... -s -- "'"$JSON"'"'` |
+| Simple strings | Double quotes | `"ssh $USER@$HOST /bin/bash -s \"$arg\""` |
+
+#### Common Pitfalls
+
+1. **Escaping environment variables**: Unnecessary and can break JSON parsing
+2. **Using double quotes for JSON**: Allows glob expansion on local shell
+3. **Manual bracket escaping**: Fragile, use `printf '%q'` or environment variables instead
+4. **Mixing quoting styles**: Be consistent with single/double quote patterns
+
 ---
 
 ## Final Impact
