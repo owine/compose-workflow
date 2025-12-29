@@ -205,7 +205,9 @@ DETECT_DISCOVERY_EOF
   )
 
   # Execute detection script on remote server
-  echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$deleted_files_json\""
+  # Use single quotes around ssh command and expand JSON variable with double quotes
+  # to prevent shell glob expansion of [] characters in the JSON array
+  echo "$detect_script" | ssh_retry 3 5 'ssh -o "StrictHostKeyChecking no" '"$SSH_USER"'@'"$SSH_HOST"' /bin/bash -s -- "'"$deleted_files_json"'"'
 }
 
 # === AGGREGATION FUNCTION ===
