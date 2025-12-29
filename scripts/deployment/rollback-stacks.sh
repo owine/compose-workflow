@@ -116,7 +116,8 @@ fi
 if [ -z "$CRITICAL_SERVICES" ]; then
   CRITICAL_SERVICES_ESCAPED="__EMPTY__"
 else
-  CRITICAL_SERVICES_ESCAPED=$(printf '%q' "$CRITICAL_SERVICES")
+  # Base64 encode to prevent shell glob expansion through eval and remote shell
+  CRITICAL_SERVICES_ESCAPED=$(echo -n "$CRITICAL_SERVICES" | base64 -w 0 2>/dev/null || echo -n "$CRITICAL_SERVICES" | base64)
 fi
 
 # Pass OP_TOKEN as positional argument (more secure than env vars in process list)
@@ -135,11 +136,17 @@ ROLLBACK_RESULT=$({
   # Get arguments passed to script (after shifting past OP_TOKEN)
   PREVIOUS_SHA="$1"
   COMPOSE_ARGS="$2"
-  CRITICAL_SERVICES="$3"
+  CRITICAL_SERVICES_B64="$3"
 
   # Convert __EMPTY__ placeholders back to empty strings
   [ "$COMPOSE_ARGS" = "__EMPTY__" ] && COMPOSE_ARGS=""
-  [ "$CRITICAL_SERVICES" = "__EMPTY__" ] && CRITICAL_SERVICES=""
+
+  # Decode base64-encoded CRITICAL_SERVICES
+  if [ "$CRITICAL_SERVICES_B64" = "__EMPTY__" ]; then
+    CRITICAL_SERVICES=""
+  else
+    CRITICAL_SERVICES=$(echo "$CRITICAL_SERVICES_B64" | base64 -d)
+  fi
 
   # Timeouts are passed via 'env' command on remote side
   # They are already in the environment, no need to export again

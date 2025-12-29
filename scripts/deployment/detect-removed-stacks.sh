@@ -18,7 +18,6 @@ TARGET_REF=""
 DELETED_FILES="[]"
 SSH_USER=""
 SSH_HOST=""
-OP_TOKEN=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -43,10 +42,6 @@ while [[ $# -gt 0 ]]; do
       SSH_HOST="$2"
       shift 2
       ;;
-    --op-token)
-      OP_TOKEN="$2"
-      shift 2
-      ;;
     *)
       log_error "Unknown argument: $1"
       exit 1
@@ -59,7 +54,6 @@ require_var CURRENT_SHA || exit 1
 require_var TARGET_REF || exit 1
 require_var SSH_USER || exit 1
 require_var SSH_HOST || exit 1
-require_var OP_TOKEN || exit 1
 
 # Skip detection if this is the first deployment
 if [ "$CURRENT_SHA" = "unknown" ]; then
@@ -313,11 +307,11 @@ else
     log_info "Cleaning up stack: $stack"
 
     # Call cleanup-stack.sh helper script
+    # Note: op-token not needed for cleanup (just shutting down containers)
     if ! "$SCRIPT_DIR/cleanup-stack.sh" \
       --stack-name "$stack" \
       --ssh-user "$SSH_USER" \
-      --ssh-host "$SSH_HOST" \
-      --op-token "$OP_TOKEN"; then
+      --ssh-host "$SSH_HOST"; then
       log_error "Cleanup failed for stack: $stack"
       CLEANUP_FAILED=true
       break
