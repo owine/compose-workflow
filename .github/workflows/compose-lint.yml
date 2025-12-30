@@ -101,7 +101,7 @@ jobs:
           echo ""
 
       - name: Run GitGuardian scan
-        uses: GitGuardian/ggshield-action@427861a5523bded845b977f15c9e72ed24d312a4 # v1.45.0
+        uses: GitGuardian/ggshield-action@8b29edc57b582045b12d45c8cc8f8040e121693b # v1.46.0
         env:
           GITHUB_PUSH_BEFORE_SHA: ${{ inputs.github-event-before }}
           GITHUB_PUSH_BASE_SHA: ${{ inputs.github-event-base }}
