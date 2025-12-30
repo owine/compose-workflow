@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Script Name: detect-removed-stacks.sh
 # Purpose: Detect and clean up removed Docker Compose stacks using three detection methods
-# Usage: ./detect-removed-stacks.sh --current-sha abc123 --target-ref main --deleted-files '[]' --ssh-user user --ssh-host host --op-token token
+# Usage: ./detect-removed-stacks.sh --current-sha abc123 --target-ref main --deleted-files '[]' --ssh-user user --ssh-host host
 
 set -euo pipefail
 

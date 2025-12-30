@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Script Name: detect-critical-stacks.sh
 # Purpose: Detect critical stacks based on compose file labels
-# Usage: ./detect-critical-stacks.sh --stacks "stack1 stack2 stack3" --ssh-user user --ssh-host host --op-token token
+# Usage: ./detect-critical-stacks.sh --stacks "stack1 stack2 stack3" --ssh-user user --ssh-host host
 
 set -euo pipefail
 
@@ -16,7 +16,6 @@ source "$SCRIPT_DIR/lib/common.sh"
 STACKS=""
 SSH_USER=""
 SSH_HOST=""
-OP_TOKEN=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -33,11 +32,6 @@ while [[ $# -gt 0 ]]; do
       SSH_HOST="$2"
       shift 2
       ;;
-    --op-token)
-      # shellcheck disable=SC2034  # Reserved for future use, validated for API consistency
-      OP_TOKEN="$2"
-      shift 2
-      ;;
     *)
       log_error "Unknown argument: $1"
       exit 1
@@ -49,7 +43,6 @@ done
 require_var STACKS || exit 1
 require_var SSH_USER || exit 1
 require_var SSH_HOST || exit 1
-require_var OP_TOKEN || exit 1
 
 log_info "Detecting critical stacks from compose file labels..."
 log_info "Scanning stacks: $STACKS"
