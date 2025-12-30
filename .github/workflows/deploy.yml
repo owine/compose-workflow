@@ -492,8 +492,7 @@ jobs:
             --target-ref "${{ inputs.target-ref }}" \
             --deleted-files '${{ steps.changed-files.outputs.deleted_files }}' \
             --ssh-user "${{ secrets.SSH_USER }}" \
-            --ssh-host "${{ secrets.SSH_HOST }}" \
-            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+            --ssh-host "${{ secrets.SSH_HOST }}"
 
       - name: Notify removed stacks cleanup
         if: steps.cleanup-removed.outputs.has_removed_stacks == 'true'
@@ -548,8 +547,7 @@ jobs:
           ./.compose-workflow/scripts/deployment/detect-critical-stacks.sh \
             --stacks "${{ join(fromJSON(inputs.stacks), ' ') }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
-            --ssh-host "${{ secrets.SSH_HOST }}" \
-            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+            --ssh-host "${{ secrets.SSH_HOST }}"
 
       - name: Deploy Dockge
         id: deploy-dockge
