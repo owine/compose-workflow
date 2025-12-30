@@ -263,10 +263,11 @@ jobs:
         if: ${{ needs.lint-summary.result == 'failure' || (needs.lint-summary.result == 'success' && github.event_name != 'pull_request') }}
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
+          content: ${{ needs.lint-summary.result == 'failure' && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}>', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}
           status: ${{ needs.lint-summary.result == 'success' && 'success' || 'failure' }}
           title: "🔍 ${{ inputs.repo-name }} • ${{ needs.lint-summary.result == 'success' && 'Validation Passed' || 'Validation Failed' }}"
           description: |
-            ${{ needs.lint-summary.result == 'failure' && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}> ', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}${{ needs.lint-summary.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
+            ${{ needs.lint-summary.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
 
             **🔒 Security Scan:** ${{ needs.scanning.result == 'success' && '✅ No secrets detected' || needs.scanning.result == 'skipped' && '⏭️ Skipped (PR/manual)' || '❌ Issues found' }}
             **⚙️ Workflow Validation:** ${{ needs.actionlint.result == 'success' && '✅ All workflows valid' || '❌ Issues detected' }}
