@@ -845,7 +845,7 @@ jobs:
         uses: sarisia/actions-status-discord@b8381b25576cb341b2af39926ab42c5056cc44ed  # v1.15.5
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
-          content: ${{ (needs.deploy.outputs.deploy_status == 'failure' || needs.deploy.outputs.health_status == 'failure' || needs.deploy.result == 'failure') && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}>', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}
+          content: ${{ (needs.deploy.outputs.deploy_status != 'success' || needs.deploy.outputs.health_status != 'success' || needs.deploy.result != 'success') && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}>', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}
           status: ${{ needs.deploy.result == 'success' && needs.deploy.outputs.deployment_needed != 'true' && 'success' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'success' || 'failure' }}
           title: "🚀 ${{ inputs.repo-name }} • ${{ needs.deploy.result == 'success' && needs.deploy.outputs.deployment_needed != 'true' && 'No Changes' || needs.deploy.outputs.deploy_status == 'success' && needs.deploy.outputs.health_status == 'success' && 'Deployed' || needs.deploy.outputs.rollback_status == 'success' && 'Rolled Back' || 'Failed' }}"
           description: |
