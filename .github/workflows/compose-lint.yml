@@ -263,7 +263,7 @@ jobs:
         if: ${{ needs.lint-summary.result == 'failure' || (needs.lint-summary.result == 'success' && github.event_name != 'pull_request') }}
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
-          content: ${{ needs.lint-summary.result == 'failure' && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}>', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}
+          content: ${{ needs.lint-summary.result != 'success' && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}>', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}
           status: ${{ needs.lint-summary.result == 'success' && 'success' || 'failure' }}
           title: "🔍 ${{ inputs.repo-name }} • ${{ needs.lint-summary.result == 'success' && 'Validation Passed' || 'Validation Failed' }}"
           description: |
