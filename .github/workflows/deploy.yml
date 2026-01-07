@@ -256,23 +256,14 @@ jobs:
         run: |
           echo "🔍 Verifying required tools are available..."
 
-          # Check for jq (required for JSON parsing)
-          if ! command -v jq &> /dev/null; then
-            echo "::error::jq is not installed. Installing..."
-            sudo apt-get update -qq
-            sudo apt-get install -y jq
-          fi
+          # Verify jq is available (pre-installed on ubuntu-24.04)
           echo "✅ jq version: $(jq --version)"
 
-          # Check for timeout (required for command timeouts)
-          if ! command -v timeout &> /dev/null; then
-            echo "::error::timeout command is not available"
-            exit 1
-          fi
+          # Verify timeout is available (part of coreutils)
           echo "✅ timeout is available (part of coreutils)"
 
-          # Check for readarray (Bash 4.0+ built-in for array operations)
-          if ! declare -p BASH_VERSION &> /dev/null || [ "${BASH_VERSION%%.*}" -lt 4 ]; then
+          # Verify Bash 4.0+ for readarray and associative arrays
+          if [ "${BASH_VERSION%%.*}" -lt 4 ]; then
             echo "::error::Bash 4.0+ is required (current: ${BASH_VERSION:-unknown})"
             exit 1
           fi
