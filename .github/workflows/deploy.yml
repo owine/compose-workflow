@@ -819,14 +819,11 @@ jobs:
 
       - name: Get commit message
         id: commit-msg
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          COMMIT_MSG=$(curl -s \
-            --connect-timeout 10 \
-            --max-time 30 \
-            -H "Authorization: token ${{ github.token }}" \
-            "https://api.github.com/repos/${{ github.repository }}/commits/${{ inputs.target-ref }}" \
-            | jq -r '.commit.message // "No commit message available"' \
-            | head -1)
+          COMMIT_MSG=$(gh api repos/${{ github.repository }}/commits/${{ inputs.target-ref }} \
+            --jq '.commit.message // "No commit message available"' | head -1)
           SHORT_SHA="${{ inputs.target-ref }}"
           SHORT_SHA="${SHORT_SHA:0:7}"
           echo "message=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
