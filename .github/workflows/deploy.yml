@@ -830,7 +830,7 @@ jobs:
           DISCORD_USER_ID: ${{ inputs.discord-user-id != '' && inputs.discord-user-id || 'SKIP' }}
 
       - name: Send Discord notification
-        uses: sarisia/actions-status-discord@b8381b25576cb341b2af39926ab42c5056cc44ed  # v1.15.5
+        uses: sarisia/actions-status-discord@eb045afee445dc055c18d3d90bd0f244fd062708  # v1.16.0
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
           content: ${{ needs.deploy.outputs.deployment_needed != 'false' && (needs.deploy.outputs.deploy_status != 'success' || needs.deploy.outputs.health_status != 'success' || needs.deploy.result != 'success') && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}>', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}
