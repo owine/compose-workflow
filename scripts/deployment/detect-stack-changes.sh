@@ -71,12 +71,14 @@ if [ "$CURRENT_SHA" = "unknown" ]; then
 
   # All input stacks are new, no removed or existing stacks
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
-    echo "removed_stacks=[]" >> "$GITHUB_OUTPUT"
-    echo "existing_stacks=[]" >> "$GITHUB_OUTPUT"
-    echo "new_stacks=$INPUT_STACKS" >> "$GITHUB_OUTPUT"
-    echo "has_removed_stacks=false" >> "$GITHUB_OUTPUT"
-    echo "has_existing_stacks=false" >> "$GITHUB_OUTPUT"
-    echo "has_new_stacks=true" >> "$GITHUB_OUTPUT"
+    {
+      echo "removed_stacks=[]"
+      echo "existing_stacks=[]"
+      echo "new_stacks=$INPUT_STACKS"
+      echo "has_removed_stacks=false"
+      echo "has_existing_stacks=false"
+      echo "has_new_stacks=true"
+    } >> "$GITHUB_OUTPUT"
   fi
   exit 0
 fi
@@ -454,12 +456,14 @@ NEW_JSON=$(if [ -n "$NEW_STACKS" ]; then echo "$NEW_STACKS" | jq -R -s -c 'split
 
 # Output results
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  echo "removed_stacks=$REMOVED_JSON" >> "$GITHUB_OUTPUT"
-  echo "existing_stacks=$EXISTING_JSON" >> "$GITHUB_OUTPUT"
-  echo "new_stacks=$NEW_JSON" >> "$GITHUB_OUTPUT"
-  echo "has_removed_stacks=$([ -n "$REMOVED_STACKS" ] && echo "true" || echo "false")" >> "$GITHUB_OUTPUT"
-  echo "has_existing_stacks=$([ -n "$EXISTING_STACKS" ] && echo "true" || echo "false")" >> "$GITHUB_OUTPUT"
-  echo "has_new_stacks=$([ -n "$NEW_STACKS" ] && echo "true" || echo "false")" >> "$GITHUB_OUTPUT"
+  {
+    echo "removed_stacks=$REMOVED_JSON"
+    echo "existing_stacks=$EXISTING_JSON"
+    echo "new_stacks=$NEW_JSON"
+    echo "has_removed_stacks=$([ -n "$REMOVED_STACKS" ] && echo "true" || echo "false")"
+    echo "has_existing_stacks=$([ -n "$EXISTING_STACKS" ] && echo "true" || echo "false")"
+    echo "has_new_stacks=$([ -n "$NEW_STACKS" ] && echo "true" || echo "false")"
+  } >> "$GITHUB_OUTPUT"
 fi
 
 # Cleanup removed stacks if any
