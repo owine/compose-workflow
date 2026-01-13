@@ -6,7 +6,7 @@ name: Deploy Docker Compose
 #    - lib/common.sh: Logging, validation, and utility functions
 #    - health-check.sh: Service health verification with stack-specific counting
 #    - deploy-stacks.sh: Parallel deployment with comprehensive error handling
-#    - detect-removed-stacks.sh: Multi-method stack removal detection
+#    - detect-stack-changes.sh: Multi-method detection for removed/existing/new stacks
 #    - cleanup-stack.sh: Individual stack cleanup helper
 #    - rollback-stacks.sh: Automated rollback with stack discovery
 #
@@ -112,7 +112,7 @@ jobs:
       previous_sha: ${{ steps.backup.outputs.previous_sha }}
       deployment_needed: ${{ steps.backup.outputs.deployment_needed }}
       deleted_files: ${{ steps.changed-files.outputs.deleted_files }}
-      deploy_status: ${{ steps.deploy.outcome }}
+      deploy_status: ${{ (steps.deploy-existing.outcome == 'success' || steps.deploy-existing.outcome == 'skipped') && (steps.deploy-new.outcome == 'success' || steps.deploy-new.outcome == 'skipped') && 'success' || 'failure' }}
       health_status: ${{ steps.health.outcome }}
       cleanup_status: ${{ steps.cleanup.outcome }}
       rollback_status: ${{ steps.rollback.outcome }}
@@ -130,8 +130,12 @@ jobs:
       rollback_total_containers: ${{ steps.rollback-health.outputs.rollback_total_containers }}
       rollback_running_containers: ${{ steps.rollback-health.outputs.rollback_running_containers }}
       rollback_success_rate: ${{ steps.rollback-health.outputs.rollback_success_rate }}
-      removed_stacks: ${{ steps.cleanup-removed.outputs.removed_stacks }}
-      has_removed_stacks: ${{ steps.cleanup-removed.outputs.has_removed_stacks }}
+      removed_stacks: ${{ steps.detect-changes.outputs.removed_stacks }}
+      existing_stacks: ${{ steps.detect-changes.outputs.existing_stacks }}
+      new_stacks: ${{ steps.detect-changes.outputs.new_stacks }}
+      has_removed_stacks: ${{ steps.detect-changes.outputs.has_removed_stacks }}
+      has_existing_stacks: ${{ steps.detect-changes.outputs.has_existing_stacks }}
+      has_new_stacks: ${{ steps.detect-changes.outputs.has_new_stacks }}
     steps:
       - name: Validate and sanitize inputs
         run: |
@@ -473,20 +477,21 @@ jobs:
       #
       # Design: docs/plans/2025-12-06-enhanced-stack-removal-detection-design.md
 
-      - name: Detect and clean up removed stacks
-        id: cleanup-removed
+      - name: Detect stack changes (removed/existing/new)
+        id: detect-changes
         if: steps.backup.outputs.deployment_needed == 'true'
         continue-on-error: false
         run: |
-          ./.compose-workflow/scripts/deployment/detect-removed-stacks.sh \
+          ./.compose-workflow/scripts/deployment/detect-stack-changes.sh \
             --current-sha "${{ steps.backup.outputs.previous_sha }}" \
             --target-ref "${{ inputs.target-ref }}" \
-            --deleted-files '${{ steps.changed-files.outputs.deleted_files }}' \
+            --input-stacks '${{ inputs.stacks }}' \
+            --removed-files '${{ steps.changed-files.outputs.deleted_files }}' \
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}"
 
       - name: Notify removed stacks cleanup
-        if: steps.cleanup-removed.outputs.has_removed_stacks == 'true'
+        if: steps.detect-changes.outputs.has_removed_stacks == 'true'
         run: |
           echo "📢 Sending cleanup notification to Discord..."
 
@@ -494,7 +499,7 @@ jobs:
           WEBHOOK_URL=$(op read "${{ inputs.webhook-url }}")
 
           # Build removed stacks list and create JSON payload using jq for proper escaping
-          REMOVED_STACKS='${{ steps.cleanup-removed.outputs.removed_stacks }}'
+          REMOVED_STACKS='${{ steps.detect-changes.outputs.removed_stacks }}'
           STACK_LIST=$(echo "$REMOVED_STACKS" | jq -r '.[] | "- " + .')
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -553,13 +558,34 @@ jobs:
             --startup-timeout "${{ inputs.service-startup-timeout }}" \
             --compose-args "${{ inputs.args || '' }}"
 
-      - name: Deploy All Stacks
-        id: deploy
-        if: steps.backup.outputs.deployment_needed == 'true' && (inputs.has-dockge == false || steps.deploy-dockge.outcome == 'success')
+      - name: Deploy Existing Stacks
+        id: deploy-existing
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.detect-changes.outputs.has_existing_stacks == 'true' && (inputs.has-dockge == false || steps.deploy-dockge.outcome == 'success')
         continue-on-error: true
         run: |
+          echo "🔄 Deploying existing stacks (updates)..."
           ./.compose-workflow/scripts/deployment/deploy-stacks.sh \
-            --stacks "${{ join(fromJSON(inputs.stacks), ' ') }}" \
+            --stacks "${{ join(fromJSON(steps.detect-changes.outputs.existing_stacks), ' ') }}" \
+            --target-ref "${{ inputs.target-ref }}" \
+            --compose-args "${{ inputs.args || '' }}" \
+            --ssh-user "${{ secrets.SSH_USER }}" \
+            --ssh-host "${{ secrets.SSH_HOST }}" \
+            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
+            --git-fetch-timeout "${{ inputs.git-fetch-timeout }}" \
+            --git-checkout-timeout "${{ inputs.git-checkout-timeout }}" \
+            --image-pull-timeout "${{ inputs.image-pull-timeout }}" \
+            --service-startup-timeout "${{ inputs.service-startup-timeout }}" \
+            --validation-env-timeout "${{ inputs.validation-env-timeout }}" \
+            --validation-syntax-timeout "${{ inputs.validation-syntax-timeout }}"
+
+      - name: Deploy New Stacks
+        id: deploy-new
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.detect-changes.outputs.has_new_stacks == 'true' && (inputs.has-dockge == false || steps.deploy-dockge.outcome == 'success') && (steps.detect-changes.outputs.has_existing_stacks == 'false' || steps.deploy-existing.outcome == 'success')
+        continue-on-error: true
+        run: |
+          echo "✨ Deploying new stacks (fresh deployments)..."
+          ./.compose-workflow/scripts/deployment/deploy-stacks.sh \
+            --stacks "${{ join(fromJSON(steps.detect-changes.outputs.new_stacks), ' ') }}" \
             --target-ref "${{ inputs.target-ref }}" \
             --compose-args "${{ inputs.args || '' }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
@@ -574,7 +600,7 @@ jobs:
 
       - name: Health Check All Services
         id: health
-        if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success'
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'success' || steps.deploy-existing.outcome == 'skipped') && (steps.deploy-new.outcome == 'success' || steps.deploy-new.outcome == 'skipped')
         continue-on-error: true
         run: |
           # Use auto-detected critical stacks if enabled, otherwise use manual input
@@ -596,7 +622,7 @@ jobs:
 
       - name: Cleanup unused images
         id: cleanup
-        if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy.outcome == 'success' && steps.health.outcome == 'success'
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'success' || steps.deploy-existing.outcome == 'skipped') && (steps.deploy-new.outcome == 'success' || steps.deploy-new.outcome == 'skipped') && steps.health.outcome == 'success'
         continue-on-error: true
         run: |
           echo "::group::Cleaning up unused Docker images"
@@ -609,7 +635,7 @@ jobs:
 
       - name: Rollback Dockge
         id: rollback-dockge
-        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure') && inputs.has-dockge == true
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'failure' || steps.deploy-new.outcome == 'failure' || steps.health.outcome == 'failure') && inputs.has-dockge == true
         continue-on-error: true
         run: |
           echo "🔄 Rolling back Dockge to previous version..."
@@ -623,7 +649,7 @@ jobs:
 
       - name: Rollback to Previous Version
         id: rollback
-        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure') && (inputs.has-dockge == false || steps.rollback-dockge.outcome == 'success')
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'failure' || steps.deploy-new.outcome == 'failure' || steps.health.outcome == 'failure') && (inputs.has-dockge == false || steps.rollback-dockge.outcome == 'success')
         continue-on-error: true
         run: |
           echo "🔄 **INITIATING ROLLBACK**"
@@ -657,7 +683,7 @@ jobs:
       # visibility into what services are running, which is critical for incident response
       - name: Verify Rollback Health
         id: rollback-health
-        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure') && steps.rollback.conclusion != 'skipped'
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'failure' || steps.deploy-new.outcome == 'failure' || steps.health.outcome == 'failure') && steps.rollback.conclusion != 'skipped'
         continue-on-error: true
         run: |
           echo "🔍 Verifying rollback health status"
@@ -763,7 +789,7 @@ jobs:
             echo "✅ Repository already at target commit"
             echo "📋 Target stacks: $STACK_LIST"
             echo "🔄 SHA: ${{ inputs.target-ref }}"
-          elif [ "${{ inputs.force-deploy }}" = "true" ] && [ "${{ steps.deploy.outcome }}" == "success" ] && [ "${{ steps.health.outcome }}" == "success" ]; then
+          elif [ "${{ inputs.force-deploy }}" = "true" ] && ([ "${{ steps.deploy-existing.outcome }}" == "success" ] || [ "${{ steps.deploy-existing.outcome }}" == "skipped" ]) && ([ "${{ steps.deploy-new.outcome }}" == "success" ] || [ "${{ steps.deploy-new.outcome }}" == "skipped" ]) && [ "${{ steps.health.outcome }}" == "success" ]; then
             echo "🔄 **FORCE DEPLOYMENT SUCCESSFUL**"
             echo "✅ All stacks force-deployed and healthy"
             echo "📋 Deployed stacks: $STACK_LIST"
@@ -771,7 +797,7 @@ jobs:
             if [ "${{ steps.cleanup.outcome }}" == "success" ]; then
               echo "🧹 Cleanup completed successfully"
             fi
-          elif [ "${{ steps.deploy.outcome }}" == "success" ] && [ "${{ steps.health.outcome }}" == "success" ]; then
+          elif ([ "${{ steps.deploy-existing.outcome }}" == "success" ] || [ "${{ steps.deploy-existing.outcome }}" == "skipped" ]) && ([ "${{ steps.deploy-new.outcome }}" == "success" ] || [ "${{ steps.deploy-new.outcome }}" == "skipped" ]) && [ "${{ steps.health.outcome }}" == "success" ]; then
             echo "🎉 **DEPLOYMENT SUCCESSFUL**"
             echo "✅ All stacks deployed and healthy"
             echo "📋 Deployed stacks: $STACK_LIST"
@@ -781,7 +807,8 @@ jobs:
             fi
           else
             echo "💥 **DEPLOYMENT FAILED**"
-            echo "❌ Deploy status: ${{ steps.deploy.outcome }}"
+            echo "❌ Deploy existing status: ${{ steps.deploy-existing.outcome }}"
+            echo "❌ Deploy new status: ${{ steps.deploy-new.outcome }}"
             echo "❌ Health check status: ${{ steps.health.outcome }}"
             if [ "${{ steps.rollback.outcome }}" == "success" ]; then
               echo "🔄 Rollback completed successfully"
