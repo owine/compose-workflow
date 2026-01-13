@@ -789,7 +789,7 @@ jobs:
             echo "✅ Repository already at target commit"
             echo "📋 Target stacks: $STACK_LIST"
             echo "🔄 SHA: ${{ inputs.target-ref }}"
-          elif [ "${{ inputs.force-deploy }}" = "true" ] && ([ "${{ steps.deploy-existing.outcome }}" == "success" ] || [ "${{ steps.deploy-existing.outcome }}" == "skipped" ]) && ([ "${{ steps.deploy-new.outcome }}" == "success" ] || [ "${{ steps.deploy-new.outcome }}" == "skipped" ]) && [ "${{ steps.health.outcome }}" == "success" ]; then
+          elif [[ "${{ inputs.force-deploy }}" = "true" && ("${{ steps.deploy-existing.outcome }}" == "success" || "${{ steps.deploy-existing.outcome }}" == "skipped") && ("${{ steps.deploy-new.outcome }}" == "success" || "${{ steps.deploy-new.outcome }}" == "skipped") && "${{ steps.health.outcome }}" == "success" ]]; then
             echo "🔄 **FORCE DEPLOYMENT SUCCESSFUL**"
             echo "✅ All stacks force-deployed and healthy"
             echo "📋 Deployed stacks: $STACK_LIST"
@@ -797,7 +797,7 @@ jobs:
             if [ "${{ steps.cleanup.outcome }}" == "success" ]; then
               echo "🧹 Cleanup completed successfully"
             fi
-          elif ([ "${{ steps.deploy-existing.outcome }}" == "success" ] || [ "${{ steps.deploy-existing.outcome }}" == "skipped" ]) && ([ "${{ steps.deploy-new.outcome }}" == "success" ] || [ "${{ steps.deploy-new.outcome }}" == "skipped" ]) && [ "${{ steps.health.outcome }}" == "success" ]; then
+          elif [[ ("${{ steps.deploy-existing.outcome }}" == "success" || "${{ steps.deploy-existing.outcome }}" == "skipped") && ("${{ steps.deploy-new.outcome }}" == "success" || "${{ steps.deploy-new.outcome }}" == "skipped") && "${{ steps.health.outcome }}" == "success" ]]; then
             echo "🎉 **DEPLOYMENT SUCCESSFUL**"
             echo "✅ All stacks deployed and healthy"
             echo "📋 Deployed stacks: $STACK_LIST"
