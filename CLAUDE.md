@@ -205,11 +205,12 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
   - Dockge health integration when enabled
   - Escaped parameter handling to prevent shell glob expansion
 
-- **detect-removed-stacks.sh** - Stack removal detection (328 lines)
-  - Three-method detection system (git diff, tree comparison, discovery analysis)
+- **detect-stack-changes.sh** - Stack change detection for removed/existing/new stacks (495 lines)
+  - Three-category detection: removed, existing, and new stacks
+  - Multi-method detection per category (git diff, tree comparison, discovery analysis)
   - Union-based aggregation with fail-safe error handling
   - Automatic cleanup of removed stacks
-  - Null-delimited output for special character support
+  - Enables sequential deployment: existing stacks first, then new stacks
 
 - **cleanup-stack.sh** - Individual stack cleanup (87 lines)
   - Single stack removal helper
@@ -285,7 +286,7 @@ The deploy workflow (`deploy.yml`) provides:
 8. **SSH Optimization** - Connection multiplexing for better performance
 9. **Caching** - Optimized caching for Tailscale and deployment tools
 10. **Rich Discord Notifications** - Comprehensive deployment status with health metrics
-11. **Stack Removal Cleanup** - Detect deleted stacks via git diff and clean up containers before repository update
+11. **Enhanced Stack Detection** - Categorize stacks as removed/existing/new; sequential deployment of existing then new stacks
 12. **Critical Stack Auto-Detection** - Automatically detect critical infrastructure stacks from compose file labels
 
 ### Critical Stack Detection
@@ -444,7 +445,7 @@ This repository contains:
 │   │   │   └── common.sh        # Utilities and validation (86 lines)
 │   │   ├── health-check.sh      # Health verification (584 lines)
 │   │   ├── deploy-stacks.sh     # Deployment orchestration (690 lines)
-│   │   ├── detect-removed-stacks.sh  # Stack removal detection (328 lines)
+│   │   ├── detect-stack-changes.sh  # Stack change detection - removed/existing/new (495 lines)
 │   │   ├── cleanup-stack.sh     # Individual stack cleanup (87 lines)
 │   │   ├── rollback-stacks.sh   # Rollback automation (495 lines)
 │   │   ├── .shellcheckrc        # ShellCheck configuration
