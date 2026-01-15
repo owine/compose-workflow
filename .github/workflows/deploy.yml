@@ -4,7 +4,7 @@ name: Deploy Docker Compose
 # ✅ Extracted deployment scripts to scripts/deployment/ (Phases 1-5 complete)
 #    - lib/ssh-helpers.sh: Retry mechanisms with exponential backoff
 #    - lib/common.sh: Logging, validation, and utility functions
-#    - health-check.sh: Service health verification with stack-specific counting
+#    - health-check.sh: Single-pass health status reporting (post --wait deployment)
 #    - deploy-stacks.sh: Parallel deployment with comprehensive error handling
 #    - detect-stack-changes.sh: Multi-method detection for removed/existing/new stacks
 #    - cleanup-stack.sh: Individual stack cleanup helper
@@ -47,11 +47,6 @@ on:
         required: false
         type: boolean
         default: false
-      health-check-timeout:
-        description: "Health check timeout in seconds (default: 180)"
-        required: false
-        type: number
-        default: 180
       health-check-command-timeout:
         description: "Individual health check command timeout in seconds (default: 15)"
         required: false
@@ -616,7 +611,6 @@ jobs:
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
             --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
-            --health-timeout "${{ inputs.health-check-timeout }}" \
             --command-timeout "${{ inputs.health-check-command-timeout }}" \
             --critical-services "$CRITICAL_SERVICES"
 
@@ -719,7 +713,6 @@ jobs:
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
             --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
-            --health-timeout "${{ inputs.health-check-timeout }}" \
             --command-timeout "${{ inputs.health-check-command-timeout }}" \
             --critical-services "$CRITICAL_SERVICES"; then
             echo "✅ Rollback health check completed"
