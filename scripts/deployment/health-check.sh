@@ -56,10 +56,6 @@ while [[ $# -gt 0 ]]; do
       CRITICAL_SERVICES="$2"
       shift 2
       ;;
-    --health-timeout)
-      # Deprecated parameter - ignored for backward compatibility
-      shift 2
-      ;;
     *)
       log_error "Unknown argument: $1"
       exit 1
