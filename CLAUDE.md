@@ -112,6 +112,39 @@ For the workflows to function properly, calling repositories must have:
     └── compose.yaml            # Docker Compose file
 ```
 
+### Healthcheck Requirements for --wait Flag
+
+For the `--wait` flag to function properly, all services should have healthcheck definitions in their compose.yaml files:
+
+**Example healthcheck patterns:**
+
+```yaml
+# HTTP/Web Services
+healthcheck:
+  test: ["CMD-SHELL", "curl -f http://localhost:PORT || exit 1"]
+  interval: 30s
+  timeout: 10s
+  start_period: 60s
+  retries: 3
+
+# Database Services (PostgreSQL)
+healthcheck:
+  test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+  interval: 5s
+  timeout: 5s
+  retries: 5
+
+# Process-based Services
+healthcheck:
+  test: ["CMD", "pgrep", "process-name"]
+  interval: 60s
+  timeout: 5s
+  start_period: 30s
+  retries: 3
+```
+
+Services without healthcheck definitions will start but won't be verified by `--wait`.
+
 ### Discord Webhook Configuration
 
 Webhook URLs should be stored in 1Password with references like:
@@ -186,6 +219,7 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
   - Comprehensive logging with stack-specific output
   - Git operations with configurable timeouts
   - Image pull and service startup with retry logic
+  - **Docker Compose --wait integration for atomic health verification**
   - Pre-deployment validation for all stacks
   - **Note**: No longer handles Dockge deployment (moved to workflow level)
 
@@ -272,7 +306,7 @@ The compose lint workflow (`compose-lint.yml`) provides:
 6. **Discord Notifications** - Reports results with detailed status information
 7. **Multi-repository Support** - Can checkout and lint any target repository
 
-### Deploy Pipeline Features  
+### Deploy Pipeline Features
 
 The deploy workflow (`deploy.yml`) provides:
 
@@ -280,14 +314,15 @@ The deploy workflow (`deploy.yml`) provides:
 2. **Smart Deployment** - Skips if already at target commit (unless forced)
 3. **Retry Mechanisms** - Automatic retry with exponential backoff for SSH operations
 4. **Parallel Stack Deployment** - Deploy all stacks concurrently with detailed logging
-5. **Stack-Specific Health Checks** - Accurate per-stack service counting and status
-6. **Automatic Rollback** - Roll back to previous commit on failure
-7. **Docker Image Cleanup** - Remove unused images after successful deployment
-8. **SSH Optimization** - Connection multiplexing for better performance
-9. **Caching** - Optimized caching for Tailscale and deployment tools
-10. **Rich Discord Notifications** - Comprehensive deployment status with health metrics
-11. **Enhanced Stack Detection** - Categorize stacks as removed/existing/new; sequential deployment of existing then new stacks
-12. **Critical Stack Auto-Detection** - Automatically detect critical infrastructure stacks from compose file labels
+5. **Native Health Verification** - Uses Docker Compose v5 `--wait` flag for atomic service health verification
+6. **Comprehensive Health Reporting** - Post-deployment health-check.sh provides detailed metrics and diagnostics
+7. **Automatic Rollback** - Roll back to previous commit on failure
+8. **Docker Image Cleanup** - Remove unused images after successful deployment
+9. **SSH Optimization** - Connection multiplexing for better performance
+10. **Caching** - Optimized caching for Tailscale and deployment tools
+11. **Rich Discord Notifications** - Comprehensive deployment status with health metrics
+12. **Enhanced Stack Detection** - Categorize stacks as removed/existing/new; sequential deployment of existing then new stacks
+13. **Critical Stack Auto-Detection** - Automatically detect critical infrastructure stacks from compose file labels
 
 ### Critical Stack Detection
 
