@@ -206,8 +206,10 @@ fi
       fi
 
       echo "  Starting services for $STACK..."
-      # Add timeout protection (2 minutes for service startup)
-      if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose up -d --remove-orphans $COMPOSE_ARGS; then
+      # Use --wait flag to block until all services with healthchecks are healthy
+      # This provides atomic deployment verification and eliminates race conditions
+      # Timeout: SERVICE_STARTUP_TIMEOUT (default: 120s)
+      if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --wait --remove-orphans $COMPOSE_ARGS; then
         echo "❌ Failed to start services for $STACK during $OPERATION (timeout or error)"
         exit 1
       fi
