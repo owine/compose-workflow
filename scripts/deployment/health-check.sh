@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Script Name: health-check.sh
-# Purpose: Health check all Docker Compose stacks with retry logic and health status verification
-# Usage: ./health-check.sh --stacks "stack1 stack2" --has-dockge true --ssh-user user --ssh-host host --op-token token --health-timeout 180 --command-timeout 15
+# Purpose: Report health status of Docker Compose stacks after --wait flag deployment
+# Usage: ./health-check.sh --stacks "stack1 stack2" --has-dockge true --ssh-user user --ssh-host host --op-token token --command-timeout 15
+#
+# Note: This script is optimized to work with Docker Compose v5 --wait flag integration.
+#       The --wait flag handles waiting for services to become healthy during deployment.
+#       This script performs a single-pass status check and reporting, without retry loops.
 
 set -euo pipefail
 
@@ -18,7 +22,6 @@ HAS_DOCKGE="false"
 SSH_USER=""
 SSH_HOST=""
 OP_TOKEN=""
-HEALTH_TIMEOUT="180"
 COMMAND_TIMEOUT="15"
 CRITICAL_SERVICES="[]"
 
@@ -45,16 +48,16 @@ while [[ $# -gt 0 ]]; do
       OP_TOKEN="$2"
       shift 2
       ;;
-    --health-timeout)
-      HEALTH_TIMEOUT="$2"
-      shift 2
-      ;;
     --command-timeout)
       COMMAND_TIMEOUT="$2"
       shift 2
       ;;
     --critical-services)
       CRITICAL_SERVICES="$2"
+      shift 2
+      ;;
+    --health-timeout)
+      # Deprecated parameter - ignored for backward compatibility
       shift 2
       ;;
     *)
@@ -70,8 +73,8 @@ require_var SSH_USER || exit 1
 require_var SSH_HOST || exit 1
 require_var OP_TOKEN || exit 1
 
-log_info "Starting health check for stacks: $STACKS"
-log_info "Health check timeout: ${HEALTH_TIMEOUT}s, Command timeout: ${COMMAND_TIMEOUT}s"
+log_info "Starting health status check for stacks: $STACKS"
+log_info "Command timeout: ${COMMAND_TIMEOUT}s"
 
 # Execute health check via SSH with retry
 # Use printf %q to properly escape arguments for eval in ssh_retry
@@ -85,8 +88,10 @@ CRITICAL_SERVICES_B64=$(echo -n "$CRITICAL_SERVICES" | base64 -w 0 2>/dev/null |
 
 # Pass OP_TOKEN as positional argument (more secure than env vars in process list)
 # Token passed as $1, appears in SSH command locally but not in remote ps output
+# Use temporary file to capture output and avoid command substitution parsing issues
+HEALTH_TMPFILE=$(mktemp)
 set +e
-HEALTH_RESULT=$({
+{
   cat << 'EOF'
   set -e
 
@@ -116,28 +121,17 @@ HEALTH_RESULT=$({
     fi
   done
 
-  # OP_SERVICE_ACCOUNT_TOKEN was passed as $1 (more secure than long-lived env vars)
-  # HEALTH_TIMEOUT, COMMAND_TIMEOUT, and CRITICAL_SERVICES are passed via environment variables
-
   # Set timeout configuration with defaults
-  HEALTH_CHECK_TIMEOUT=${HEALTH_TIMEOUT:-180}
   HEALTH_CHECK_CMD_TIMEOUT=${COMMAND_TIMEOUT:-15}
 
-  # Enhanced health check with exponential backoff
-  echo "🔍 Starting enhanced health check with exponential backoff..."
+  echo "🔍 Starting health status check (post --wait deployment)..."
 
-  # Health check function with retry logic
-  health_check_with_retry() {
+  # Health check function - single-pass status collection
+  # Note: --wait flag already ensured services are healthy during deployment
+  # This function collects current status for reporting and metrics
+  check_stack_health() {
     local stack=$1
     local logfile="/tmp/health_${stack}.log"
-
-    # Use configurable timeout with fallback to defaults
-    local timeout_seconds=${HEALTH_CHECK_TIMEOUT:-180}
-    local max_attempts=4
-    local wait_time=3
-    local attempt=1
-    local fast_fail_threshold=2  # Fast fail after 2 attempts if no progress
-    local start_time=$(date +%s)
 
     # Create log file and redirect all output
     exec 3>&1 4>&2
@@ -146,15 +140,14 @@ HEALTH_RESULT=$({
     # Ensure file descriptors are restored on function exit
     trap 'exec 1>&3 2>&4 3>&- 4>&-' RETURN
 
-    echo "🕰️ Health check timeout configured: ${timeout_seconds}s"
-    echo "🔍 Health checking $stack with optimized retry logic..."
+    echo "🔍 Checking health status for $stack..."
 
     cd "/opt/compose/$stack" || {
       echo "❌ $stack: Directory not found"
       return 1
     }
 
-    # Cache total service count (doesn't change during health check)
+    # Get total service count
     local total_count
     total_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
 
@@ -163,129 +156,81 @@ HEALTH_RESULT=$({
       return 1
     fi
 
-    local previous_running=0
-    local no_progress_count=0
+    # Get container state and health in one call using custom format
+    # Format: Service State Health (tab-separated)
+    local ps_output
+    ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
-    while [ $attempt -le $max_attempts ]; do
-      echo "  Attempt $attempt/$max_attempts for $stack (wait: ${wait_time}s)"
+    # Parse output to count different states and health conditions
+    local running_healthy=0
+    local running_starting=0
+    local running_unhealthy=0
+    local running_no_health=0
+    local exited_count=0
+    local restarting_count=0
 
-      # Get container status and health with error handling
-      local running_healthy running_starting running_unhealthy running_no_health
-      local exited_count restarting_count running_count
+    while IFS=$'\t' read -r service state health; do
+      # Skip empty lines
+      [ -z "$service" ] && continue
 
-      # Check overall timeout
-      local current_time=$(date +%s)
-      local elapsed=$((current_time - start_time))
-      if [ $elapsed -gt $timeout_seconds ]; then
-        echo "❌ $stack: Health check timed out after ${elapsed}s (limit: ${timeout_seconds}s)"
-        return 1
-      fi
+      case "$state" in
+        running)
+          case "$health" in
+            healthy)
+              running_healthy=$((running_healthy + 1))
+              ;;
+            starting)
+              running_starting=$((running_starting + 1))
+              ;;
+            unhealthy)
+              running_unhealthy=$((running_unhealthy + 1))
+              ;;
+            *)
+              # No health check defined
+              running_no_health=$((running_no_health + 1))
+              ;;
+          esac
+          ;;
+        exited)
+          exited_count=$((exited_count + 1))
+          ;;
+        restarting)
+          restarting_count=$((restarting_count + 1))
+          ;;
+      esac
+    done <<< "$ps_output"
 
-      # Get container state and health in one call using custom format
-      # Format: Service State Health (tab-separated)
-      local ps_output
-      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+    # Total running containers (all health states)
+    local running_count=$((running_healthy + running_starting + running_unhealthy + running_no_health))
 
-      # Parse output to count different states and health conditions
-      running_healthy=0
-      running_starting=0
-      running_unhealthy=0
-      running_no_health=0
-      exited_count=0
-      restarting_count=0
+    echo "$stack status: $running_count/$total_count running (healthy: $running_healthy, starting: $running_starting, unhealthy: $running_unhealthy, no-check: $running_no_health), exited: $exited_count, restarting: $restarting_count"
 
-      while IFS=$'\t' read -r service state health; do
-        # Skip empty lines
-        [ -z "$service" ] && continue
+    # Fast fail on detection of unhealthy containers
+    if [ "$running_unhealthy" -gt 0 ]; then
+      echo "❌ $stack: $running_unhealthy unhealthy containers detected"
+      return 1
+    fi
 
-        case "$state" in
-          running)
-            case "$health" in
-              healthy)
-                running_healthy=$((running_healthy + 1))
-                ;;
-              starting)
-                running_starting=$((running_starting + 1))
-                ;;
-              unhealthy)
-                running_unhealthy=$((running_unhealthy + 1))
-                ;;
-              *)
-                # No health check defined
-                running_no_health=$((running_no_health + 1))
-                ;;
-            esac
-            ;;
-          exited)
-            exited_count=$((exited_count + 1))
-            ;;
-          restarting)
-            restarting_count=$((restarting_count + 1))
-            ;;
-        esac
-      done <<< "$ps_output"
+    # Calculate healthy containers (healthy + no health check defined)
+    local healthy_total=$((running_healthy + running_no_health))
 
-      # Total running containers (all health states)
-      running_count=$((running_healthy + running_starting + running_unhealthy + running_no_health))
-
-      echo "  $stack status: $running_count/$total_count running (healthy: $running_healthy, starting: $running_starting, unhealthy: $running_unhealthy, no-check: $running_no_health), exited: $exited_count, restarting: $restarting_count"
-
-      # Fast fail logic: if unhealthy or no progress with failures
-      if [ "$running_unhealthy" -gt 0 ] && [ $attempt -ge $fast_fail_threshold ]; then
-        echo "❌ $stack: Fast fail - $running_unhealthy unhealthy containers detected (attempt $attempt)"
-        return 1
-      elif [ $attempt -ge $fast_fail_threshold ] && [ "$running_count" -eq "$previous_running" ] && [ "$exited_count" -gt 0 ]; then
-        no_progress_count=$((no_progress_count + 1))
-        if [ $no_progress_count -ge 2 ]; then
-          echo "❌ $stack: Fast fail - no progress and containers failing (attempt $attempt)"
-          return 1
-        fi
-      else
-        no_progress_count=0
-      fi
-
-      # Calculate healthy containers (healthy + no health check defined)
-      local healthy_total=$((running_healthy + running_no_health))
-
-      # Success condition: all containers running and healthy (or no health check)
-      if [ "$healthy_total" -eq "$total_count" ] && [ "$total_count" -gt 0 ] && [ "$running_starting" -eq 0 ] && [ "$running_unhealthy" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
-        echo "✅ $stack: All $total_count services healthy"
-        return 0
-      # Degraded but stable: all running and healthy, but fewer than expected
-      elif [ "$healthy_total" -gt 0 ] && [ "$healthy_total" -eq "$running_count" ] && [ "$running_starting" -eq 0 ] && [ "$running_unhealthy" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
-        echo "⚠️ $stack: $healthy_total/$total_count services healthy (degraded but stable)"
-        return 2  # Degraded but acceptable
-      # Still starting: health checks initializing, allow retry
-      elif [ "$running_starting" -gt 0 ] && [ "$running_unhealthy" -eq 0 ] && [ $attempt -lt $max_attempts ]; then
-        echo "  $stack: $running_starting services still initializing health checks..."
-        sleep $wait_time
-        wait_time=$((wait_time * 2))
-        if [ $wait_time -gt 20 ]; then
-          wait_time=20
-        fi
-      # Final attempt failure
-      elif [ $attempt -eq $max_attempts ]; then
-        if [ "$running_unhealthy" -gt 0 ]; then
-          echo "❌ $stack: Failed - $running_unhealthy services unhealthy after $max_attempts attempts"
-        elif [ "$running_starting" -gt 0 ]; then
-          echo "❌ $stack: Failed - $running_starting services still starting after $max_attempts attempts"
-        else
-          echo "❌ $stack: Failed after $max_attempts attempts ($running_count/$total_count running, $healthy_total healthy)"
-        fi
-        return 1
-      # Continue with exponential backoff
-      else
-        echo "  $stack: Not ready yet, waiting ${wait_time}s..."
-        sleep $wait_time
-        wait_time=$((wait_time * 2))
-        if [ $wait_time -gt 20 ]; then
-          wait_time=20
-        fi
-      fi
-
-      previous_running=$running_count
-      attempt=$((attempt + 1))
-    done
+    # Success condition: all containers running and healthy (or no health check)
+    if [ "$healthy_total" -eq "$total_count" ] && [ "$total_count" -gt 0 ] && [ "$running_starting" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
+      echo "✅ $stack: All $total_count services healthy"
+      return 0
+    # Degraded but stable: all running and healthy, but fewer than expected
+    elif [ "$healthy_total" -gt 0 ] && [ "$healthy_total" -eq "$running_count" ] && [ "$running_starting" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
+      echo "⚠️ $stack: $healthy_total/$total_count services healthy (degraded but stable)"
+      return 2  # Degraded but acceptable
+    # Services still starting after --wait completed
+    elif [ "$running_starting" -gt 0 ]; then
+      echo "⚠️ $stack: $running_starting services still in 'starting' state"
+      return 1
+    # Other failure scenarios
+    else
+      echo "❌ $stack: Failed ($running_count/$total_count running, $healthy_total healthy)"
+      return 1
+    fi
   }
 
   FAILED_STACKS=""
@@ -295,70 +240,37 @@ HEALTH_RESULT=$({
   RUNNING_CONTAINERS=0
 
   if [ "$HAS_DOCKGE" = "true" ]; then
-    echo "🔍 Health checking Dockge with retry logic..."
+    echo "🔍 Checking Dockge health status..."
     cd /opt/dockge
-
-    # Retry logic for Dockge with health check verification
-    dockge_max_attempts=3
-    dockge_attempt=1
-    dockge_wait=3
-    DOCKGE_TOTAL=""
-    dockge_healthy=""
-    dockge_starting=""
-    dockge_unhealthy=""
-    dockge_no_health=""
-    dockge_running=""
-    dockge_healthy_total=""
 
     # Get total services
     DOCKGE_TOTAL=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
 
-    while [ $dockge_attempt -le $dockge_max_attempts ]; do
-      # Get Dockge state and health
-      dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+    # Get Dockge state and health
+    dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
-      # Parse health states
-      dockge_healthy=0
-      dockge_starting=0
-      dockge_unhealthy=0
-      dockge_no_health=0
+    # Parse health states
+    dockge_healthy=0
+    dockge_starting=0
+    dockge_unhealthy=0
+    dockge_no_health=0
 
-      while IFS=$'\t' read -r service state health; do
-        [ -z "$service" ] && continue
-        if [ "$state" = "running" ]; then
-          case "$health" in
-            healthy) dockge_healthy=$((dockge_healthy + 1)) ;;
-            starting) dockge_starting=$((dockge_starting + 1)) ;;
-            unhealthy) dockge_unhealthy=$((dockge_unhealthy + 1)) ;;
-            *) dockge_no_health=$((dockge_no_health + 1)) ;;
-          esac
-        fi
-      done <<< "$dockge_ps_output"
-
-      dockge_running=$((dockge_healthy + dockge_starting + dockge_unhealthy + dockge_no_health))
-      dockge_healthy_total=$((dockge_healthy + dockge_no_health))
-
-      echo "  Dockge attempt $dockge_attempt/$dockge_max_attempts: $dockge_running/$DOCKGE_TOTAL running (healthy: $dockge_healthy, starting: $dockge_starting, unhealthy: $dockge_unhealthy, no-check: $dockge_no_health)"
-
-      # Success: all healthy
-      if [ "$dockge_healthy_total" -eq "$DOCKGE_TOTAL" ] && [ "$DOCKGE_TOTAL" -gt 0 ] && [ "$dockge_starting" -eq 0 ] && [ "$dockge_unhealthy" -eq 0 ]; then
-        break
-      # Unhealthy detected - fail
-      elif [ "$dockge_unhealthy" -gt 0 ]; then
-        echo "  Dockge has $dockge_unhealthy unhealthy services"
-        break
-      # Degraded but stable: some healthy, final attempt
-      elif [ "$dockge_healthy_total" -gt 0 ] && [ "$dockge_unhealthy" -eq 0 ] && [ $dockge_attempt -eq $dockge_max_attempts ]; then
-        break
-      # Retry
-      elif [ $dockge_attempt -lt $dockge_max_attempts ]; then
-        echo "  Dockge not ready, waiting ${dockge_wait}s..."
-        sleep $dockge_wait
-        dockge_wait=$((dockge_wait * 2))
+    while IFS=$'\t' read -r service state health; do
+      [ -z "$service" ] && continue
+      if [ "$state" = "running" ]; then
+        case "$health" in
+          healthy) dockge_healthy=$((dockge_healthy + 1)) ;;
+          starting) dockge_starting=$((dockge_starting + 1)) ;;
+          unhealthy) dockge_unhealthy=$((dockge_unhealthy + 1)) ;;
+          *) dockge_no_health=$((dockge_no_health + 1)) ;;
+        esac
       fi
+    done <<< "$dockge_ps_output"
 
-      dockge_attempt=$((dockge_attempt + 1))
-    done
+    dockge_running=$((dockge_healthy + dockge_starting + dockge_unhealthy + dockge_no_health))
+    dockge_healthy_total=$((dockge_healthy + dockge_no_health))
+
+    echo "Dockge: $dockge_running/$DOCKGE_TOTAL running (healthy: $dockge_healthy, starting: $dockge_starting, unhealthy: $dockge_unhealthy, no-check: $dockge_no_health)"
 
     TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + DOCKGE_TOTAL))
     RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + dockge_running))
@@ -369,7 +281,7 @@ HEALTH_RESULT=$({
     elif [ "$dockge_running" -eq 0 ]; then
       echo "❌ Dockge: 0/$DOCKGE_TOTAL services running"
       FAILED_STACKS="$FAILED_STACKS dockge"
-    elif [ "$dockge_healthy_total" -eq "$DOCKGE_TOTAL" ]; then
+    elif [ "$dockge_healthy_total" -eq "$DOCKGE_TOTAL" ] && [ "$dockge_starting" -eq 0 ]; then
       echo "✅ Dockge: All $DOCKGE_TOTAL services healthy"
       HEALTHY_STACKS="$HEALTHY_STACKS dockge"
     else
@@ -403,29 +315,29 @@ HEALTH_RESULT=$({
     return 1
   }
 
-  # Enhanced health checks with sequential retry logic and early exit
-  echo "🔍 Starting enhanced health checks with retry logic..."
+  # Health status checks with early exit for critical failures
+  echo "🔍 Checking health status for all stacks..."
   CRITICAL_FAILURE=false
 
   # Disable exit on error for health checks to ensure we reach output section
   set +e
 
-  # Check each stack with the new enhanced health check
+  # Check each stack
   for STACK in $STACKS; do
     echo ""
     echo "🔍 Checking stack: $STACK"
 
-    health_check_with_retry "$STACK"
+    check_stack_health "$STACK"
     HEALTH_RESULT=$?
 
     case $HEALTH_RESULT in
       0)
-        # Output already restored in health_check_with_retry
+        # Output already restored in check_stack_health
         echo "✅ $STACK: Healthy"
         HEALTHY_STACKS="$HEALTHY_STACKS $STACK"
         ;;
       2)
-        # Output already restored in health_check_with_retry
+        # Output already restored in check_stack_health
         echo "⚠️ $STACK: Degraded but stable"
         DEGRADED_STACKS="$DEGRADED_STACKS $STACK"
         # Check if degraded stack is critical
@@ -435,7 +347,7 @@ HEALTH_RESULT=$({
         fi
         ;;
       *)
-        # For failures, output is already restored in health_check_with_retry
+        # For failures, output is already restored in check_stack_health
         echo "❌ $STACK: Failed health check"
         FAILED_STACKS="$FAILED_STACKS $STACK"
         # Check if failed stack is critical - trigger early exit
@@ -562,8 +474,10 @@ HEALTH_RESULT=$({
     exit 0
   fi
 EOF
-} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env HEALTH_TIMEOUT=\"$HEALTH_TIMEOUT\" COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES_B64=\"$CRITICAL_SERVICES_B64\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED")
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES_B64=\"$CRITICAL_SERVICES_B64\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED" > "$HEALTH_TMPFILE"
 HEALTH_EXIT_CODE=$?
+HEALTH_RESULT=$(cat "$HEALTH_TMPFILE")
+rm -f "$HEALTH_TMPFILE"
 set -e
 
 # Check if health check command failed
