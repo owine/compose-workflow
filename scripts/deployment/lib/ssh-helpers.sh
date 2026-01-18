@@ -4,34 +4,11 @@
 
 set -euo pipefail
 
-# General retry function with exponential backoff
-retry() {
-  local max_attempts=$1
-  local delay=$2
-  local command="${*:3}"
-  local attempt=1
-
-  while [ "$attempt" -le "$max_attempts" ]; do
-    echo "Attempt $attempt of $max_attempts: $command"
-    if eval "$command"; then
-      echo "✅ Command succeeded on attempt $attempt"
-      return 0
-    else
-      echo "❌ Command failed on attempt $attempt"
-      if [ "$attempt" -lt "$max_attempts" ]; then
-        echo "⏳ Waiting ${delay}s before retry..."
-        sleep "$delay"
-        delay=$((delay * 2))  # Exponential backoff
-      fi
-      attempt=$((attempt + 1))
-    fi
-  done
-
-  echo "💥 Command failed after $max_attempts attempts"
-  return 1
-}
-
 # SSH retry function with specific error handling
+# IMPORTANT: Only retries on SSH connection errors (exit code 255).
+# Script failures (exit code 1) are NOT retried because:
+# 1. Script errors (validation failures, etc.) are not transient
+# 2. Stdin content (heredocs) is consumed on first attempt and not available for retries
 ssh_retry() {
   local max_attempts=$1
   local delay=$2
@@ -48,11 +25,23 @@ ssh_retry() {
       last_exit_code=$?
       echo "❌ SSH command failed on attempt $attempt (exit code: $last_exit_code)" >&2
 
-      # Check for specific SSH errors
+      # Check for specific SSH errors and determine if retry is appropriate
       case $last_exit_code in
-        255) echo "SSH connection error - network/auth issue" >&2 ;;
-        1) echo "General SSH error" >&2 ;;
-        *) echo "Unknown error code: $last_exit_code" >&2 ;;
+        255)
+          # SSH connection error - network/auth issue, should retry
+          echo "SSH connection error - network/auth issue (will retry)" >&2
+          ;;
+        1)
+          # Script execution failed - do NOT retry
+          # This prevents false successes when stdin (heredoc) content is consumed
+          echo "Script execution failed - not retrying to prevent stdin consumption issues" >&2
+          return $last_exit_code
+          ;;
+        *)
+          # Unknown error - fail immediately
+          echo "Unknown error code: $last_exit_code - not retrying" >&2
+          return $last_exit_code
+          ;;
       esac
 
       if [ "$attempt" -lt "$max_attempts" ]; then
@@ -65,32 +54,4 @@ ssh_retry() {
 
   echo "💥 SSH command failed after $max_attempts attempts (final exit code: $last_exit_code)" >&2
   return $last_exit_code
-}
-
-# Simple SSH execution wrapper
-# Note: Relies on known_hosts being pre-configured in the workflow
-ssh_exec() {
-  local ssh_user=$1
-  local ssh_host=$2
-  local command=$3
-
-  # shellcheck disable=SC2029 # Command intentionally expands on client side before remote execution
-  ssh "${ssh_user}@${ssh_host}" "$command"
-}
-
-# Execute SSH command with secret passed via stdin (more secure than env vars)
-# Usage: ssh_exec_with_secret <ssh_user> <ssh_host> <secret> <command>
-# The secret will be available as OP_SERVICE_ACCOUNT_TOKEN in the remote command
-ssh_exec_with_secret() {
-  local ssh_user=$1
-  local ssh_host=$2
-  local secret=$3
-  local command=$4
-
-  # Pass secret via stdin, read it in the remote bash session
-  echo "$secret" | ssh "${ssh_user}@${ssh_host}" bash -c "
-    read -r OP_SERVICE_ACCOUNT_TOKEN
-    export OP_SERVICE_ACCOUNT_TOKEN
-    $command
-  "
 }
