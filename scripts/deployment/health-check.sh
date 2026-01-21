@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Script Name: health-check.sh
 # Purpose: Report health status of Docker Compose stacks after --wait flag deployment
-# Usage: ./health-check.sh --stacks "stack1 stack2" --has-dockge true --ssh-user user --ssh-host host --op-token token --command-timeout 15
+# Usage: ./health-check.sh --stacks "stack1 stack2" --has-dockge true --ssh-user user --ssh-host host --command-timeout 5
 #
 # Note: This script is optimized to work with Docker Compose v5 --wait flag integration.
 #       The --wait flag handles waiting for services to become healthy during deployment.
 #       This script performs a single-pass status check and reporting, without retry loops.
+#
+# Important: This script queries Docker daemon directly without needing 1Password.
+#            Service counts come from 'docker compose ps -a' (all containers for project).
+#            No environment variable resolution is needed since we're checking running state.
 
 set -euo pipefail
 
@@ -21,8 +25,7 @@ STACKS=""
 HAS_DOCKGE="false"
 SSH_USER=""
 SSH_HOST=""
-OP_TOKEN=""
-COMMAND_TIMEOUT="15"
+COMMAND_TIMEOUT="5"
 CRITICAL_SERVICES="[]"
 
 # Parse arguments
@@ -45,7 +48,8 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --op-token)
-      OP_TOKEN="$2"
+      # Deprecated: 1Password no longer needed for health checks
+      # Accept but ignore for backwards compatibility
       shift 2
       ;;
     --command-timeout)
@@ -67,7 +71,6 @@ done
 require_var STACKS || exit 1
 require_var SSH_USER || exit 1
 require_var SSH_HOST || exit 1
-require_var OP_TOKEN || exit 1
 
 log_info "Starting health status check for stacks: $STACKS"
 log_info "Command timeout: ${COMMAND_TIMEOUT}s"
@@ -82,8 +85,6 @@ HAS_DOCKGE_ESCAPED=$(printf '%q' "$HAS_DOCKGE")
 # Remote shells (especially zsh) treat [] as glob patterns, causing failures
 CRITICAL_SERVICES_B64=$(echo -n "$CRITICAL_SERVICES" | base64 -w 0 2>/dev/null || echo -n "$CRITICAL_SERVICES" | base64)
 
-# Pass OP_TOKEN as positional argument (more secure than env vars in process list)
-# Token passed as $1, appears in SSH command locally but not in remote ps output
 # Use temporary file to capture output and avoid command substitution parsing issues
 HEALTH_TMPFILE=$(mktemp)
 set +e
@@ -91,17 +92,10 @@ set +e
   cat << 'EOF'
   set -e
 
-  # Get OP_TOKEN from first positional argument (passed securely via SSH)
-  OP_SERVICE_ACCOUNT_TOKEN="$1"
-
   # Decode base64-encoded CRITICAL_SERVICES
   CRITICAL_SERVICES=$(echo "$CRITICAL_SERVICES_B64" | base64 -d)
-  export OP_SERVICE_ACCOUNT_TOKEN
 
-  # Shift to get actual script arguments (stacks, has-dockge)
-  shift
-
-  # Get arguments passed to script (excluding sensitive OP_TOKEN)
+  # Get arguments passed to script (stacks, has-dockge)
   TOTAL_ARGS=$#
 
   # Find HAS_DOCKGE by looking for 'true' or 'false' in the args
@@ -117,8 +111,8 @@ set +e
     fi
   done
 
-  # Set timeout configuration with defaults
-  HEALTH_CHECK_CMD_TIMEOUT=${COMMAND_TIMEOUT:-15}
+  # Set timeout configuration with defaults (5s is sufficient for Docker daemon queries)
+  HEALTH_CHECK_CMD_TIMEOUT=${COMMAND_TIMEOUT:-5}
 
   echo "🔍 Starting health status check (post --wait deployment)..."
 
@@ -143,19 +137,21 @@ set +e
       return 1
     }
 
-    # Get total service count
+    # Get total service count from all containers (running or stopped) for this project
+    # Uses 'docker compose ps -a' which queries Docker daemon directly - no env vars needed
     local total_count
-    total_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+    total_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT docker compose -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
 
     if [ "$total_count" -eq 0 ]; then
-      echo "❌ $stack: No services defined in compose file"
+      echo "❌ $stack: No containers found for this project"
       return 1
     fi
 
     # Get container state and health in one call using custom format
     # Format: Service State Health (tab-separated)
+    # Queries Docker daemon directly - no env vars needed
     local ps_output
-    ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+    ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT docker compose -f compose.yaml ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
     # Parse output to count different states and health conditions
     local running_healthy=0
@@ -239,11 +235,11 @@ set +e
     echo "🔍 Checking Dockge health status..."
     cd /opt/dockge
 
-    # Get total services
-    DOCKGE_TOTAL=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose config --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+    # Get total services from all containers for Dockge project
+    DOCKGE_TOTAL=$(timeout $HEALTH_CHECK_CMD_TIMEOUT docker compose ps -a --services 2>/dev/null | wc -l | tr -d " " || echo "0")
 
-    # Get Dockge state and health
-    dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+    # Get Dockge state and health - queries Docker daemon directly
+    dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT docker compose ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
     # Parse health states
     dockge_healthy=0
@@ -377,8 +373,9 @@ set +e
   fi
 
   for STACK in $STACKS; do
-    STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
-    STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
+    # Query Docker daemon directly - no env vars needed
+    STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
+    STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && docker compose -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
     echo "  $STACK: $STACK_RUNNING/$STACK_TOTAL services"
     TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_TOTAL))
     RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
@@ -470,7 +467,7 @@ set +e
     exit 0
   fi
 EOF
-} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES_B64=\"$CRITICAL_SERVICES_B64\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED" > "$HEALTH_TMPFILE"
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES_B64=\"$CRITICAL_SERVICES_B64\" /bin/bash -s $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED" > "$HEALTH_TMPFILE"
 HEALTH_EXIT_CODE=$?
 HEALTH_RESULT=$(cat "$HEALTH_TMPFILE")
 rm -f "$HEALTH_TMPFILE"

@@ -48,10 +48,10 @@ on:
         type: boolean
         default: false
       health-check-command-timeout:
-        description: "Individual health check command timeout in seconds (default: 15)"
+        description: "Individual health check command timeout in seconds (default: 5, queries Docker daemon directly)"
         required: false
         type: number
-        default: 15
+        default: 5
       critical-services:
         description: "JSON array of critical service names (only used when auto-detect-critical is false)"
         required: false
@@ -610,7 +610,6 @@ jobs:
             --has-dockge "${{ inputs.has-dockge }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
-            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
             --command-timeout "${{ inputs.health-check-command-timeout }}" \
             --critical-services "$CRITICAL_SERVICES"
 
@@ -712,7 +711,6 @@ jobs:
             --has-dockge "${{ inputs.has-dockge }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
-            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
             --command-timeout "${{ inputs.health-check-command-timeout }}" \
             --critical-services "$CRITICAL_SERVICES"; then
             echo "✅ Rollback health check completed"
