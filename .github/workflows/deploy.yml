@@ -626,23 +626,12 @@ jobs:
           EOF
           echo "::endgroup::"
 
-      - name: Rollback Dockge
-        id: rollback-dockge
-        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'failure' || steps.deploy-new.outcome == 'failure' || steps.health.outcome == 'failure') && inputs.has-dockge == true
-        continue-on-error: true
-        run: |
-          echo "🔄 Rolling back Dockge to previous version..."
-          ./.compose-workflow/scripts/deployment/deploy-dockge.sh \
-            --ssh-user "${{ secrets.SSH_USER }}" \
-            --ssh-host "${{ secrets.SSH_HOST }}" \
-            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
-            --image-timeout "${{ inputs.image-pull-timeout }}" \
-            --startup-timeout "${{ inputs.service-startup-timeout }}" \
-            --compose-args "${{ inputs.args || '' }}"
+      # Note: Dockge rollback removed - Dockge is a management UI and doesn't need
+      # to be rolled back when stack deployments fail. Stack rollback is sufficient.
 
       - name: Rollback to Previous Version
         id: rollback
-        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'failure' || steps.deploy-new.outcome == 'failure' || steps.health.outcome == 'failure') && (inputs.has-dockge == false || steps.rollback-dockge.outcome == 'success')
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'failure' || steps.deploy-new.outcome == 'failure' || steps.health.outcome == 'failure')
         continue-on-error: true
         run: |
           echo "🔄 **INITIATING ROLLBACK**"
