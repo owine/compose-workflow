@@ -22,9 +22,10 @@ on:
         required: false
         type: string
       stacks:
-        description: "JSON array of stack names to deploy"
-        required: true
+        description: "JSON array of stack names to deploy (optional - auto-discovered if not provided)"
+        required: false
         type: string
+        default: ''
       webhook-url:
         description: "1Password reference to Discord webhook URL"
         required: true
@@ -134,24 +135,29 @@ jobs:
     steps:
       - name: Validate and sanitize inputs
         run: |
-          # Validate stacks parameter is valid JSON
-          echo '${{ inputs.stacks }}' | jq -r '.[]' >/dev/null || {
-            echo "::error::Invalid stacks JSON format: ${{ inputs.stacks }}"
-            exit 1
-          }
+          # Validate stacks parameter if provided (skip if empty - will be auto-discovered)
+          if [ -n "${{ inputs.stacks }}" ]; then
+            echo '${{ inputs.stacks }}' | jq -r '.[]' >/dev/null || {
+              echo "::error::Invalid stacks JSON format: ${{ inputs.stacks }}"
+              exit 1
+            }
 
-          # Validate stack names contain only safe characters
-          echo '${{ inputs.stacks }}' | jq -r '.[]' | while read -r stack; do
-            if [[ ! "$stack" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-              echo "::error::Invalid stack name: $stack. Only alphanumeric, underscore, and hyphen allowed."
-              exit 1
-            fi
-            # Check stack name length
-            if [ ${#stack} -gt 50 ]; then
-              echo "::error::Stack name too long: $stack (max 50 characters)"
-              exit 1
-            fi
-          done
+            # Validate stack names contain only safe characters
+            echo '${{ inputs.stacks }}' | jq -r '.[]' | while read -r stack; do
+              if [[ ! "$stack" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                echo "::error::Invalid stack name: $stack. Only alphanumeric, underscore, and hyphen allowed."
+                exit 1
+              fi
+              # Check stack name length
+              if [ ${#stack} -gt 50 ]; then
+                echo "::error::Stack name too long: $stack (max 50 characters)"
+                exit 1
+              fi
+            done
+            echo "✅ Stacks input validated"
+          else
+            echo "ℹ️ Stacks not provided - will be auto-discovered after checkout"
+          fi
 
           # Validate target-ref format using git check-ref-format for accurate validation
           TARGET_REF="${{ inputs.target-ref }}"
@@ -245,7 +251,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "Repository: ${{ inputs.repo-name }}"
           echo "Target ref: ${{ inputs.target-ref }}"
-          echo "Stacks: ${{ inputs.stacks }}"
+          echo "Stacks: ${{ inputs.stacks || '(auto-discover)' }}"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
           echo ""
           echo "ℹ️  Reusable workflow SHA shown in 'Uses:' line above"
@@ -355,6 +361,34 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           fetch-depth: 0  # Fetch full history for accurate change detection
+
+      - name: Discover stacks
+        id: discover-stacks
+        run: |
+          # Use provided stacks input if available, otherwise auto-discover
+          if [ -n "${{ inputs.stacks }}" ]; then
+            echo "📋 Using provided stacks: ${{ inputs.stacks }}"
+            echo "stacks=${{ inputs.stacks }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "🔍 Auto-discovering stacks from repository..."
+            stacks=()
+            for dir in */; do
+              dir_name=$(basename "$dir")
+              if [[ -f "$dir/compose.yml" || -f "$dir/compose.yaml" ]]; then
+                stacks+=("\"$dir_name\"")
+              fi
+            done
+
+            if [ ${#stacks[@]} -eq 0 ]; then
+              echo "::error::No Docker Compose stacks found in repository"
+              exit 1
+            fi
+
+            # Join array elements with commas and wrap in brackets
+            stack_json="[$(IFS=,; echo "${stacks[*]}")]"
+            echo "stacks=$stack_json" >> "$GITHUB_OUTPUT"
+            echo "✅ Discovered stacks: $stack_json"
+          fi
 
       - name: Checkout compose-workflow for deployment scripts
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
@@ -480,7 +514,7 @@ jobs:
           ./.compose-workflow/scripts/deployment/detect-stack-changes.sh \
             --current-sha "${{ steps.backup.outputs.previous_sha }}" \
             --target-ref "${{ inputs.target-ref }}" \
-            --input-stacks '${{ inputs.stacks }}' \
+            --input-stacks '${{ steps.discover-stacks.outputs.stacks }}' \
             --removed-files '${{ steps.changed-files.outputs.deleted_files }}' \
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}"
@@ -536,7 +570,7 @@ jobs:
         if: steps.backup.outputs.deployment_needed == 'true' && inputs.auto-detect-critical == true
         run: |
           ./.compose-workflow/scripts/deployment/detect-critical-stacks.sh \
-            --stacks "${{ join(fromJSON(inputs.stacks), ' ') }}" \
+            --stacks "${{ join(fromJSON(steps.discover-stacks.outputs.stacks), ' ') }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}"
 
@@ -606,7 +640,7 @@ jobs:
           fi
 
           ./.compose-workflow/scripts/deployment/health-check.sh \
-            --stacks "${{ join(fromJSON(inputs.stacks), ' ') }}" \
+            --stacks "${{ join(fromJSON(steps.discover-stacks.outputs.stacks), ' ') }}" \
             --has-dockge "${{ inputs.has-dockge }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
@@ -679,9 +713,9 @@ jobs:
             STACKS="${STACKS_ARRAY[*]}"
             echo "✅ Using discovered rollback stacks: $STACKS"
           else
-            # Fallback to input stacks if discovery failed
-            STACKS="${{ join(fromJSON(inputs.stacks), ' ') }}"
-            echo "⚠️ Using input stacks as fallback: $STACKS"
+            # Fallback to discovered stacks if rollback discovery failed
+            STACKS="${{ join(fromJSON(steps.discover-stacks.outputs.stacks), ' ') }}"
+            echo "⚠️ Using discovered stacks as fallback: $STACKS"
           fi
 
           # Use auto-detected critical stacks if enabled, otherwise use manual input
@@ -758,8 +792,8 @@ jobs:
         run: |
           echo "::group::Deployment Summary"
 
-          # Parse stacks from JSON input and create display list
-          STACK_LIST="${{ join(fromJson(inputs.stacks), ', ') }}"
+          # Parse stacks from discovered output and create display list
+          STACK_LIST="${{ join(fromJson(steps.discover-stacks.outputs.stacks), ', ') }}"
           if [ "${{ inputs.has-dockge }}" = "true" ]; then
             STACK_LIST="dockge, $STACK_LIST"
           fi
