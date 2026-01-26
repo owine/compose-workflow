@@ -196,7 +196,17 @@ set +e
         echo ""
         echo "🔸 Container: $name ($service) - $reason"
         echo "────────────────────────────────────────────────────────────────"
-        # Use --tail to limit output and --timestamps for better debugging
+
+        # Show health check output (last 3 checks) if health check exists
+        has_healthcheck=$(docker inspect --format='{{if .State.Health}}yes{{else}}no{{end}}' "$name" 2>/dev/null) || has_healthcheck="no"
+        if [ "$has_healthcheck" = "yes" ]; then
+          echo "📍 Health Check Output:"
+          docker inspect --format='Status: {{.State.Health.Status}} | FailingStreak: {{.State.Health.FailingStreak}}{{if .State.Health.Log}}{{range $i, $log := .State.Health.Log}}{{if lt $i 3}}
+  [Exit={{.ExitCode}}] {{.Output}}{{end}}{{end}}{{end}}' "$name" 2>/dev/null || echo "  Could not retrieve health output"
+          echo ""
+        fi
+
+        echo "📋 Container Logs (last $log_lines lines):"
         docker logs --tail "$log_lines" --timestamps "$name" 2>&1 || echo "  ⚠️ Could not retrieve logs for $name"
         echo "────────────────────────────────────────────────────────────────"
       fi
