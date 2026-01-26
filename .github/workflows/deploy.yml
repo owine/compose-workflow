@@ -63,6 +63,11 @@ on:
         required: false
         type: boolean
         default: true
+      failed-container-log-lines:
+        description: "Number of log lines to capture from failed/unhealthy containers for debugging (default: 50, set to 0 to disable)"
+        required: false
+        type: number
+        default: 50
       git-fetch-timeout:
         description: "Git fetch operation timeout in seconds (default: 300)"
         required: false
@@ -645,7 +650,8 @@ jobs:
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
             --command-timeout "${{ inputs.health-check-command-timeout }}" \
-            --critical-services "$CRITICAL_SERVICES"
+            --critical-services "$CRITICAL_SERVICES" \
+            --failed-container-log-lines "${{ inputs.failed-container-log-lines }}"
 
       - name: Cleanup unused images
         id: cleanup
