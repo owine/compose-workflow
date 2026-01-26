@@ -104,9 +104,6 @@ HAS_DOCKGE_ESCAPED=$(printf '%q' "$HAS_DOCKGE")
 # Remote shells (especially zsh) treat [] as glob patterns, causing failures
 CRITICAL_SERVICES_B64=$(echo -n "$CRITICAL_SERVICES" | base64 -w 0 2>/dev/null || echo -n "$CRITICAL_SERVICES" | base64)
 
-# Pass failed container log lines to remote script
-FAILED_LOG_LINES_ESCAPED=$(printf '%q' "$FAILED_CONTAINER_LOG_LINES")
-
 # Use temporary file to capture output and avoid command substitution parsing issues
 HEALTH_TMPFILE=$(mktemp)
 set +e
