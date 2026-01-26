@@ -241,7 +241,7 @@ jobs:
   notify:
     name: Discord Notification
     runs-on: ubuntu-24.04
-    needs: [scanning, actionlint, lint, lint-summary]
+    needs: [scanning, actionlint, lint]
     if: always()
     steps:
       - name: Configure 1Password Service Account
@@ -258,16 +258,31 @@ jobs:
           DISCORD_WEBHOOK: ${{ inputs.webhook-url }}
           DISCORD_USER_ID: ${{ inputs.discord-user-id != '' && inputs.discord-user-id || 'SKIP' }}
 
+      - name: Determine overall lint status
+        id: lint-status
+        run: |
+          # Derive overall status from individual job results
+          # Success requires: scanning passed/skipped AND actionlint passed AND lint passed
+          SCANNING="${{ needs.scanning.result }}"
+          ACTIONLINT="${{ needs.actionlint.result }}"
+          LINT="${{ needs.lint.result }}"
+
+          if [[ ("$SCANNING" == "success" || "$SCANNING" == "skipped") && "$ACTIONLINT" == "success" && "$LINT" == "success" ]]; then
+            echo "result=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=failure" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Send Discord notification
         uses: sarisia/actions-status-discord@eb045afee445dc055c18d3d90bd0f244fd062708  # v1.16.0
-        if: ${{ needs.lint-summary.result == 'failure' || (needs.lint-summary.result == 'success' && github.event_name != 'pull_request') }}
+        if: ${{ steps.lint-status.outputs.result == 'failure' || (steps.lint-status.outputs.result == 'success' && github.event_name != 'pull_request') }}
         with:
           webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
-          content: ${{ needs.lint-summary.result != 'success' && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}>', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}
-          status: ${{ needs.lint-summary.result == 'success' && 'success' || 'failure' }}
-          title: "🔍 ${{ inputs.repo-name }} • ${{ needs.lint-summary.result == 'success' && 'Validation Passed' || 'Validation Failed' }}"
+          content: ${{ steps.lint-status.outputs.result != 'success' && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}>', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}
+          status: ${{ steps.lint-status.outputs.result == 'success' && 'success' || 'failure' }}
+          title: "🔍 ${{ inputs.repo-name }} • ${{ steps.lint-status.outputs.result == 'success' && 'Validation Passed' || 'Validation Failed' }}"
           description: |
-            ${{ needs.lint-summary.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
+            ${{ steps.lint-status.outputs.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
 
             **🔒 Security Scan:** ${{ needs.scanning.result == 'success' && '✅ No secrets detected' || needs.scanning.result == 'skipped' && '⏭️ Skipped (PR/manual)' || '❌ Issues found' }}
             **⚙️ Workflow Validation:** ${{ needs.actionlint.result == 'success' && '✅ All workflows valid' || '❌ Issues detected' }}
@@ -298,8 +313,8 @@ jobs:
             • Remove exposed secrets before proceeding
             • **This blocks deployment until resolved**' || '' }}
 
-            ${{ needs.lint-summary.result == 'success' && '🚀 **Ready for deployment**' || '⚠️ **Deployment blocked until issues resolved**' }}
-          color: ${{ needs.lint-summary.result == 'success' && 0x28a745 || needs.scanning.result == 'failure' && 0xdc3545 || 0xfd7e14 }}
+            ${{ steps.lint-status.outputs.result == 'success' && '🚀 **Ready for deployment**' || '⚠️ **Deployment blocked until issues resolved**' }}
+          color: ${{ steps.lint-status.outputs.result == 'success' && 0x28a745 || needs.scanning.result == 'failure' && 0xdc3545 || 0xfd7e14 }}
           username: "Compose Lint"
           avatar_url: "https://cdn-icons-png.flaticon.com/512/2103/2103633.png"
 
