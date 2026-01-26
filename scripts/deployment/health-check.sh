@@ -165,6 +165,7 @@ set +e
 
       # Capture logs for containers that are:
       # - unhealthy (health check failed)
+      # - starting (health check not yet passed - can indicate slow startup or issues)
       # - exited (crashed or stopped)
       # - restarting (crash loop)
       local capture=false
@@ -175,6 +176,9 @@ set +e
           if [ "$health" = "unhealthy" ]; then
             capture=true
             reason="unhealthy"
+          elif [ "$health" = "starting" ]; then
+            capture=true
+            reason="starting (health check pending)"
           fi
           ;;
         exited)
