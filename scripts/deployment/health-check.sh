@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 # Script Name: health-check.sh
 # Purpose: Report health status of Docker Compose stacks after --wait flag deployment
-# Usage: ./health-check.sh --stacks "stack1 stack2" --has-dockge true --ssh-user user --ssh-host host --command-timeout 5
+# Usage: ./health-check.sh --stacks "stack1 stack2" --has-dockge true --ssh-user user --ssh-host host \
+#                          --command-timeout 5 --critical-services '["stack1"]' --failed-container-log-lines 50
+#
+# Parameters:
+#   --stacks                      Space-separated list of stack names to check
+#   --has-dockge                  Whether Dockge is deployed (true/false)
+#   --ssh-user                    SSH username for remote server
+#   --ssh-host                    SSH hostname for remote server
+#   --command-timeout             Timeout for Docker commands in seconds (default: 5)
+#   --critical-services           JSON array of critical stack names (default: [])
+#   --failed-container-log-lines  Number of log lines to capture from failed containers (default: 50, 0 to disable)
 #
 # Note: This script is optimized to work with Docker Compose v5 --wait flag integration.
 #       The --wait flag handles waiting for services to become healthy during deployment.
@@ -10,6 +20,9 @@
 # Important: This script queries Docker daemon directly without needing 1Password.
 #            Service counts come from 'docker compose ps -a' (all containers for project).
 #            No environment variable resolution is needed since we're checking running state.
+#
+# Log Capture: When a stack fails health check, container logs are captured before rollback.
+#              This preserves debugging information that would otherwise be lost.
 
 set -euo pipefail
 
@@ -27,6 +40,7 @@ SSH_USER=""
 SSH_HOST=""
 COMMAND_TIMEOUT="5"
 CRITICAL_SERVICES="[]"
+FAILED_CONTAINER_LOG_LINES="50"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -60,6 +74,10 @@ while [[ $# -gt 0 ]]; do
       CRITICAL_SERVICES="$2"
       shift 2
       ;;
+    --failed-container-log-lines)
+      FAILED_CONTAINER_LOG_LINES="$2"
+      shift 2
+      ;;
     *)
       log_error "Unknown argument: $1"
       exit 1
@@ -74,6 +92,7 @@ require_var SSH_HOST || exit 1
 
 log_info "Starting health status check for stacks: $STACKS"
 log_info "Command timeout: ${COMMAND_TIMEOUT}s"
+log_info "Failed container log lines: ${FAILED_CONTAINER_LOG_LINES}"
 
 # Execute health check via SSH with retry
 # Use printf %q to properly escape arguments for eval in ssh_retry
@@ -84,6 +103,9 @@ HAS_DOCKGE_ESCAPED=$(printf '%q' "$HAS_DOCKGE")
 # Base64 encode CRITICAL_SERVICES to prevent shell glob expansion
 # Remote shells (especially zsh) treat [] as glob patterns, causing failures
 CRITICAL_SERVICES_B64=$(echo -n "$CRITICAL_SERVICES" | base64 -w 0 2>/dev/null || echo -n "$CRITICAL_SERVICES" | base64)
+
+# Pass failed container log lines to remote script
+FAILED_LOG_LINES_ESCAPED=$(printf '%q' "$FAILED_CONTAINER_LOG_LINES")
 
 # Use temporary file to capture output and avoid command substitution parsing issues
 HEALTH_TMPFILE=$(mktemp)
@@ -114,7 +136,78 @@ set +e
   # Set timeout configuration with defaults (5s is sufficient for Docker daemon queries)
   HEALTH_CHECK_CMD_TIMEOUT=${COMMAND_TIMEOUT:-5}
 
+  # Set failed container log lines (default: 50, set to 0 to disable)
+  FAILED_LOG_LINES=${FAILED_CONTAINER_LOG_LINES:-50}
+
   echo "🔍 Starting health status check (post --wait deployment)..."
+
+  # Function to capture logs from failed/unhealthy containers
+  # This captures logs before rollback destroys the containers
+  capture_failed_container_logs() {
+    local stack=$1
+    local log_lines=$2
+
+    # Skip if log capture is disabled
+    if [ "$log_lines" -eq 0 ]; then
+      return 0
+    fi
+
+    echo ""
+    echo "📋 Capturing logs from failed/unhealthy containers in $stack..."
+    echo "════════════════════════════════════════════════════════════════"
+
+    cd "/opt/compose/$stack" 2>/dev/null || return 1
+
+    # Get container states and identify problematic ones
+    local ps_output
+    ps_output=$(docker compose -f compose.yaml ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+
+    local found_issues=false
+    while IFS=$'\t' read -r name service state health; do
+      [ -z "$name" ] && continue
+
+      # Capture logs for containers that are:
+      # - unhealthy (health check failed)
+      # - exited (crashed or stopped)
+      # - restarting (crash loop)
+      local capture=false
+      local reason=""
+
+      case "$state" in
+        running)
+          if [ "$health" = "unhealthy" ]; then
+            capture=true
+            reason="unhealthy"
+          fi
+          ;;
+        exited)
+          capture=true
+          reason="exited"
+          ;;
+        restarting)
+          capture=true
+          reason="restarting"
+          ;;
+      esac
+
+      if [ "$capture" = true ]; then
+        found_issues=true
+        echo ""
+        echo "🔸 Container: $name ($service) - $reason"
+        echo "────────────────────────────────────────────────────────────────"
+        # Use --tail to limit output and --timestamps for better debugging
+        docker logs --tail "$log_lines" --timestamps "$name" 2>&1 || echo "  ⚠️ Could not retrieve logs for $name"
+        echo "────────────────────────────────────────────────────────────────"
+      fi
+    done <<< "$ps_output"
+
+    if [ "$found_issues" = false ]; then
+      echo "  ℹ️ No failed/unhealthy containers found to capture logs from"
+    fi
+
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+  }
 
   # Health check function - single-pass status collection
   # Note: --wait flag already ensured services are healthy during deployment
@@ -270,9 +363,47 @@ set +e
     if [ "$dockge_unhealthy" -gt 0 ]; then
       echo "❌ Dockge: $dockge_unhealthy services unhealthy"
       FAILED_STACKS="$FAILED_STACKS dockge"
+      # Capture Dockge logs (special path: /opt/dockge, not /opt/compose/dockge)
+      if [ "$FAILED_LOG_LINES" -gt 0 ]; then
+        echo ""
+        echo "📋 Capturing logs from failed/unhealthy Dockge containers..."
+        echo "════════════════════════════════════════════════════════════════"
+        cd /opt/dockge
+        dockge_ps=$(docker compose ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+        while IFS=$'\t' read -r name service state health; do
+          [ -z "$name" ] && continue
+          if [ "$state" = "running" ] && [ "$health" = "unhealthy" ]; then
+            echo ""
+            echo "🔸 Container: $name ($service) - unhealthy"
+            echo "────────────────────────────────────────────────────────────────"
+            docker logs --tail "$FAILED_LOG_LINES" --timestamps "$name" 2>&1 || echo "  ⚠️ Could not retrieve logs"
+            echo "────────────────────────────────────────────────────────────────"
+          fi
+        done <<< "$dockge_ps"
+        echo "════════════════════════════════════════════════════════════════"
+      fi
     elif [ "$dockge_running" -eq 0 ]; then
       echo "❌ Dockge: 0/$DOCKGE_TOTAL services running"
       FAILED_STACKS="$FAILED_STACKS dockge"
+      # Capture Dockge logs (special path: /opt/dockge, not /opt/compose/dockge)
+      if [ "$FAILED_LOG_LINES" -gt 0 ]; then
+        echo ""
+        echo "📋 Capturing logs from stopped Dockge containers..."
+        echo "════════════════════════════════════════════════════════════════"
+        cd /opt/dockge
+        dockge_ps=$(docker compose ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+        while IFS=$'\t' read -r name service state health; do
+          [ -z "$name" ] && continue
+          if [ "$state" = "exited" ] || [ "$state" = "restarting" ]; then
+            echo ""
+            echo "🔸 Container: $name ($service) - $state"
+            echo "────────────────────────────────────────────────────────────────"
+            docker logs --tail "$FAILED_LOG_LINES" --timestamps "$name" 2>&1 || echo "  ⚠️ Could not retrieve logs"
+            echo "────────────────────────────────────────────────────────────────"
+          fi
+        done <<< "$dockge_ps"
+        echo "════════════════════════════════════════════════════════════════"
+      fi
     elif [ "$dockge_healthy_total" -eq "$DOCKGE_TOTAL" ] && [ "$dockge_starting" -eq 0 ]; then
       echo "✅ Dockge: All $DOCKGE_TOTAL services healthy"
       HEALTHY_STACKS="$HEALTHY_STACKS dockge"
@@ -342,6 +473,8 @@ set +e
         # For failures, output is already restored in check_stack_health
         echo "❌ $STACK: Failed health check"
         FAILED_STACKS="$FAILED_STACKS $STACK"
+        # Capture logs from failed containers before rollback destroys them
+        capture_failed_container_logs "$STACK" "$FAILED_LOG_LINES"
         # Check if failed stack is critical - trigger early exit
         if is_critical_service "$STACK"; then
           echo "🚨 CRITICAL SERVICE FAILURE: $STACK"
@@ -467,7 +600,7 @@ set +e
     exit 0
   fi
 EOF
-} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES_B64=\"$CRITICAL_SERVICES_B64\" /bin/bash -s $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED" > "$HEALTH_TMPFILE"
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES_B64=\"$CRITICAL_SERVICES_B64\" FAILED_CONTAINER_LOG_LINES=\"$FAILED_CONTAINER_LOG_LINES\" /bin/bash -s $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED" > "$HEALTH_TMPFILE"
 HEALTH_EXIT_CODE=$?
 HEALTH_RESULT=$(cat "$HEALTH_TMPFILE")
 rm -f "$HEALTH_TMPFILE"
