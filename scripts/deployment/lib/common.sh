@@ -5,12 +5,14 @@
 set -euo pipefail
 
 # Logging functions with colors
+# All log functions output to stderr to avoid corrupting command output capture
+# This is critical for functions like ssh_retry() where output is captured via $()
 log_info() {
-  echo "ℹ️  $*"
+  echo "ℹ️  $*" >&2
 }
 
 log_success() {
-  echo "✅ $*"
+  echo "✅ $*" >&2
 }
 
 log_error() {
