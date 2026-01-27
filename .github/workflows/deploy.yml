@@ -2,7 +2,7 @@ name: Deploy Docker Compose
 
 # Refactoring Status:
 # ✅ Extracted deployment scripts to scripts/deployment/ (Phases 1-5 complete)
-#    - lib/ssh-helpers.sh: Retry mechanisms with exponential backoff
+#    - lib/ssh-helpers.sh: SSH retry with consistent logging and operation context
 #    - lib/common.sh: Logging, validation, and utility functions
 #    - health-check.sh: Single-pass health status reporting (post --wait deployment)
 #    - deploy-stacks.sh: Parallel deployment with comprehensive error handling

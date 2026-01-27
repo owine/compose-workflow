@@ -195,10 +195,11 @@ The lint workflow uses modular bash scripts in `scripts/linting/` for all valida
 The deploy workflow uses modular bash scripts in `scripts/deployment/` for all major operations:
 
 #### Library Files (`scripts/deployment/lib/`)
-- **ssh-helpers.sh** - Retry mechanisms with exponential backoff
-  - `retry()` - General command retry with configurable attempts and delays
-  - `ssh_retry()` - SSH-specific retry with error code handling
-  - `ssh_exec()` - Simple SSH execution wrapper
+- **ssh-helpers.sh** - SSH retry with consistent logging and operation context
+  - `ssh_retry()` - SSH-specific retry with error code handling and context logging
+  - `_get_operation_context()` - Safe operation label extraction using allowlist
+  - Sources `common.sh` for consistent `log_*` output formatting
+  - Security: Only outputs hardcoded operation labels, never command content
 - **common.sh** - Logging, validation, and utilities
   - Colored logging functions (`log_info`, `log_success`, `log_error`, `log_warning`)
   - Input validation (`validate_stack_name`, `validate_sha`, `validate_op_reference`)
@@ -476,7 +477,7 @@ This repository contains:
 │   │   └── .shellcheckrc        # ShellCheck configuration
 │   ├── deployment/               # Modular deployment scripts
 │   │   ├── lib/
-│   │   │   ├── ssh-helpers.sh   # Retry mechanisms (68 lines)
+│   │   │   ├── ssh-helpers.sh   # SSH retry with context logging (120 lines)
 │   │   │   └── common.sh        # Utilities and validation (86 lines)
 │   │   ├── health-check.sh      # Health verification (584 lines)
 │   │   ├── deploy-stacks.sh     # Deployment orchestration (690 lines)
