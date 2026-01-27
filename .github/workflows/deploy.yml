@@ -799,7 +799,8 @@ jobs:
           echo "::group::Deployment Summary"
 
           # Parse stacks from discovered output and create display list
-          STACK_LIST="${{ join(fromJson(steps.discover-stacks.outputs.stacks), ', ') }}"
+          # Use empty array fallback when discover-stacks step didn't run (early failure)
+          STACK_LIST="${{ join(fromJson(steps.discover-stacks.outputs.stacks || '[]'), ', ') }}"
           if [ "${{ inputs.has-dockge }}" = "true" ]; then
             STACK_LIST="dockge, $STACK_LIST"
           fi
