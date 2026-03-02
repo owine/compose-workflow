@@ -649,6 +649,7 @@ jobs:
             --has-dockge "${{ inputs.has-dockge }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
+            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
             --command-timeout "${{ inputs.health-check-command-timeout }}" \
             --critical-services "$CRITICAL_SERVICES" \
             --failed-container-log-lines "${{ inputs.failed-container-log-lines }}"
@@ -740,6 +741,7 @@ jobs:
             --has-dockge "${{ inputs.has-dockge }}" \
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
+            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
             --command-timeout "${{ inputs.health-check-command-timeout }}" \
             --critical-services "$CRITICAL_SERVICES"; then
             echo "✅ Rollback health check completed"
