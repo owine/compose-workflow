@@ -126,6 +126,7 @@ set +e
   compose_with_env() {
     op run --env-file=/opt/compose/compose.env -- docker compose "$@"
   }
+  export -f compose_with_env
 
   # Get arguments passed to script (stacks, has-dockge)
   TOTAL_ARGS=$#
