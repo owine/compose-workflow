@@ -198,19 +198,14 @@ fi
 
       cd /opt/compose/$STACK
 
-      echo "  Pulling images for $STACK..."
-      # Add timeout protection (5 minutes for image pull)
-      if ! timeout $IMAGE_PULL_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-        echo "❌ Failed to pull images for $STACK during $OPERATION (timeout or error)"
-        exit 1
-      fi
-
-      echo "  Starting services for $STACK..."
-      # Use --wait flag to block until all services with healthchecks are healthy
-      # This provides atomic deployment verification and eliminates race conditions
-      # Timeout: SERVICE_STARTUP_TIMEOUT (default: 120s)
-      if ! timeout $SERVICE_STARTUP_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --wait --remove-orphans $COMPOSE_ARGS; then
-        echo "❌ Failed to start services for $STACK during $OPERATION (timeout or error)"
+      echo "  Deploying $STACK (pull + start)..."
+      # Consolidated pull and start using --pull always
+      # --quiet-pull suppresses progress bars for cleaner CI logs
+      # --wait blocks until all services with healthchecks are healthy
+      # Combined timeout: IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT
+      DEPLOY_TIMEOUT=$((IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT))
+      if ! timeout $DEPLOY_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans $COMPOSE_ARGS; then
+        echo "❌ Failed to deploy $STACK during $OPERATION (timeout or error)"
         exit 1
       fi
 

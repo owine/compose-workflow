@@ -89,19 +89,15 @@ log_info "Service startup timeout: ${SERVICE_STARTUP_TIMEOUT}s"
     exit 1
   fi
 
-  echo "Pulling Dockge images..."
+  echo "Deploying Dockge (pull + start)..."
+  # Consolidated pull and start using --pull always
+  # --quiet-pull suppresses progress bars for cleaner CI logs
+  # --wait ensures Dockge is healthy before proceeding (critical since it manages other containers)
+  # Combined timeout: IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT
+  DEPLOY_TIMEOUT=$((IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT))
   # shellcheck disable=SC2086 # COMPOSE_ARGS intentionally unquoted for word splitting
-  if ! timeout "$IMAGE_PULL_TIMEOUT" op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-    echo "❌ Dockge image pull timed out after ${IMAGE_PULL_TIMEOUT}s"
-    exit 1
-  fi
-
-  echo "Starting Dockge services..."
-  # Use --wait flag to ensure Dockge is healthy before proceeding
-  # Critical since Dockge manages other container deployments
-  # shellcheck disable=SC2086 # COMPOSE_ARGS intentionally unquoted for word splitting
-  if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --wait --remove-orphans $COMPOSE_ARGS; then
-    echo "❌ Dockge startup timed out after ${SERVICE_STARTUP_TIMEOUT}s"
+  if ! timeout "$DEPLOY_TIMEOUT" op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans $COMPOSE_ARGS; then
+    echo "❌ Dockge deployment timed out after ${DEPLOY_TIMEOUT}s"
     exit 1
   fi
 

@@ -185,34 +185,56 @@ jobs:
           if [[ -n "$COMPOSE_ARGS" ]]; then
             echo "🔍 Validating compose args: $COMPOSE_ARGS"
 
-            # Whitelist of allowed docker compose up arguments
-            ALLOWED_ARGS=(
+            # Whitelist of allowed docker compose up flags
+            ALLOWED_FLAGS=(
               "--force-recreate" "--no-recreate"
               "--build" "--no-build"
-              "--pull" "--no-pull"
-              "--quiet-pull"
+              "--pull"
+              "--quiet-pull" "--quiet-build"
               "--no-deps"
               "--remove-orphans"
-              "--wait" "--no-wait"
+              "--renew-anon-volumes"
+              "--wait"
               "--wait-timeout"
+              "--timeout"
               "--no-start"
               "--attach" "--no-attach"
               "--attach-dependencies"
             )
 
+            # Valid string values for --pull flag
+            ALLOWED_PULL_VALUES="always missing never build policy"
+
             # Split args and validate each one
             VALIDATION_FAILED=false
+            EXPECT_PULL_VALUE=false
             for arg in $COMPOSE_ARGS; do
-              # Check if it's a numeric value (for --wait-timeout)
+              # Check if we're expecting a --pull value
+              if [[ "$EXPECT_PULL_VALUE" == "true" ]]; then
+                EXPECT_PULL_VALUE=false
+                if [[ " $ALLOWED_PULL_VALUES " == *" $arg "* ]]; then
+                  continue
+                else
+                  echo "::error::Invalid --pull value: $arg (allowed: $ALLOWED_PULL_VALUES)"
+                  VALIDATION_FAILED=true
+                  continue
+                fi
+              fi
+
+              # Check if it's a numeric value (for --wait-timeout, --timeout)
               if [[ "$arg" =~ ^[0-9]+$ ]]; then
                 continue
               fi
 
               # Check if it's in the whitelist
               FOUND=false
-              for allowed in "${ALLOWED_ARGS[@]}"; do
+              for allowed in "${ALLOWED_FLAGS[@]}"; do
                 if [[ "$arg" == "$allowed" ]]; then
                   FOUND=true
+                  # Track if next arg should be a --pull value
+                  if [[ "$arg" == "--pull" ]]; then
+                    EXPECT_PULL_VALUE=true
+                  fi
                   break
                 fi
               done
@@ -225,7 +247,9 @@ jobs:
 
             if [[ "$VALIDATION_FAILED" == "true" ]]; then
               echo "::error::Only whitelisted docker compose up arguments are allowed"
-              echo "::error::Allowed: ${ALLOWED_ARGS[*]} (and numeric values for timeouts)"
+              echo "::error::Allowed flags: ${ALLOWED_FLAGS[*]}"
+              echo "::error::Allowed --pull values: $ALLOWED_PULL_VALUES"
+              echo "::error::Numeric values accepted for --wait-timeout and --timeout"
               exit 1
             fi
 
