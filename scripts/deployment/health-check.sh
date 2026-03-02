@@ -223,6 +223,11 @@ set +e
   # Health check function - single-pass status collection
   # Note: --wait flag already ensured services are healthy during deployment
   # This function collects current status for reporting and metrics
+  # Retry settings for containers still in 'starting' health state
+  # Covers services with start_period up to 90s + interval 30s
+  STARTING_RETRY_MAX=6
+  STARTING_RETRY_INTERVAL=15
+
   check_stack_health() {
     local stack=$1
     local logfile="/tmp/health_${stack}.log"
@@ -251,82 +256,91 @@ set +e
       return 1
     fi
 
-    # Get container state and health in one call using custom format
-    # Format: Service State Health (tab-separated)
-    # Queries Docker daemon directly - no env vars needed
-    local ps_output
-    ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT docker compose -f compose.yaml ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+    local attempt=0
+    while true; do
+      # Get container state and health in one call using custom format
+      # Format: Service State Health (tab-separated)
+      # Queries Docker daemon directly - no env vars needed
+      local ps_output
+      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT docker compose -f compose.yaml ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
-    # Parse output to count different states and health conditions
-    local running_healthy=0
-    local running_starting=0
-    local running_unhealthy=0
-    local running_no_health=0
-    local exited_count=0
-    local restarting_count=0
+      # Parse output to count different states and health conditions
+      local running_healthy=0
+      local running_starting=0
+      local running_unhealthy=0
+      local running_no_health=0
+      local exited_count=0
+      local restarting_count=0
 
-    while IFS=$'\t' read -r service state health; do
-      # Skip empty lines
-      [ -z "$service" ] && continue
+      while IFS=$'\t' read -r service state health; do
+        # Skip empty lines
+        [ -z "$service" ] && continue
 
-      case "$state" in
-        running)
-          case "$health" in
-            healthy)
-              running_healthy=$((running_healthy + 1))
-              ;;
-            starting)
-              running_starting=$((running_starting + 1))
-              ;;
-            unhealthy)
-              running_unhealthy=$((running_unhealthy + 1))
-              ;;
-            *)
-              # No health check defined
-              running_no_health=$((running_no_health + 1))
-              ;;
-          esac
-          ;;
-        exited)
-          exited_count=$((exited_count + 1))
-          ;;
-        restarting)
-          restarting_count=$((restarting_count + 1))
-          ;;
-      esac
-    done <<< "$ps_output"
+        case "$state" in
+          running)
+            case "$health" in
+              healthy)
+                running_healthy=$((running_healthy + 1))
+                ;;
+              starting)
+                running_starting=$((running_starting + 1))
+                ;;
+              unhealthy)
+                running_unhealthy=$((running_unhealthy + 1))
+                ;;
+              *)
+                # No health check defined
+                running_no_health=$((running_no_health + 1))
+                ;;
+            esac
+            ;;
+          exited)
+            exited_count=$((exited_count + 1))
+            ;;
+          restarting)
+            restarting_count=$((restarting_count + 1))
+            ;;
+        esac
+      done <<< "$ps_output"
 
-    # Total running containers (all health states)
-    local running_count=$((running_healthy + running_starting + running_unhealthy + running_no_health))
+      # Total running containers (all health states)
+      local running_count=$((running_healthy + running_starting + running_unhealthy + running_no_health))
 
-    echo "$stack status: $running_count/$total_count running (healthy: $running_healthy, starting: $running_starting, unhealthy: $running_unhealthy, no-check: $running_no_health), exited: $exited_count, restarting: $restarting_count"
+      echo "$stack status: $running_count/$total_count running (healthy: $running_healthy, starting: $running_starting, unhealthy: $running_unhealthy, no-check: $running_no_health), exited: $exited_count, restarting: $restarting_count"
 
-    # Fast fail on detection of unhealthy containers
-    if [ "$running_unhealthy" -gt 0 ]; then
-      echo "❌ $stack: $running_unhealthy unhealthy containers detected"
-      return 1
-    fi
+      # Fast fail on detection of unhealthy containers
+      if [ "$running_unhealthy" -gt 0 ]; then
+        echo "❌ $stack: $running_unhealthy unhealthy containers detected"
+        return 1
+      fi
 
-    # Calculate healthy containers (healthy + no health check defined)
-    local healthy_total=$((running_healthy + running_no_health))
+      # Calculate healthy containers (healthy + no health check defined)
+      local healthy_total=$((running_healthy + running_no_health))
 
-    # Success condition: all containers running and healthy (or no health check)
-    if [ "$healthy_total" -eq "$total_count" ] && [ "$total_count" -gt 0 ] && [ "$running_starting" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
-      echo "✅ $stack: All $total_count services healthy"
-      return 0
-    # Degraded but stable: all running and healthy, but fewer than expected
-    elif [ "$healthy_total" -gt 0 ] && [ "$healthy_total" -eq "$running_count" ] && [ "$running_starting" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
-      echo "⚠️ $stack: $healthy_total/$total_count services healthy (degraded but stable)"
-      return 2  # Degraded but acceptable
-    # Services still starting after --wait completed
-    elif [ "$running_starting" -gt 0 ]; then
-      echo "⚠️ $stack: $running_starting services still in 'starting' state"
-      return 1
-    # Other failure scenarios
-    else
-      echo "❌ $stack: Failed ($running_count/$total_count running, $healthy_total healthy)"
-      return 1
-    fi
+      # Success condition: all containers running and healthy (or no health check)
+      if [ "$healthy_total" -eq "$total_count" ] && [ "$total_count" -gt 0 ] && [ "$running_starting" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
+        echo "✅ $stack: All $total_count services healthy"
+        return 0
+      # Degraded but stable: all running and healthy, but fewer than expected
+      elif [ "$healthy_total" -gt 0 ] && [ "$healthy_total" -eq "$running_count" ] && [ "$running_starting" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
+        echo "⚠️ $stack: $healthy_total/$total_count services healthy (degraded but stable)"
+        return 2  # Degraded but acceptable
+      # Services still starting - retry to allow health checks to complete
+      elif [ "$running_starting" -gt 0 ]; then
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge "$STARTING_RETRY_MAX" ]; then
+          echo "❌ $stack: $running_starting services still in 'starting' state after ${attempt} checks"
+          return 1
+        fi
+        echo "⏳ $stack: $running_starting services still starting, retrying in ${STARTING_RETRY_INTERVAL}s (${attempt}/${STARTING_RETRY_MAX})..."
+        sleep "$STARTING_RETRY_INTERVAL"
+        continue
+      # Other failure scenarios
+      else
+        echo "❌ $stack: Failed ($running_count/$total_count running, $healthy_total healthy)"
+        return 1
+      fi
+    done
   }
 
   FAILED_STACKS=""
