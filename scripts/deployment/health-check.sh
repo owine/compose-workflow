@@ -17,9 +17,9 @@
 #       The --wait flag handles waiting for services to become healthy during deployment.
 #       This script performs a single-pass status check and reporting, without retry loops.
 #
-# Important: This script queries Docker daemon directly without needing 1Password.
-#            Service counts come from 'docker compose ps -a' (all containers for project).
-#            No environment variable resolution is needed since we're checking running state.
+# Important: This script requires 1Password (op run) to resolve environment variables
+#            in compose files. Docker Compose parses compose.yaml for all commands including
+#            'ps', so variables like ${DOMAIN} must be resolved to avoid parse failures.
 #
 # Log Capture: When a stack fails health check, container logs are captured before rollback.
 #              This preserves debugging information that would otherwise be lost.
@@ -38,6 +38,7 @@ STACKS=""
 HAS_DOCKGE="false"
 SSH_USER=""
 SSH_HOST=""
+OP_TOKEN=""
 COMMAND_TIMEOUT="5"
 CRITICAL_SERVICES="[]"
 FAILED_CONTAINER_LOG_LINES="50"
@@ -62,8 +63,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --op-token)
-      # Deprecated: 1Password no longer needed for health checks
-      # Accept but ignore for backwards compatibility
+      OP_TOKEN="$2"
       shift 2
       ;;
     --command-timeout)
@@ -89,6 +89,7 @@ done
 require_var STACKS || exit 1
 require_var SSH_USER || exit 1
 require_var SSH_HOST || exit 1
+require_var OP_TOKEN || exit 1
 
 log_info "Starting health status check for stacks: $STACKS"
 log_info "Command timeout: ${COMMAND_TIMEOUT}s"
@@ -111,8 +112,20 @@ set +e
   cat << 'EOF'
   set -e
 
+  # Get OP_TOKEN from first positional argument (passed securely via SSH)
+  OP_SERVICE_ACCOUNT_TOKEN="$1"
+  export OP_SERVICE_ACCOUNT_TOKEN
+  shift
+
   # Decode base64-encoded CRITICAL_SERVICES
   CRITICAL_SERVICES=$(echo "$CRITICAL_SERVICES_B64" | base64 -d)
+
+  # Helper: run docker compose with 1Password env vars resolved
+  # Required because compose files reference variables (DOMAIN, APPDATA_PATH, etc.)
+  # that are stored as 1Password references in /opt/compose/compose.env
+  compose_with_env() {
+    op run --env-file=/opt/compose/compose.env -- docker compose "$@"
+  }
 
   # Get arguments passed to script (stacks, has-dockge)
   TOTAL_ARGS=$#
@@ -157,7 +170,7 @@ set +e
 
     # Get container states and identify problematic ones
     local ps_output
-    ps_output=$(docker compose -f compose.yaml ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+    ps_output=$(compose_with_env -f compose.yaml ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
     local found_issues=false
     while IFS=$'\t' read -r name service state health; do
@@ -247,9 +260,9 @@ set +e
     }
 
     # Get total service count from all containers (running or stopped) for this project
-    # Uses 'docker compose ps -a' which queries Docker daemon directly - no env vars needed
+    # Uses 'docker compose ps -a' with op run to resolve env vars from compose.env
     local total_count
-    total_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT docker compose -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+    total_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT compose_with_env -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
 
     if [ "$total_count" -eq 0 ]; then
       echo "❌ $stack: No containers found for this project"
@@ -260,9 +273,8 @@ set +e
     while true; do
       # Get container state and health in one call using custom format
       # Format: Service State Health (tab-separated)
-      # Queries Docker daemon directly - no env vars needed
       local ps_output
-      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT docker compose -f compose.yaml ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT compose_with_env -f compose.yaml ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
       # Parse output to count different states and health conditions
       local running_healthy=0
@@ -354,10 +366,10 @@ set +e
     cd /opt/dockge
 
     # Get total services from all containers for Dockge project
-    DOCKGE_TOTAL=$(timeout $HEALTH_CHECK_CMD_TIMEOUT docker compose ps -a --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+    DOCKGE_TOTAL=$(timeout $HEALTH_CHECK_CMD_TIMEOUT compose_with_env ps -a --services 2>/dev/null | wc -l | tr -d " " || echo "0")
 
-    # Get Dockge state and health - queries Docker daemon directly
-    dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT docker compose ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+    # Get Dockge state and health
+    dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT compose_with_env ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
     # Parse health states
     dockge_healthy=0
@@ -394,7 +406,7 @@ set +e
         echo "📋 Capturing logs from failed/unhealthy Dockge containers..."
         echo "════════════════════════════════════════════════════════════════"
         cd /opt/dockge
-        dockge_ps=$(docker compose ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+        dockge_ps=$(compose_with_env ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
         while IFS=$'\t' read -r name service state health; do
           [ -z "$name" ] && continue
           if [ "$state" = "running" ] && [ "$health" = "unhealthy" ]; then
@@ -416,7 +428,7 @@ set +e
         echo "📋 Capturing logs from stopped Dockge containers..."
         echo "════════════════════════════════════════════════════════════════"
         cd /opt/dockge
-        dockge_ps=$(docker compose ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+        dockge_ps=$(compose_with_env ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
         while IFS=$'\t' read -r name service state health; do
           [ -z "$name" ] && continue
           if [ "$state" = "exited" ] || [ "$state" = "restarting" ]; then
@@ -531,9 +543,8 @@ set +e
   fi
 
   for STACK in $STACKS; do
-    # Query Docker daemon directly - no env vars needed
-    STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && docker compose -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
-    STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && docker compose -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
+    STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && compose_with_env -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
+    STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && compose_with_env -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
     echo "  $STACK: $STACK_RUNNING/$STACK_TOTAL services"
     TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_TOTAL))
     RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
@@ -625,7 +636,7 @@ set +e
     exit 0
   fi
 EOF
-} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES_B64=\"$CRITICAL_SERVICES_B64\" FAILED_CONTAINER_LOG_LINES=\"$FAILED_CONTAINER_LOG_LINES\" /bin/bash -s $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED" > "$HEALTH_TMPFILE"
+} | ssh_retry 3 5 "ssh $SSH_USER@$SSH_HOST env COMMAND_TIMEOUT=\"$COMMAND_TIMEOUT\" CRITICAL_SERVICES_B64=\"$CRITICAL_SERVICES_B64\" FAILED_CONTAINER_LOG_LINES=\"$FAILED_CONTAINER_LOG_LINES\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $HAS_DOCKGE_ESCAPED" > "$HEALTH_TMPFILE"
 HEALTH_EXIT_CODE=$?
 HEALTH_RESULT=$(cat "$HEALTH_TMPFILE")
 rm -f "$HEALTH_TMPFILE"
