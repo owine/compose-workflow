@@ -120,13 +120,10 @@ set +e
   # Decode base64-encoded CRITICAL_SERVICES
   CRITICAL_SERVICES=$(echo "$CRITICAL_SERVICES_B64" | base64 -d)
 
-  # Helper: run docker compose with 1Password env vars resolved
+  # Compose command prefix: resolves 1Password env vars from compose.env
   # Required because compose files reference variables (DOMAIN, APPDATA_PATH, etc.)
-  # that are stored as 1Password references in /opt/compose/compose.env
-  compose_with_env() {
-    op run --env-file=/opt/compose/compose.env -- docker compose "$@"
-  }
-  export -f compose_with_env
+  # Note: Use as command prefix, not via timeout (timeout can't call shell functions)
+  COMPOSE_CMD="op run --env-file=/opt/compose/compose.env -- docker compose"
 
   # Get arguments passed to script (stacks, has-dockge)
   TOTAL_ARGS=$#
@@ -171,7 +168,7 @@ set +e
 
     # Get container states and identify problematic ones
     local ps_output
-    ps_output=$(compose_with_env -f compose.yaml ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+    ps_output=$($COMPOSE_CMD -f compose.yaml ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
     local found_issues=false
     while IFS=$'\t' read -r name service state health; do
@@ -263,7 +260,7 @@ set +e
     # Get total service count from all containers (running or stopped) for this project
     # Uses 'docker compose ps -a' with op run to resolve env vars from compose.env
     local total_count
-    total_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT compose_with_env -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
+    total_count=$(timeout $HEALTH_CHECK_CMD_TIMEOUT $COMPOSE_CMD -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' | wc -l | tr -d " " || echo "0")
 
     if [ "$total_count" -eq 0 ]; then
       echo "❌ $stack: No containers found for this project"
@@ -275,7 +272,7 @@ set +e
       # Get container state and health in one call using custom format
       # Format: Service State Health (tab-separated)
       local ps_output
-      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT compose_with_env -f compose.yaml ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT $COMPOSE_CMD -f compose.yaml ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
       # Parse output to count different states and health conditions
       local running_healthy=0
@@ -367,10 +364,10 @@ set +e
     cd /opt/dockge
 
     # Get total services from all containers for Dockge project
-    DOCKGE_TOTAL=$(timeout $HEALTH_CHECK_CMD_TIMEOUT compose_with_env ps -a --services 2>/dev/null | wc -l | tr -d " " || echo "0")
+    DOCKGE_TOTAL=$(timeout $HEALTH_CHECK_CMD_TIMEOUT $COMPOSE_CMD ps -a --services 2>/dev/null | wc -l | tr -d " " || echo "0")
 
     # Get Dockge state and health
-    dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT compose_with_env ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+    dockge_ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT $COMPOSE_CMD ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
 
     # Parse health states
     dockge_healthy=0
@@ -407,7 +404,7 @@ set +e
         echo "📋 Capturing logs from failed/unhealthy Dockge containers..."
         echo "════════════════════════════════════════════════════════════════"
         cd /opt/dockge
-        dockge_ps=$(compose_with_env ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+        dockge_ps=$($COMPOSE_CMD ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
         while IFS=$'\t' read -r name service state health; do
           [ -z "$name" ] && continue
           if [ "$state" = "running" ] && [ "$health" = "unhealthy" ]; then
@@ -429,7 +426,7 @@ set +e
         echo "📋 Capturing logs from stopped Dockge containers..."
         echo "════════════════════════════════════════════════════════════════"
         cd /opt/dockge
-        dockge_ps=$(compose_with_env ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+        dockge_ps=$($COMPOSE_CMD ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
         while IFS=$'\t' read -r name service state health; do
           [ -z "$name" ] && continue
           if [ "$state" = "exited" ] || [ "$state" = "restarting" ]; then
@@ -544,8 +541,8 @@ set +e
   fi
 
   for STACK in $STACKS; do
-    STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && compose_with_env -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
-    STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && compose_with_env -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
+    STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && $COMPOSE_CMD -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
+    STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && $COMPOSE_CMD -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
     echo "  $STACK: $STACK_RUNNING/$STACK_TOTAL services"
     TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_TOTAL))
     RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
