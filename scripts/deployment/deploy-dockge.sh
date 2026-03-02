@@ -100,7 +100,7 @@ log_info "Service startup timeout: ${SERVICE_STARTUP_TIMEOUT}s"
   # Use --wait flag to ensure Dockge is healthy before proceeding
   # Critical since Dockge manages other container deployments
   # shellcheck disable=SC2086 # COMPOSE_ARGS intentionally unquoted for word splitting
-  if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --wait --remove-orphans $COMPOSE_ARGS; then
+  if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --wait --remove-orphans $COMPOSE_ARGS; then
     echo "❌ Dockge startup timed out after ${SERVICE_STARTUP_TIMEOUT}s"
     exit 1
   fi
