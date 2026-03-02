@@ -222,19 +222,14 @@ ROLLBACK_RESULT=$({
 
       cd /opt/compose/$STACK
 
-      echo "  Pulling images for $STACK..."
-      # Add timeout protection (5 minutes for image pull)
-      if ! timeout $IMAGE_PULL_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose pull; then
-        echo "❌ Failed to pull images for $STACK during $OPERATION (timeout or error)"
-        exit 1
-      fi
-
-      echo "  Starting services for $STACK..."
-      # Add timeout protection (2 minutes for service startup)
-      # Use --wait flag for atomic rollback health verification
-      # Ensures rolled-back services are healthy before proceeding
-      if ! timeout $SERVICE_STARTUP_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --wait --remove-orphans $COMPOSE_ARGS; then
-        echo "❌ Failed to start services for $STACK during $OPERATION (timeout or error)"
+      echo "  Rolling back $STACK (pull + start)..."
+      # Consolidated pull and start using --pull always
+      # --quiet-pull suppresses progress bars for cleaner CI logs
+      # --wait ensures rolled-back services are healthy before proceeding
+      # Combined timeout: IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT
+      DEPLOY_TIMEOUT=$((IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT))
+      if ! timeout $DEPLOY_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans $COMPOSE_ARGS; then
+        echo "❌ Failed to roll back $STACK during $OPERATION (timeout or error)"
         exit 1
       fi
 
