@@ -233,7 +233,7 @@ ROLLBACK_RESULT=$({
       # Add timeout protection (2 minutes for service startup)
       # Use --wait flag for atomic rollback health verification
       # Ensures rolled-back services are healthy before proceeding
-      if ! timeout $SERVICE_STARTUP_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --wait --remove-orphans $COMPOSE_ARGS; then
+      if ! timeout $SERVICE_STARTUP_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --wait --remove-orphans $COMPOSE_ARGS; then
         echo "❌ Failed to start services for $STACK during $OPERATION (timeout or error)"
         exit 1
       fi
