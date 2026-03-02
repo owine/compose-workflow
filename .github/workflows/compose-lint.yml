@@ -81,13 +81,13 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
+        uses: 1password/load-secrets-action/configure@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load GitGuardian credentials
         id: op-load-secret
-        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
+        uses: 1password/load-secrets-action@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
         with:
           unset-previous: true
         env:
@@ -125,7 +125,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Unload GitGuardian credentials
-        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
+        uses: 1password/load-secrets-action@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
         with:
           unset-previous: true
 
@@ -152,7 +152,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Run actionlint
-        uses: raven-actions/actionlint@e01d1ea33dd6a5ed517d95b4c0c357560ac6f518 # v2.1.1
+        uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2.1.2
 
   lint:
     strategy:
@@ -245,13 +245,13 @@ jobs:
     if: always()
     steps:
       - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
+        uses: 1password/load-secrets-action/configure@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load Discord webhook and user ID
         id: op-load-discord
-        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
+        uses: 1password/load-secrets-action@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
         with:
           unset-previous: true
         env:
@@ -319,6 +319,6 @@ jobs:
           avatar_url: "https://cdn-icons-png.flaticon.com/512/2103/2103633.png"
 
       - name: Unload Discord webhook
-        uses: 1password/load-secrets-action@8d0d610af187e78a2772c2d18d627f4c52d3fbfb  # v3.1.0
+        uses: 1password/load-secrets-action@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
         with:
           unset-previous: true
