@@ -317,13 +317,13 @@ jobs:
             deploy-tools-${{ runner.os }}-
 
       - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
+        uses: 1password/load-secrets-action/configure@dafbe7cb03502b260e2b2893c753c352eee545bf  # v3.2.1
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load Tailscale credentials
         id: load-tailscale-credentials
-        uses: 1password/load-secrets-action@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
+        uses: 1password/load-secrets-action@dafbe7cb03502b260e2b2893c753c352eee545bf  # v3.2.1
         with:
           unset-previous: true
         env:
@@ -339,7 +339,7 @@ jobs:
           ping: ${{ secrets.SSH_HOST }}
 
       - name: Unload Tailscale credentials
-        uses: 1password/load-secrets-action@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
+        uses: 1password/load-secrets-action@dafbe7cb03502b260e2b2893c753c352eee545bf  # v3.2.1
         with:
           unset-previous: true
 
@@ -453,7 +453,7 @@ jobs:
         id: changed-files
         if: steps.determine-previous.outputs.previous_sha != inputs.target-ref
         continue-on-error: true
-        uses: tj-actions/changed-files@7dee1b0c1557f278e5c7dc244927139d78c0e22a # v47.0.4
+        uses: tj-actions/changed-files@22103cc46bda19c2b464ffe86db46df6922fd323 # v47.0.5
         with:
           json: true
           sha: ${{ inputs.target-ref }}
@@ -878,7 +878,7 @@ jobs:
     if: always()
     steps:
       - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
+        uses: 1password/load-secrets-action/configure@dafbe7cb03502b260e2b2893c753c352eee545bf  # v3.2.1
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
@@ -896,7 +896,7 @@ jobs:
 
       - name: Load Discord webhook and user ID
         id: op-load-discord
-        uses: 1password/load-secrets-action@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
+        uses: 1password/load-secrets-action@dafbe7cb03502b260e2b2893c753c352eee545bf  # v3.2.1
         with:
           unset-previous: true
         env:
@@ -964,6 +964,6 @@ jobs:
           avatar_url: "https://cdn-icons-png.flaticon.com/512/919/919853.png"
 
       - name: Unload Discord webhook
-        uses: 1password/load-secrets-action@cb7c5acc8a2b09f96acc233de388fe361e49839a  # v3.2.0
+        uses: 1password/load-secrets-action@dafbe7cb03502b260e2b2893c753c352eee545bf  # v3.2.1
         with:
           unset-previous: true
