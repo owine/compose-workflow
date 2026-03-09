@@ -1,14 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:best-practices"
+    "config:best-practices",
+    ":semanticPrefixFixDepsChoreOthers"
   ],
   "timezone": "America/Chicago",
   "prHourlyLimit": 4,
   "prConcurrentLimit": 3,
-  "semanticCommits": "enabled",
-  "semanticCommitType": "chore",
-  "semanticCommitScope": "deps",
   "commitMessageTopic": "{{depName}}",
   "commitMessageExtra": "{{#if isDigest}}digest to {{newDigestShort}}{{else}}to {{#if isMajor}}{{prettyNewMajor}}{{else}}{{prettyNewVersion}}{{/if}}{{/if}}",
   "vulnerabilityAlerts": {
