@@ -658,7 +658,9 @@ jobs:
 
       - name: Health Check All Services
         id: health
-        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'success' || steps.deploy-existing.outcome == 'skipped') && (steps.deploy-new.outcome == 'success' || steps.deploy-new.outcome == 'skipped')
+        # Run health check after any deployment attempt (success or failure) to capture system state
+        # When a deployment fails, this provides diagnostics before rollback cleans up containers
+        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.conclusion != 'skipped' || steps.deploy-new.conclusion != 'skipped')
         continue-on-error: true
         run: |
           # Use auto-detected critical stacks if enabled, otherwise use manual input
