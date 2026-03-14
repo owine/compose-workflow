@@ -206,6 +206,50 @@ fi
       DEPLOY_TIMEOUT=$((IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT))
       if ! timeout $DEPLOY_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans $COMPOSE_ARGS; then
         echo "❌ Failed to deploy $STACK during $OPERATION (timeout or error)"
+        echo ""
+        echo "📋 Failure Diagnostics for $STACK"
+        echo "────────────────────────────────────────────────────────────────"
+
+        # Capture container states (requires op run to parse compose.yaml)
+        echo "📊 Container States:"
+        op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps -a --format 'table {{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "  ⚠️ Could not retrieve container states"
+        echo ""
+
+        # Capture logs and health output from unhealthy/failed containers (plain docker - no op run needed)
+        ps_output=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps -a --format '{{.Name}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+        while IFS=$'\t' read -r name state health; do
+          [ -z "$name" ] && continue
+          capture=false
+          case "$state" in
+            running)
+              [ "$health" = "unhealthy" ] || [ "$health" = "starting" ] && capture=true
+              ;;
+            exited|restarting)
+              capture=true
+              ;;
+          esac
+
+          if [ "$capture" = true ]; then
+            echo "🔸 Container: $name ($state / $health)"
+            echo "────────────────────────────────"
+
+            # Health check output (last 3 checks)
+            has_healthcheck=$(docker inspect --format='{{if .State.Health}}yes{{else}}no{{end}}' "$name" 2>/dev/null) || has_healthcheck="no"
+            if [ "$has_healthcheck" = "yes" ]; then
+              echo "📍 Health Check Output:"
+              docker inspect --format='Status: {{.State.Health.Status}} | FailingStreak: {{.State.Health.FailingStreak}}{{if .State.Health.Log}}{{range $i, $log := .State.Health.Log}}{{if lt $i 3}}
+  [Exit={{.ExitCode}}] {{.Output}}{{end}}{{end}}{{end}}' "$name" 2>/dev/null || echo "  Could not retrieve health output"
+              echo ""
+            fi
+
+            echo "📋 Container Logs (last 50 lines):"
+            docker logs --tail 50 --timestamps "$name" 2>&1 || echo "  ⚠️ Could not retrieve logs"
+            echo "────────────────────────────────"
+            echo ""
+          fi
+        done <<< "$ps_output"
+
+        echo "════════════════════════════════════════════════════════════════"
         exit 1
       fi
 
