@@ -211,12 +211,13 @@ fi
         echo "────────────────────────────────────────────────────────────────"
 
         # Capture container states (requires op run to parse compose.yaml)
+        # --no-masking prevents 1Password from concealing values that match secret contents
         echo "📊 Container States:"
-        op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps -a --format 'table {{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "  ⚠️ Could not retrieve container states"
+        op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps -a --format 'table {{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "  ⚠️ Could not retrieve container states"
         echo ""
 
         # Capture logs and health output from unhealthy/failed containers (plain docker - no op run needed)
-        ps_output=$(op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps -a --format '{{.Name}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+        ps_output=$(op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml ps -a --format '{{.Name}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
         while IFS=$'\t' read -r name state health; do
           [ -z "$name" ] && continue
           capture=false

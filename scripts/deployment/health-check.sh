@@ -123,7 +123,9 @@ set +e
   # Compose command prefix: resolves 1Password env vars from compose.env
   # Required because compose files reference variables (DOMAIN, APPDATA_PATH, etc.)
   # Note: Use as command prefix, not via timeout (timeout can't call shell functions)
-  COMPOSE_CMD="op run --env-file=/opt/compose/compose.env -- docker compose"
+  # --no-masking prevents 1Password from concealing secret values in command output,
+  # which would break service name parsing when a secret value matches a service name
+  COMPOSE_CMD="op run --no-masking --env-file=/opt/compose/compose.env -- docker compose"
 
   # Get arguments passed to script (stacks, has-dockge)
   TOTAL_ARGS=$#
