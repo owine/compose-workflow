@@ -596,12 +596,11 @@ jobs:
 
       - name: Detect critical stacks
         id: detect-critical
-        if: steps.backup.outputs.deployment_needed == 'true' && inputs.auto-detect-critical == true && steps.detect-changes.outputs.has_existing_stacks == 'true'
+        if: steps.backup.outputs.deployment_needed == 'true' && inputs.auto-detect-critical == true
         run: |
           ./.compose-workflow/scripts/deployment/detect-critical-stacks.sh \
-            --stacks "${{ join(fromJSON(steps.detect-changes.outputs.existing_stacks), ' ') }}" \
-            --ssh-user "${{ secrets.SSH_USER }}" \
-            --ssh-host "${{ secrets.SSH_HOST }}"
+            --stacks "${{ join(fromJSON(steps.discover-stacks.outputs.stacks), ' ') }}" \
+            --repo-dir "${{ github.workspace }}"
 
       - name: Deploy Dockge
         id: deploy-dockge
