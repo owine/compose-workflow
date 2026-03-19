@@ -1,5 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Shared Renovate preset for Docker Compose repositories",
   "extends": [
     "config:best-practices",
     ":semanticPrefixFixDepsChoreOthers"
@@ -22,9 +23,6 @@
     {
       "groupName": "All dependencies",
       "groupSlug": "all-deps",
-      "matchManagers": [
-        "github-actions"
-      ],
       "matchUpdateTypes": [
         "minor",
         "patch",
@@ -37,9 +35,6 @@
     {
       "groupName": "Major dependencies",
       "groupSlug": "all-deps-major",
-      "matchManagers": [
-        "github-actions"
-      ],
       "matchUpdateTypes": [
         "major"
       ],
