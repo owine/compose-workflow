@@ -8,6 +8,7 @@
   "timezone": "America/Chicago",
   "prHourlyLimit": 0,
   "prConcurrentLimit": 0,
+  "minimumReleaseAgeBehaviour": "timestamp-optional",
   "commitMessageTopic": "{{depName}}",
   "commitMessageExtra": "{{#if isDigest}}digest to {{newDigestShort}}{{else}}to {{#if isMajor}}{{prettyNewMajor}}{{else}}{{prettyNewVersion}}{{/if}}{{/if}}",
   "vulnerabilityAlerts": {
