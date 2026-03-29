@@ -28,6 +28,7 @@ This repository provides two main reusable workflows:
   - `repo-name`: Repository name for notifications
   - `target-repository`: Target repository to checkout
   - `target-ref`: Git reference to checkout (default: main)
+  - `discord-user-id`: 1Password reference to Discord user ID for failure mentions
   - Various GitHub event parameters for context
 
 #### 2. Deploy Workflow (`/.github/workflows/deploy.yml`)
@@ -55,6 +56,11 @@ This repository provides two main reusable workflows:
   - `has-dockge`: Boolean for Dockge deployment
   - `force-deploy`: Force deployment even if at target commit
   - `args`: Additional docker compose up arguments
+  - `auto-detect-critical`: Auto-detect critical stacks from compose labels (default: true)
+  - `critical-services`: Manual JSON array of critical stacks (when auto-detect is false)
+  - `discord-user-id`: 1Password reference to Discord user ID for failure mentions
+  - Configurable timeouts: `health-check-command-timeout`, `git-fetch-timeout`, `git-checkout-timeout`, `image-pull-timeout`, `service-startup-timeout`, `validation-env-timeout`, `validation-syntax-timeout`
+  - `failed-container-log-lines`: Lines to capture from failed containers (default: 50)
 
 ### Recent Improvements
 
@@ -170,13 +176,13 @@ The lint workflow uses modular bash scripts in `scripts/linting/` for all valida
   - GitHub Actions output helpers (`set_github_output`)
 
 #### Linting Scripts
-- **validate-stack.sh** - Stack validation (172 lines)
+- **validate-stack.sh** - Stack validation (~161 lines)
   - Parallel execution of YAML linting and Docker Compose validation
   - Comprehensive error reporting with fix suggestions
   - Temporary file management and cleanup
   - Exit code-based failure detection
 
-- **lint-summary.sh** - Summary generation (239 lines)
+- **lint-summary.sh** - Summary generation (~247 lines)
   - Aggregates results from GitGuardian, actionlint, and stack validation
   - Reproduces validation errors with detailed context
   - Generates comprehensive final status report
@@ -195,12 +201,12 @@ The lint workflow uses modular bash scripts in `scripts/linting/` for all valida
 The deploy workflow uses modular bash scripts in `scripts/deployment/` for all major operations:
 
 #### Library Files (`scripts/deployment/lib/`)
-- **ssh-helpers.sh** - SSH retry with consistent logging and operation context
+- **ssh-helpers.sh** - SSH retry with consistent logging and operation context (~119 lines)
   - `ssh_retry()` - SSH-specific retry with error code handling and context logging
   - `_get_operation_context()` - Safe operation label extraction using allowlist
   - Sources `common.sh` for consistent `log_*` output formatting
   - Security: Only outputs hardcoded operation labels, never command content
-- **common.sh** - Logging, validation, and utilities
+- **common.sh** - Logging, validation, and utilities (~94 lines)
   - Colored logging functions (`log_info`, `log_success`, `log_error`, `log_warning`)
   - Input validation (`validate_stack_name`, `validate_sha`, `validate_op_reference`)
   - GitHub Actions output helpers (`set_github_output`)
@@ -208,13 +214,13 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
 
 #### Deployment Scripts
 
-- **deploy-dockge.sh** - Dockge container management deployment (110 lines)
+- **deploy-dockge.sh** - Dockge container management deployment (~116 lines)
   - Dedicated script for Dockge deployment operations
   - Called as separate workflow step before stack deployment
   - Configurable image pull and startup timeouts
   - Used for both initial deployment and rollback scenarios
 
-- **deploy-stacks.sh** - Stack deployment orchestration (~425 lines)
+- **deploy-stacks.sh** - Stack deployment orchestration (~488 lines)
   - Parallel stack deployment with background processes
   - Exit code file-based error detection
   - Comprehensive logging with stack-specific output
@@ -224,7 +230,7 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
   - Pre-deployment validation for all stacks
   - **Note**: No longer handles Dockge deployment (moved to workflow level)
 
-- **rollback-stacks.sh** - Rollback automation (~425 lines)
+- **rollback-stacks.sh** - Rollback automation (~562 lines)
   - SHA validation and git operations
   - Dynamic stack discovery from previous commit
   - Parallel rollback execution with PID tracking
@@ -232,7 +238,7 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
   - Comprehensive error reporting
   - **Note**: No longer handles Dockge rollback (moved to workflow level)
 
-- **health-check.sh** - Service health verification (~590 lines)
+- **health-check.sh** - Service health verification (~694 lines)
   - Stack-specific service counting with accurate compose file detection
   - Dynamic retry logic based on critical service failures
   - Comprehensive health status reporting (healthy/degraded/failed stacks)
@@ -240,14 +246,19 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
   - Dockge health integration when enabled
   - Escaped parameter handling to prevent shell glob expansion
 
-- **detect-stack-changes.sh** - Stack change detection for removed/existing/new stacks (495 lines)
+- **detect-stack-changes.sh** - Stack change detection for removed/existing/new stacks (~498 lines)
   - Three-category detection: removed, existing, and new stacks
   - Multi-method detection per category (git diff, tree comparison, discovery analysis)
   - Union-based aggregation with fail-safe error handling
   - Automatic cleanup of removed stacks
   - Enables sequential deployment: existing stacks first, then new stacks
 
-- **cleanup-stack.sh** - Individual stack cleanup (87 lines)
+- **detect-critical-stacks.sh** - Critical stack auto-detection (~106 lines)
+  - Scans compose.yaml files for `com.compose.tier: infrastructure` labels
+  - Builds JSON array of critical stacks for health check and rollback
+  - Enables auto-detection without manual critical-services configuration
+
+- **cleanup-stack.sh** - Individual stack cleanup (~88 lines)
   - Single stack removal helper
   - 1Password integration for environment variables
   - Graceful handling of missing stacks
@@ -464,35 +475,34 @@ This repository contains:
 ```
 ├── .github/
 │   └── workflows/
-│       ├── compose-lint.yml     # Reusable compose lint workflow (308 lines, 54% reduction)
-│       ├── workflow-lint.yml    # Reusable workflow lint (yamllint for workflows)
-│       └── deploy.yml            # Reusable deploy workflow (783 lines, 69% reduction)
+│       ├── compose-lint.yml     # Reusable compose lint workflow (~324 lines)
+│       ├── workflow-lint.yml    # Reusable workflow lint (~90 lines)
+│       └── deploy.yml            # Reusable deploy workflow (~970 lines)
 ├── scripts/
 │   ├── linting/                  # Modular linting scripts
 │   │   ├── lib/
-│   │   │   ├── env-helpers.sh   # Environment file generation (73 lines)
-│   │   │   └── common.sh        # Utilities and logging (78 lines)
-│   │   ├── validate-stack.sh    # Stack validation (172 lines)
-│   │   ├── lint-summary.sh      # Summary generation (239 lines)
+│   │   │   ├── env-helpers.sh   # Environment file generation (~62 lines)
+│   │   │   └── common.sh        # Utilities and logging (~75 lines)
+│   │   ├── validate-stack.sh    # Stack validation (~161 lines)
+│   │   ├── lint-summary.sh      # Summary generation (~247 lines)
 │   │   └── .shellcheckrc        # ShellCheck configuration
 │   ├── deployment/               # Modular deployment scripts
 │   │   ├── lib/
-│   │   │   ├── ssh-helpers.sh   # SSH retry with context logging (120 lines)
-│   │   │   └── common.sh        # Utilities and validation (86 lines)
-│   │   ├── health-check.sh      # Health verification (584 lines)
-│   │   ├── deploy-stacks.sh     # Deployment orchestration (690 lines)
-│   │   ├── detect-stack-changes.sh  # Stack change detection - removed/existing/new (495 lines)
-│   │   ├── cleanup-stack.sh     # Individual stack cleanup (87 lines)
-│   │   ├── rollback-stacks.sh   # Rollback automation (495 lines)
-│   │   ├── .shellcheckrc        # ShellCheck configuration
-│   │   └── IMPLEMENTATION_GUIDE.md  # Refactoring documentation
+│   │   │   ├── ssh-helpers.sh   # SSH retry with context logging (~119 lines)
+│   │   │   └── common.sh        # Utilities and validation (~94 lines)
+│   │   ├── health-check.sh      # Health verification (~694 lines)
+│   │   ├── deploy-stacks.sh     # Deployment orchestration (~488 lines)
+│   │   ├── detect-stack-changes.sh  # Stack change detection - removed/existing/new (~498 lines)
+│   │   ├── detect-critical-stacks.sh  # Critical stack auto-detection from labels (~106 lines)
+│   │   ├── cleanup-stack.sh     # Individual stack cleanup (~88 lines)
+│   │   ├── rollback-stacks.sh   # Rollback automation (~562 lines)
+│   │   └── .shellcheckrc        # ShellCheck configuration
 │   └── testing/
 │       ├── test-workflow.sh     # Workflow testing script
 │       ├── validate-compose.sh  # Compose validation script
 │       └── README.md            # Testing documentation
 ├── CLAUDE.md                    # This file - Claude Code guidance
-├── README.md                    # Repository documentation
-└── renovate.json                # Renovate configuration for dependency updates
+└── README.md                    # Repository documentation
 ```
 
 ### Dependency Management
