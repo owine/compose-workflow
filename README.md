@@ -53,6 +53,7 @@ jobs:
       github-pull-base-sha: ${{ github.event.pull_request.base.sha }}
       github-default-branch: ${{ github.event.repository.default_branch }}
       event-name: ${{ github.event_name }}
+      discord-user-id: "op://Docker/discord-github-notifications/user_id"
 ```
 
 ### 2. Deploy Workflow (`deploy.yml`)
@@ -69,7 +70,10 @@ Handles production deployments with comprehensive safety features and monitoring
 - **SSH Optimization**: Connection multiplexing for performance
 - **Tailscale Integration**: Secure zero-trust networking
 - **Docker Cleanup**: Remove unused images post-deployment
-- **Rich Notifications**: Detailed Discord deployment reports
+- **Rich Notifications**: Detailed Discord deployment reports with user mentions
+- **Critical Stack Detection**: Auto-detect critical infrastructure from compose labels
+- **Configurable Timeouts**: Per-operation timeouts for git, image pull, startup, and validation
+- **Failed Container Logs**: Capture log lines from unhealthy containers for debugging
 
 **Usage:**
 ```yaml
@@ -92,13 +96,12 @@ jobs:
     uses: owine/compose-workflow/.github/workflows/deploy.yml@main
     secrets: inherit
     with:
-      stacks: '["stack1", "stack2", "stack3"]'
       webhook-url: "op://Docker/discord-github-notifications/webhook_url"
       repo-name: "my-docker-repo"
       target-ref: ${{ github.sha }}
       has-dockge: true
       force-deploy: ${{ inputs.force-deploy || false }}
-      args: "--detach --remove-orphans"
+      discord-user-id: "op://Docker/discord-github-notifications/user_id"
 ```
 
 ## Required Configuration
