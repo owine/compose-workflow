@@ -278,49 +278,77 @@ fi
     done
   }
 
-  # Pre-deployment validation function
-  validate_all_stacks() {
-    echo "🔍 Pre-deployment validation of all stacks..."
-    local validation_failed=false
+  # Pre-deployment validation function for a single stack
+  validate_stack() {
+    local STACK=$1
+    local LOGFILE="/tmp/validate_${STACK}.log"
+    local EXITCODEFILE="/tmp/validate_${STACK}.exitcode"
 
-    for STACK in $STACKS; do
+    {
       echo "  Validating $STACK..."
 
       # Check if stack directory exists
       if [ ! -d "/opt/compose/$STACK" ]; then
         echo "❌ $STACK: Directory /opt/compose/$STACK not found"
-        validation_failed=true
-        continue
+        echo "1" > "$EXITCODEFILE"
+        return
       fi
 
       cd "/opt/compose/$STACK" || {
         echo "❌ $STACK: Cannot access directory"
-        validation_failed=true
-        continue
+        echo "1" > "$EXITCODEFILE"
+        return
       }
 
       # Check if compose.yaml exists
       if [ ! -f "compose.yaml" ]; then
         echo "❌ $STACK: compose.yaml not found"
-        validation_failed=true
-        continue
+        echo "1" > "$EXITCODEFILE"
+        return
       fi
 
       # Validate 1Password environment access and Docker Compose config
       if ! timeout $VALIDATION_ENV_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --services >/dev/null 2>&1; then
         echo "❌ $STACK: Environment validation failed (1Password or compose config error)"
-        validation_failed=true
-        continue
+        echo "1" > "$EXITCODEFILE"
+        return
       fi
 
       # Quick syntax validation
       if ! timeout $VALIDATION_SYNTAX_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml config --quiet 2>/dev/null; then
         echo "❌ $STACK: Docker Compose syntax validation failed"
-        validation_failed=true
-        continue
+        echo "1" > "$EXITCODEFILE"
+        return
       fi
 
       echo "✅ $STACK: Pre-deployment validation passed"
+      echo "0" > "$EXITCODEFILE"
+    } > "$LOGFILE" 2>&1
+  }
+
+  # Run all stack validations in parallel
+  validate_all_stacks() {
+    echo "🔍 Pre-deployment validation of all stacks (parallel)..."
+    local PIDS=""
+
+    for STACK in $STACKS; do
+      validate_stack "$STACK" &
+      PIDS="$PIDS $!"
+    done
+
+    # Wait for all validations to complete
+    for PID in $PIDS; do
+      wait "$PID" 2>/dev/null
+    done
+
+    # Collect results
+    local validation_failed=false
+    for STACK in $STACKS; do
+      cat "/tmp/validate_${STACK}.log" 2>/dev/null
+      if [ -f "/tmp/validate_${STACK}.exitcode" ] && [ "$(cat "/tmp/validate_${STACK}.exitcode")" != "0" ]; then
+        validation_failed=true
+      fi
+      rm -f "/tmp/validate_${STACK}.log" "/tmp/validate_${STACK}.exitcode" 2>/dev/null
     done
 
     if [ "$validation_failed" = true ]; then
