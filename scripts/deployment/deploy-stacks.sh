@@ -171,7 +171,7 @@ fi
     exit 1
   fi
 
-  if ! timeout $GIT_CHECKOUT_TIMEOUT git -C /opt/compose/ checkout $TARGET_REF; then
+  if ! timeout $GIT_CHECKOUT_TIMEOUT git -C /opt/compose/ checkout --force $TARGET_REF; then
     echo "❌ Git checkout timed out after ${GIT_CHECKOUT_TIMEOUT}s"
     exit 1
   fi
