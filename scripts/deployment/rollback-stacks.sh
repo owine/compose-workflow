@@ -167,7 +167,7 @@ ROLLBACK_RESULT=$({
     exit 1
   fi
 
-  if ! timeout $GIT_CHECKOUT_TIMEOUT git -C /opt/compose/ checkout $PREVIOUS_SHA; then
+  if ! timeout $GIT_CHECKOUT_TIMEOUT git -C /opt/compose/ checkout --force $PREVIOUS_SHA; then
     echo "❌ Git checkout timed out after ${GIT_CHECKOUT_TIMEOUT}s"
     exit 1
   fi
