@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Script Name: deploy-stacks.sh
 # Purpose: Deploy Docker Compose stacks with parallel execution and comprehensive error handling
-# Usage: ./deploy-stacks.sh --stacks "stack1 stack2" --target-ref abc123 --ssh-user user --ssh-host host --op-token token
+# Usage: ./deploy-stacks.sh --stacks "stack1 stack2" --target-ref abc123 --ssh-user user --ssh-host host --op-token token [--has-dockge true]
 
 set -euo pipefail
 
@@ -19,6 +19,7 @@ COMPOSE_ARGS=""
 SSH_USER=""
 SSH_HOST=""
 OP_TOKEN=""
+HAS_DOCKGE="false"
 GIT_FETCH_TIMEOUT="60"
 GIT_CHECKOUT_TIMEOUT="30"
 IMAGE_PULL_TIMEOUT="300"
@@ -51,6 +52,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --op-token)
       OP_TOKEN="$2"
+      shift 2
+      ;;
+    --has-dockge)
+      HAS_DOCKGE="$2"
       shift 2
       ;;
     --git-fetch-timeout)
@@ -155,13 +160,14 @@ fi
   STACKS="${@:1:$((TOTAL_ARGS-2))}"
 
   # OP_SERVICE_ACCOUNT_TOKEN was passed as $1 (more secure than long-lived env vars)
-  # Timeouts are passed via 'env' command on remote side
+  # Timeouts and flags are passed via 'env' command on remote side
   GIT_FETCH_TIMEOUT=${GIT_FETCH_TIMEOUT:-60}
   GIT_CHECKOUT_TIMEOUT=${GIT_CHECKOUT_TIMEOUT:-30}
   IMAGE_PULL_TIMEOUT=${IMAGE_PULL_TIMEOUT:-300}
   SERVICE_STARTUP_TIMEOUT=${SERVICE_STARTUP_TIMEOUT:-120}
   VALIDATION_ENV_TIMEOUT=${VALIDATION_ENV_TIMEOUT:-30}
   VALIDATION_SYNTAX_TIMEOUT=${VALIDATION_SYNTAX_TIMEOUT:-30}
+  HAS_DOCKGE=${HAS_DOCKGE:-false}
 
   echo "Updating repository to $TARGET_REF..."
 
@@ -177,6 +183,26 @@ fi
   fi
 
   echo "✅ Repository updated to $TARGET_REF"
+
+  # Deploy Dockge before stacks (requires updated compose.env from git checkout)
+  if [ "$HAS_DOCKGE" = "true" ]; then
+    echo ""
+    echo "🚀 Deploying Dockge..."
+    if cd /opt/dockge; then
+      DOCKGE_TIMEOUT=$((IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT))
+      # shellcheck disable=SC2086 # COMPOSE_ARGS intentionally unquoted for word splitting
+      if timeout "$DOCKGE_TIMEOUT" op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans $COMPOSE_ARGS; then
+        echo "✅ Dockge deployed successfully"
+      else
+        echo "❌ Dockge deployment failed (timeout or error after ${DOCKGE_TIMEOUT}s)"
+        exit 1
+      fi
+      cd /opt/compose
+    else
+      echo "❌ Failed to change to /opt/dockge directory"
+      exit 1
+    fi
+  fi
 
   # Shared function to deploy or rollback a single stack
   # This eliminates code duplication between deploy and rollback operations
@@ -482,7 +508,7 @@ fi
 
   echo "🎉 All stacks deployed successfully in parallel!"
 EOF
-} | ssh_retry 3 10 "ssh $SSH_USER@$SSH_HOST env GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $TARGET_REF_ESCAPED $COMPOSE_ARGS_ESCAPED"
+} | ssh_retry 3 10 "ssh $SSH_USER@$SSH_HOST env GIT_FETCH_TIMEOUT=\"$GIT_FETCH_TIMEOUT\" GIT_CHECKOUT_TIMEOUT=\"$GIT_CHECKOUT_TIMEOUT\" IMAGE_PULL_TIMEOUT=\"$IMAGE_PULL_TIMEOUT\" SERVICE_STARTUP_TIMEOUT=\"$SERVICE_STARTUP_TIMEOUT\" VALIDATION_ENV_TIMEOUT=\"$VALIDATION_ENV_TIMEOUT\" VALIDATION_SYNTAX_TIMEOUT=\"$VALIDATION_SYNTAX_TIMEOUT\" HAS_DOCKGE=\"$HAS_DOCKGE\" /bin/bash -s \"$OP_TOKEN\" $STACKS_ESCAPED $TARGET_REF_ESCAPED $COMPOSE_ARGS_ESCAPED"
 
 log_success "Deployment completed successfully"
 exit 0

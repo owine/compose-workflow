@@ -602,22 +602,9 @@ jobs:
             --stacks "${{ join(fromJSON(steps.discover-stacks.outputs.stacks), ' ') }}" \
             --repo-dir "${{ github.workspace }}"
 
-      - name: Deploy Dockge
-        id: deploy-dockge
-        if: steps.backup.outputs.deployment_needed == 'true' && inputs.has-dockge == true
-        continue-on-error: true
-        run: |
-          ./.compose-workflow/scripts/deployment/deploy-dockge.sh \
-            --ssh-user "${{ secrets.SSH_USER }}" \
-            --ssh-host "${{ secrets.SSH_HOST }}" \
-            --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
-            --image-timeout "${{ inputs.image-pull-timeout }}" \
-            --startup-timeout "${{ inputs.service-startup-timeout }}" \
-            --compose-args "${{ inputs.args || '' }}"
-
       - name: Deploy Existing Stacks
         id: deploy-existing
-        if: steps.backup.outputs.deployment_needed == 'true' && steps.detect-changes.outputs.has_existing_stacks == 'true' && (inputs.has-dockge == false || steps.deploy-dockge.outcome == 'success')
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.detect-changes.outputs.has_existing_stacks == 'true'
         continue-on-error: true
         run: |
           echo "🔄 Deploying existing stacks (updates)..."
@@ -628,6 +615,7 @@ jobs:
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
             --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
+            --has-dockge "${{ inputs.has-dockge }}" \
             --git-fetch-timeout "${{ inputs.git-fetch-timeout }}" \
             --git-checkout-timeout "${{ inputs.git-checkout-timeout }}" \
             --image-pull-timeout "${{ inputs.image-pull-timeout }}" \
@@ -637,7 +625,7 @@ jobs:
 
       - name: Deploy New Stacks
         id: deploy-new
-        if: steps.backup.outputs.deployment_needed == 'true' && steps.detect-changes.outputs.has_new_stacks == 'true' && (inputs.has-dockge == false || steps.deploy-dockge.outcome == 'success') && (steps.detect-changes.outputs.has_existing_stacks == 'false' || steps.deploy-existing.outcome == 'success')
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.detect-changes.outputs.has_new_stacks == 'true' && (steps.detect-changes.outputs.has_existing_stacks == 'false' || steps.deploy-existing.outcome == 'success')
         continue-on-error: true
         run: |
           echo "✨ Deploying new stacks (fresh deployments)..."
@@ -648,6 +636,7 @@ jobs:
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
             --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
+            --has-dockge "${{ inputs.has-dockge }}" \
             --git-fetch-timeout "${{ inputs.git-fetch-timeout }}" \
             --git-checkout-timeout "${{ inputs.git-checkout-timeout }}" \
             --image-pull-timeout "${{ inputs.image-pull-timeout }}" \
