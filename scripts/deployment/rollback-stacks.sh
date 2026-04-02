@@ -200,7 +200,7 @@ ROLLBACK_RESULT=$({
   # Will be converted to space-delimited in rollback-health step
   echo "DISCOVERED_ROLLBACK_STACKS=$ROLLBACK_STACKS"
 
-  # Note: Dockge rollback is now handled by deploy-dockge.sh before this SSH session
+  # Note: Dockge is not rolled back - it's a management UI that only needs forward deployment
 
   # Shared function to deploy or rollback a single stack
   # This eliminates code duplication between deploy and rollback operations

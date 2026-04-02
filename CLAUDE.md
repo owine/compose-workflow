@@ -72,7 +72,7 @@ This repository provides two main reusable workflows:
 6. **SSH Optimization**: Connection multiplexing and retry mechanisms
 7. **Parallel Execution**: All lint jobs (GitGuardian, YAML lint) run concurrently
 8. **Stack Removal Detection**: Automatic cleanup of removed stacks with fail-safe operation
-9. **Dockge Workflow Integration**: Dockge deployment handled at workflow level for cleaner separation of concerns
+9. **Dockge Integration**: Dockge deployment consolidated into deploy-stacks.sh, runs after git checkout to ensure compose.env is current
 
 ### Benefits of Centralization
 
@@ -214,13 +214,9 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
 
 #### Deployment Scripts
 
-- **deploy-dockge.sh** - Dockge container management deployment (~116 lines)
-  - Dedicated script for Dockge deployment operations
-  - Called as separate workflow step before stack deployment
-  - Configurable image pull and startup timeouts
-  - Used for both initial deployment and rollback scenarios
-
-- **deploy-stacks.sh** - Stack deployment orchestration (~488 lines)
+- **deploy-stacks.sh** - Stack deployment orchestration (~505 lines)
+  - Git checkout to update server repository (including compose.env)
+  - Optional Dockge deployment via `--has-dockge` flag (runs after git checkout, before stacks)
   - Parallel stack deployment with background processes
   - Exit code file-based error detection
   - Comprehensive logging with stack-specific output
@@ -228,7 +224,6 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
   - Image pull and service startup with retry logic
   - **Docker Compose --wait integration for atomic health verification**
   - Pre-deployment validation for all stacks
-  - **Note**: No longer handles Dockge deployment (moved to workflow level)
 
 - **rollback-stacks.sh** - Rollback automation (~562 lines)
   - SHA validation and git operations
@@ -236,7 +231,7 @@ The deploy workflow uses modular bash scripts in `scripts/deployment/` for all m
   - Parallel rollback execution with PID tracking
   - Critical service failure detection
   - Comprehensive error reporting
-  - **Note**: No longer handles Dockge rollback (moved to workflow level)
+  - **Note**: Dockge is not rolled back (management UI only needs forward deployment)
 
 - **health-check.sh** - Service health verification (~694 lines)
   - Stack-specific service counting with accurate compose file detection
