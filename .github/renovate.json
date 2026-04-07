@@ -4,47 +4,49 @@
     "config:best-practices",
     ":semanticPrefixFixDepsChoreOthers"
   ],
+  "labels": [
+    "dependencies"
+  ],
   "timezone": "America/Chicago",
+  "schedule": [
+    "on monday"
+  ],
+  "automergeSchedule": [
+    "at any time"
+  ],
+  "rangeStrategy": "bump",
   "prHourlyLimit": 0,
   "prConcurrentLimit": 0,
-  "minimumReleaseAgeBehaviour": "timestamp-optional",
-  "commitMessageTopic": "{{depName}}",
-  "commitMessageExtra": "{{#if isDigest}}digest to {{newDigestShort}}{{else}}to {{#if isMajor}}{{prettyNewMajor}}{{else}}{{prettyNewVersion}}{{/if}}{{/if}}",
-  "vulnerabilityAlerts": {
+  "lockFileMaintenance": {
     "enabled": true,
-    "labels": [
-      "security",
-      "dependencies"
-    ],
     "automerge": true
   },
   "packageRules": [
     {
-      "groupName": "All dependencies",
-      "groupSlug": "all-deps",
-      "matchManagers": [
-        "github-actions"
-      ],
+      "description": "Group all non-major updates into a single PR",
       "matchUpdateTypes": [
         "minor",
         "patch",
-        "pin",
-        "digest"
+        "digest",
+        "pin"
       ],
+      "groupName": "all non-major dependencies",
       "automerge": true,
-      "minimumReleaseAge": "1 hour"
+      "ignoreTests": true
     },
     {
-      "groupName": "Major dependencies",
-      "groupSlug": "all-deps-major",
-      "matchManagers": [
-        "github-actions"
-      ],
+      "description": "Major updates - separate PRs for review",
       "matchUpdateTypes": [
         "major"
       ],
-      "automerge": true,
-      "minimumReleaseAge": "3 days"
+      "automerge": false
+    },
+    {
+      "description": "Docker-compose - disable digest pinning",
+      "matchManagers": [
+        "docker-compose"
+      ],
+      "pinDigests": false
     }
   ]
 }
