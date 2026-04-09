@@ -191,7 +191,7 @@ fi
     if cd /opt/dockge; then
       DOCKGE_TIMEOUT=$((IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT))
       # shellcheck disable=SC2086 # COMPOSE_ARGS intentionally unquoted for word splitting
-      if timeout "$DOCKGE_TIMEOUT" op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans $COMPOSE_ARGS; then
+      if timeout "$DOCKGE_TIMEOUT" op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans $COMPOSE_ARGS; then
         echo "✅ Dockge deployed successfully"
       else
         echo "❌ Dockge deployment failed (timeout or error after ${DOCKGE_TIMEOUT}s)"
@@ -230,7 +230,7 @@ fi
       # --wait blocks until all services with healthchecks are healthy
       # Combined timeout: IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT
       DEPLOY_TIMEOUT=$((IMAGE_PULL_TIMEOUT + SERVICE_STARTUP_TIMEOUT))
-      if ! timeout $DEPLOY_TIMEOUT op run --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans $COMPOSE_ARGS; then
+      if ! timeout $DEPLOY_TIMEOUT op run --no-masking --env-file=/opt/compose/compose.env -- docker compose -f compose.yaml up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans $COMPOSE_ARGS; then
         echo "❌ Failed to deploy $STACK during $OPERATION (timeout or error)"
         echo ""
         echo "📋 Failure Diagnostics for $STACK"
