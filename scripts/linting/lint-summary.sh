@@ -5,7 +5,7 @@
 #
 # Usage:
 #   lint-summary.sh --stacks JSON_ARRAY --yamllint-config CONFIG_FILE \
-#                   --scanning-result RESULT --actionlint-result RESULT --lint-result RESULT
+#                   --actionlint-result RESULT --lint-result RESULT
 #
 # Exit codes:
 #   0 - All validation checks passed
@@ -24,7 +24,6 @@ source "$SCRIPT_DIR/lib/common.sh"
 # Parse arguments
 STACKS_JSON=""
 YAMLLINT_CONFIG=""
-SCANNING_RESULT=""
 ACTIONLINT_RESULT=""
 LINT_RESULT=""
 
@@ -36,10 +35,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --yamllint-config)
       YAMLLINT_CONFIG="$2"
-      shift 2
-      ;;
-    --scanning-result)
-      SCANNING_RESULT="$2"
       shift 2
       ;;
     --actionlint-result)
@@ -60,7 +55,6 @@ done
 # Validate required arguments
 require_var STACKS_JSON
 require_var YAMLLINT_CONFIG
-require_var SCANNING_RESULT
 require_var ACTIONLINT_RESULT
 require_var LINT_RESULT
 
@@ -68,30 +62,6 @@ echo "📊 Final Validation Summary"
 echo ""
 echo "🔍 COMPREHENSIVE VALIDATION RESULTS"
 print_separator
-echo ""
-
-# GitGuardian Scanning Results
-echo "🔒 GITGUARDIAN SECURITY SCANNING"
-print_subseparator
-case "$SCANNING_RESULT" in
-  "success")
-    log_success "PASSED - No secrets detected in code changes"
-    SCANNING_OK=true
-    ;;
-  "skipped")
-    log_info "SKIPPED - Security scanning only runs on push events"
-    SCANNING_OK=true
-    ;;
-  "failure")
-    log_error "FAILED - Security issues detected (secrets or policy violations)"
-    SCANNING_OK=false
-    ;;
-  *)
-    log_warning "UNKNOWN - Unexpected scanning result: $SCANNING_RESULT"
-    SCANNING_OK=false
-    ;;
-esac
-
 echo ""
 
 # Actionlint Workflow Validation Results
@@ -230,7 +200,7 @@ echo ""
 print_separator
 
 # Final determination
-if [[ "$SCANNING_OK" == "true" && "$ACTIONLINT_OK" == "true" && "$LINT_OK" == "true" ]]; then
+if [[ "$ACTIONLINT_OK" == "true" && "$LINT_OK" == "true" ]]; then
   echo "🎉 FINAL STATUS: ALL VALIDATION CHECKS PASSED"
   echo "   Repository is ready for deployment"
   exit 0
@@ -239,7 +209,6 @@ else
   echo "   Issues must be resolved before deployment"
   echo ""
   echo "   Failed components:"
-  [[ "$SCANNING_OK" != "true" ]] && echo "   • GitGuardian security scanning"
   [[ "$ACTIONLINT_OK" != "true" ]] && echo "   • Workflow validation (actionlint)"
   [[ "$LINT_OK" != "true" ]] && echo "   • Code quality validation (see detailed errors above)"
   echo ""

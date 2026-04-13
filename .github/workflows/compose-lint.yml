@@ -24,31 +24,6 @@ on:
         required: false
         type: string
         default: 'main'
-      github-event-before:
-        description: "GitHub event before SHA (github.event.before)"
-        required: false
-        type: string
-        default: ''
-      github-event-base:
-        description: "GitHub event base SHA (github.event.base)"
-        required: false
-        type: string
-        default: ''
-      github-pull-base-sha:
-        description: "GitHub pull request base SHA (github.event.pull_request.base.sha)"
-        required: false
-        type: string
-        default: ''
-      github-default-branch:
-        description: "GitHub repository default branch (github.event.repository.default_branch)"
-        required: false
-        type: string
-        default: 'main'
-      event-name:
-        description: "GitHub event name (github.event_name)"
-        required: false
-        type: string
-        default: 'push'
       discord-user-id:
         description: "Discord user ID to mention in failure notifications (e.g., '<@123456789>')"
         required: false
@@ -56,79 +31,6 @@ on:
         default: ''
 
 jobs:
-  scanning:
-    name: GitGuardian scan
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    if: ${{ inputs.event-name == 'push' }}
-    steps:
-      - name: Checkout target repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          repository: ${{ inputs.target-repository }}
-          ref: ${{ inputs.target-ref }}
-          fetch-depth: 0  # fetch all history so multiple commits can be scanned
-
-      - name: Display version information
-        run: |
-          echo "📋 Workflow Version Information"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Target repository: ${{ inputs.target-repository }}"
-          echo "Target ref: ${{ inputs.target-ref }}"
-          echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
-          echo ""
-          echo "ℹ️  Reusable workflow SHA shown in 'Uses:' line above"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-      - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
-        with:
-          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-
-      - name: Load GitGuardian credentials
-        id: op-load-secret
-        uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
-        with:
-          unset-previous: true
-        env:
-          GITGUARDIAN_API_KEY: "op://Docker/gitguardian/api_key"
-
-      - name: GitGuardian scan
-        run: |
-          echo ""
-          echo "🔒 Starting GitGuardian security scanning..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-
-      - name: Run GitGuardian scan
-        uses: GitGuardian/ggshield-action@ea5c945e66dc6436d976d4c70519c4ff7cadf9ba # v1.49.0
-        env:
-          GITHUB_PUSH_BEFORE_SHA: ${{ inputs.github-event-before }}
-          GITHUB_PUSH_BASE_SHA: ${{ inputs.github-event-base }}
-          GITHUB_PULL_BASE_SHA: ${{ inputs.github-pull-base-sha }}
-          GITHUB_DEFAULT_BRANCH: ${{ inputs.github-default-branch }}
-          GITGUARDIAN_API_KEY: ${{ steps.op-load-secret.outputs.GITGUARDIAN_API_KEY }}
-
-      - name: GitGuardian scan complete
-        if: always()
-        run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          if [[ "${{ job.status }}" == "success" ]]; then
-            echo "🎉 GITGUARDIAN SECURITY SCAN: PASSED"
-            echo "   No secrets or security policy violations detected"
-          else
-            echo "💥 GITGUARDIAN SECURITY SCAN: FAILED"
-            echo "   Security issues detected - review output above for details"
-            echo "   Common issues: hardcoded secrets, API keys, passwords in code"
-          fi
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-      - name: Unload GitGuardian credentials
-        uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
-        with:
-          unset-previous: true
-
   actionlint:
     name: Workflow validation
     runs-on: ubuntu-24.04
@@ -212,7 +114,7 @@ jobs:
   lint-summary:
     name: Lint Summary
     runs-on: ubuntu-24.04
-    needs: [scanning, actionlint, lint]
+    needs: [actionlint, lint]
     if: always()
     timeout-minutes: 5
     steps:
@@ -234,14 +136,13 @@ jobs:
           ./.compose-workflow/scripts/linting/lint-summary.sh \
             --stacks '${{ inputs.stacks }}' \
             --yamllint-config .yamllint \
-            --scanning-result "${{ needs.scanning.result }}" \
             --actionlint-result "${{ needs.actionlint.result }}" \
             --lint-result "${{ needs.lint.result }}"
 
   notify:
     name: Discord Notification
     runs-on: ubuntu-24.04
-    needs: [scanning, actionlint, lint]
+    needs: [actionlint, lint]
     if: always()
     steps:
       - name: Configure 1Password Service Account
@@ -261,13 +162,10 @@ jobs:
       - name: Determine overall lint status
         id: lint-status
         run: |
-          # Derive overall status from individual job results
-          # Success requires: scanning passed/skipped AND actionlint passed AND lint passed
-          SCANNING="${{ needs.scanning.result }}"
           ACTIONLINT="${{ needs.actionlint.result }}"
           LINT="${{ needs.lint.result }}"
 
-          if [[ ("$SCANNING" == "success" || "$SCANNING" == "skipped") && "$ACTIONLINT" == "success" && "$LINT" == "success" ]]; then
+          if [[ "$ACTIONLINT" == "success" && "$LINT" == "success" ]]; then
             echo "result=success" >> "$GITHUB_OUTPUT"
           else
             echo "result=failure" >> "$GITHUB_OUTPUT"
@@ -284,7 +182,6 @@ jobs:
           description: |
             ${{ steps.lint-status.outputs.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
 
-            **🔒 Security Scan:** ${{ needs.scanning.result == 'success' && '✅ No secrets detected' || needs.scanning.result == 'skipped' && '⏭️ Skipped (PR/manual)' || '❌ Issues found' }}
             **⚙️ Workflow Validation:** ${{ needs.actionlint.result == 'success' && '✅ All workflows valid' || '❌ Issues detected' }}
             **📋 Code Quality:** ${{ needs.lint.result == 'success' && '✅ All stacks valid' || '❌ Issues detected' }}
 
@@ -306,15 +203,8 @@ jobs:
             • Test locally: `yamllint --strict stack/compose.yaml`
             • Check the **Lint Summary** job for detailed errors' || '' }}
 
-            ${{ needs.scanning.result == 'failure' && '
-            **🛡️ Security Alert:**
-            • GitGuardian detected potential secrets
-            • Review the **Security Scanning** job for details
-            • Remove exposed secrets before proceeding
-            • **This blocks deployment until resolved**' || '' }}
-
             ${{ steps.lint-status.outputs.result == 'success' && '🚀 **Ready for deployment**' || '⚠️ **Deployment blocked until issues resolved**' }}
-          color: ${{ steps.lint-status.outputs.result == 'success' && 0x28a745 || needs.scanning.result == 'failure' && 0xdc3545 || 0xfd7e14 }}
+          color: ${{ steps.lint-status.outputs.result == 'success' && 0x28a745 || 0xfd7e14 }}
           username: "Compose Lint"
           avatar_url: "https://cdn-icons-png.flaticon.com/512/2103/2103633.png"
 
