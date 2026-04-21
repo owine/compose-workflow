@@ -149,6 +149,10 @@ set +e
   # Set failed container log lines (default: 50, set to 0 to disable)
   FAILED_LOG_LINES=${FAILED_CONTAINER_LOG_LINES:-50}
 
+  # Warm up 1Password session before per-stack checks to avoid cold-session
+  # timeouts when the first op run call takes longer than HEALTH_CHECK_CMD_TIMEOUT
+  op run --no-masking --env-file=/opt/compose/compose.env -- true >/dev/null 2>&1 || true
+
   echo "🔍 Starting health status check (post --wait deployment)..."
 
   # Function to capture logs from failed/unhealthy containers

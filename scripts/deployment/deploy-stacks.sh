@@ -387,6 +387,10 @@ fi
     return 0
   }
 
+  # Warm up 1Password session before parallel validation to avoid cold-session
+  # authentication failures when multiple op run calls race simultaneously
+  op run --env-file=/opt/compose/compose.env -- true >/dev/null 2>&1 || true
+
   # Run pre-deployment validation
   if ! validate_all_stacks; then
     echo "DEPLOYMENT_STATUS=failed_validation"
