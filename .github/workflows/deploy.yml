@@ -636,7 +636,6 @@ jobs:
             --ssh-user "${{ secrets.SSH_USER }}" \
             --ssh-host "${{ secrets.SSH_HOST }}" \
             --op-token "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}" \
-            --has-dockge "${{ inputs.has-dockge }}" \
             --git-fetch-timeout "${{ inputs.git-fetch-timeout }}" \
             --git-checkout-timeout "${{ inputs.git-checkout-timeout }}" \
             --image-pull-timeout "${{ inputs.image-pull-timeout }}" \
@@ -668,6 +667,24 @@ jobs:
             --critical-services "$CRITICAL_SERVICES" \
             --failed-container-log-lines "${{ inputs.failed-container-log-lines }}"
 
+      - name: Clean up failed new stacks
+        id: cleanup-failed-new
+        # New stacks aren't in the previous commit, so rollback won't touch them.
+        # If deploy-new failed, tear them down so broken containers don't hold ports
+        # or restart-loop. Runs after health-check so diagnostics are captured first.
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.deploy-new.outcome == 'failure'
+        continue-on-error: true
+        env:
+          NEW_STACKS: ${{ steps.detect-changes.outputs.new_stacks }}
+        run: |
+          echo "🧹 Cleaning up failed new stacks (compose down)..."
+          for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
+            ./.compose-workflow/scripts/deployment/cleanup-stack.sh \
+              --stack-name "$stack" \
+              --ssh-user "${{ secrets.SSH_USER }}" \
+              --ssh-host "${{ secrets.SSH_HOST }}" || echo "⚠️ cleanup of $stack failed, continuing"
+          done
+
       - name: Cleanup unused images
         id: cleanup
         if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'success' || steps.deploy-existing.outcome == 'skipped') && (steps.deploy-new.outcome == 'success' || steps.deploy-new.outcome == 'skipped') && steps.health.outcome == 'success'
@@ -686,7 +703,9 @@ jobs:
 
       - name: Rollback to Previous Version
         id: rollback
-        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'failure' || steps.deploy-new.outcome == 'failure' || steps.health.outcome == 'failure')
+        # Skip rollback on first deployment (previous_sha='unknown') — there's nothing to roll back to.
+        # Failed new stacks are already torn down by the 'Clean up failed new stacks' step above.
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.backup.outputs.previous_sha != 'unknown' && (steps.deploy-existing.outcome == 'failure' || steps.deploy-new.outcome == 'failure' || steps.health.outcome == 'failure')
         continue-on-error: true
         run: |
           echo "🔄 **INITIATING ROLLBACK**"
@@ -720,7 +739,7 @@ jobs:
       # visibility into what services are running, which is critical for incident response
       - name: Verify Rollback Health
         id: rollback-health
-        if: steps.backup.outputs.deployment_needed == 'true' && (steps.deploy-existing.outcome == 'failure' || steps.deploy-new.outcome == 'failure' || steps.health.outcome == 'failure') && steps.rollback.conclusion != 'skipped'
+        if: steps.backup.outputs.deployment_needed == 'true' && steps.backup.outputs.previous_sha != 'unknown' && (steps.deploy-existing.outcome == 'failure' || steps.deploy-new.outcome == 'failure' || steps.health.outcome == 'failure') && steps.rollback.conclusion != 'skipped'
         continue-on-error: true
         run: |
           echo "🔍 Verifying rollback health status"
