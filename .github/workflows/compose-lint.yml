@@ -29,11 +29,16 @@ on:
         required: false
         type: string
         default: ''
+      runner:
+        description: "Runner label(s) for jobs (e.g., 'ubuntu-24.04' or 'self-hosted')"
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
 
 jobs:
   actionlint:
     name: Workflow validation
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     steps:
       - name: Checkout target repository
@@ -61,7 +66,7 @@ jobs:
       matrix:
         stack: ${{ fromJson(inputs.stacks) }}
       fail-fast: false
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     steps:
       - name: Checkout target repository
@@ -113,7 +118,7 @@ jobs:
 
   lint-summary:
     name: Lint Summary
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     needs: [actionlint, lint]
     if: always()
     timeout-minutes: 5
@@ -141,7 +146,7 @@ jobs:
 
   notify:
     name: Discord Notification
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     needs: [actionlint, lint]
     if: always()
     steps:
