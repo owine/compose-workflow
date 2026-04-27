@@ -50,11 +50,16 @@ on:
         required: false
         type: string
         default: ''
+      runner:
+        description: "Runner label(s) for jobs (e.g., 'ubuntu-24.04' or 'self-hosted')"
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
 
 jobs:
   gitguardian:
     name: GitGuardian scan
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     if: ${{ inputs.event-name == 'push' }}
     steps:
@@ -128,7 +133,7 @@ jobs:
 
   trivy:
     name: Trivy IaC scan
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     steps:
       - name: Checkout target repository
@@ -174,7 +179,7 @@ jobs:
 
   notify:
     name: Discord Notification
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     needs: [gitguardian, trivy]
     if: always()
     steps:
