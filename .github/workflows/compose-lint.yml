@@ -2,6 +2,13 @@ name: Lint Docker Compose
 
 on:
   workflow_call:
+    outputs:
+      actionlint-result:
+        description: "Result of actionlint job (success/failure/skipped)"
+        value: ${{ jobs.results.outputs.actionlint-result }}
+      lint-result:
+        description: "Result of lint matrix job (success/failure/skipped)"
+        value: ${{ jobs.results.outputs.lint-result }}
     inputs:
       stacks:
         description: "JSON array of stack names to lint"
@@ -144,76 +151,21 @@ jobs:
             --actionlint-result "${{ needs.actionlint.result }}" \
             --lint-result "${{ needs.lint.result }}"
 
-  notify:
-    name: Discord Notification
+  results:
+    name: Lint results
     runs-on: ${{ inputs.runner }}
     needs: [actionlint, lint]
     if: always()
+    timeout-minutes: 1
+    outputs:
+      actionlint-result: ${{ steps.collect.outputs.actionlint-result }}
+      lint-result: ${{ steps.collect.outputs.lint-result }}
     steps:
-      - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
-        with:
-          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-
-      - name: Load Discord webhook and user ID
-        id: op-load-discord
-        uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
-        with:
-          unset-previous: true
+      - name: Collect job results
+        id: collect
         env:
-          DISCORD_WEBHOOK: ${{ inputs.webhook-url }}
-          DISCORD_USER_ID: ${{ inputs.discord-user-id != '' && inputs.discord-user-id || 'SKIP' }}
-
-      - name: Determine overall lint status
-        id: lint-status
+          ACTIONLINT_RESULT: ${{ needs.actionlint.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
         run: |
-          ACTIONLINT="${{ needs.actionlint.result }}"
-          LINT="${{ needs.lint.result }}"
-
-          if [[ "$ACTIONLINT" == "success" && "$LINT" == "success" ]]; then
-            echo "result=success" >> "$GITHUB_OUTPUT"
-          else
-            echo "result=failure" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Send Discord notification
-        uses: sarisia/actions-status-discord@eb045afee445dc055c18d3d90bd0f244fd062708  # v1.16.0
-        if: ${{ steps.lint-status.outputs.result == 'failure' || (steps.lint-status.outputs.result == 'success' && github.event_name != 'pull_request') }}
-        with:
-          webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
-          content: ${{ steps.lint-status.outputs.result != 'success' && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}>', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}
-          status: ${{ steps.lint-status.outputs.result == 'success' && 'success' || 'failure' }}
-          title: "🔍 ${{ inputs.repo-name }} • ${{ steps.lint-status.outputs.result == 'success' && 'Validation Passed' || 'Validation Failed' }}"
-          description: |
-            ${{ steps.lint-status.outputs.result == 'success' && '✅ **All validation checks passed**' || '❌ **Validation issues detected**' }}
-
-            **⚙️ Workflow Validation:** ${{ needs.actionlint.result == 'success' && '✅ All workflows valid' || '❌ Issues detected' }}
-            **📋 Code Quality:** ${{ needs.lint.result == 'success' && '✅ All stacks valid' || '❌ Issues detected' }}
-
-            **📂 Validated Stacks:** `${{ join(fromJson(inputs.stacks), '`, `') }}`
-
-            ${{ github.event_name == 'pull_request' && '🔀 **Pull Request Validation**' || github.event_name == 'workflow_dispatch' && '🔧 **Manual Validation**' || format('📝 **Push to `{0}`**', github.ref_name) }}
-
-            ${{ needs.actionlint.result == 'failure' && '
-            **⚙️ Workflow Issues:**
-            • GitHub Actions workflow validation failed
-            • Review the **Workflow Validation** job for details
-            • Fix workflow syntax, shellcheck, or expression errors
-            • Test locally: `actionlint .github/workflows/*.yml`' || '' }}
-
-            ${{ needs.lint.result == 'failure' && '
-            **🚨 Action Required:**
-            • Review stack validation errors in workflow logs
-            • Fix YAML formatting and Docker Compose syntax
-            • Test locally: `yamllint --strict stack/compose.yaml`
-            • Check the **Lint Summary** job for detailed errors' || '' }}
-
-            ${{ steps.lint-status.outputs.result == 'success' && '🚀 **Ready for deployment**' || '⚠️ **Deployment blocked until issues resolved**' }}
-          color: ${{ steps.lint-status.outputs.result == 'success' && 0x28a745 || 0xfd7e14 }}
-          username: "Compose Lint"
-          avatar_url: "https://cdn-icons-png.flaticon.com/512/2103/2103633.png"
-
-      - name: Unload Discord webhook
-        uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
-        with:
-          unset-previous: true
+          echo "actionlint-result=$ACTIONLINT_RESULT" >> "$GITHUB_OUTPUT"
+          echo "lint-result=$LINT_RESULT" >> "$GITHUB_OUTPUT"
