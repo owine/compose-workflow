@@ -106,7 +106,7 @@ jobs:
           LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
           PREVIOUS_SHA: ${{ steps.previous-sha.outputs.previous_sha }}
           TARGET_REF: ${{ inputs.target-ref }}
-          REMOVED_FILES: ${{ steps.changed-files.outputs.deleted_files }}
+          REMOVED_FILES: ${{ steps.changed-files.outputs.deleted_files != '' && steps.changed-files.outputs.deleted_files || '[]' }}
         run: |
           ./.compose-workflow/scripts/deployment/detect-stack-changes.sh \
             --mode local \
@@ -273,12 +273,13 @@ jobs:
       status: ${{ steps.h.outputs.status }}
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
-      CRITICAL_STACKS: ${{ needs.prepare.outputs.critical_stacks }}
+      CRITICAL_STACKS: ${{ inputs.auto-detect-critical && needs.prepare.outputs.critical_stacks || inputs.critical-services }}
     steps:
       - name: Health check critical stacks
         id: h
         run: |
           set -euo pipefail
+          CRITICAL_STACKS="${CRITICAL_STACKS:-[]}"
           failed=()
           for stack in $(echo "$CRITICAL_STACKS" | jq -r '.[]'); do
             cd "$LIVE_REPO_PATH/$stack"

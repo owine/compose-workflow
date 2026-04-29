@@ -100,11 +100,13 @@ run_remote() {
       LIVE_REPO_PATH="$LIVE_REPO_PATH" bash -s
     fi
   else
+    local quoted_path
+    quoted_path=$(printf '%q' "$LIVE_REPO_PATH")
     local quoted_args=""
     if [[ $# -gt 0 ]]; then
-      quoted_args="${*@Q}"
+      quoted_args=$(printf '%q ' "$@")
     fi
-    ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env LIVE_REPO_PATH=${LIVE_REPO_PATH@Q} /bin/bash -s $quoted_args"
+    ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env LIVE_REPO_PATH=$quoted_path /bin/bash -s $quoted_args"
   fi
 }
 
