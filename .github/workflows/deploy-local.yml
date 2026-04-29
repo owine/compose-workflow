@@ -151,7 +151,12 @@ jobs:
       - name: Detect critical stacks
         id: detect-critical
         if: inputs.auto-detect-critical
-        run: ./.compose-workflow/scripts/deployment/detect-critical-stacks.sh
+        env:
+          DETECTION_TREE: ${{ github.workspace }}
+        run: |
+          ./.compose-workflow/scripts/deployment/detect-critical-stacks.sh \
+            --stacks "${{ join(fromJSON(steps.discover-stacks.outputs.stacks), ' ') }}" \
+            --repo-dir "$DETECTION_TREE"
 
   teardown-removed:
     needs: prepare
