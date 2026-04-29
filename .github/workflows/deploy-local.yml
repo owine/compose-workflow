@@ -105,6 +105,28 @@ jobs:
           sha: ${{ inputs.target-ref }}
           base_sha: ${{ steps.previous-sha.outputs.previous_sha }}
 
+      - name: Discover stacks
+        id: discover-stacks
+        env:
+          DETECTION_TREE: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          cd "$DETECTION_TREE"
+          stacks=()
+          for dir in */; do
+            dir_name=$(basename "$dir")
+            if [[ -f "$dir/compose.yml" || -f "$dir/compose.yaml" ]]; then
+              stacks+=("\"$dir_name\"")
+            fi
+          done
+          if [ ${#stacks[@]} -eq 0 ]; then
+            echo "::error::No Docker Compose stacks found in repository"
+            exit 1
+          fi
+          stack_json="[$(IFS=,; echo "${stacks[*]}")]"
+          echo "stacks=$stack_json" >> "$GITHUB_OUTPUT"
+          echo "✅ Discovered stacks: $stack_json"
+
       - name: Detect stack changes
         id: detect-changes
         env:
@@ -116,12 +138,14 @@ jobs:
           PREVIOUS_SHA: ${{ steps.previous-sha.outputs.previous_sha }}
           TARGET_REF: ${{ inputs.target-ref }}
           REMOVED_FILES: ${{ steps.changed-files.outputs.deleted_files != '' && steps.changed-files.outputs.deleted_files || '[]' }}
+          INPUT_STACKS: ${{ steps.discover-stacks.outputs.stacks }}
         run: |
           ./.compose-workflow/scripts/deployment/detect-stack-changes.sh \
             --mode local \
             --current-sha "$PREVIOUS_SHA" \
             --target-ref "$TARGET_REF" \
             --live-repo-path "$DETECTION_TREE" \
+            --input-stacks "$INPUT_STACKS" \
             --removed-files "$REMOVED_FILES"
 
       - name: Detect critical stacks
