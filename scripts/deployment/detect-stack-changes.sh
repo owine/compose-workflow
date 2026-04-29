@@ -92,6 +92,15 @@ fi
 # Usage: echo "<bash script>" | run_remote arg1 arg2 ...
 # LIVE_REPO_PATH is propagated to the remote/local shell so heredoc bodies can
 # reference "$LIVE_REPO_PATH" agnostic of execution mode.
+#
+# SSH-mode quoting note: positional args are passed through `printf '%q'` and
+# interpolated into the command string given to ssh_retry. Since ssh_retry's
+# command goes through `ssh user@host <space-joined-args>` (which the remote
+# shell re-parses), a single round of `%q` quoting is the correct level for
+# this codebase: all callers pass SHAs, base64-encoded strings, or stack names
+# matching ^[a-zA-Z0-9._-]+$ -- none of which contain whitespace or shell
+# metacharacters. Do not pass user-controlled or unsanitized data through
+# this function.
 run_remote() {
   if [[ "$MODE" == "local" ]]; then
     if [[ $# -gt 0 ]]; then
