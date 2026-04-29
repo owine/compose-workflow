@@ -19,6 +19,8 @@ INPUT_STACKS="[]"
 REMOVED_FILES="[]"
 SSH_USER=""
 SSH_HOST=""
+MODE="ssh"
+LIVE_REPO_PATH="${LIVE_REPO_PATH:-}"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -47,6 +49,14 @@ while [[ $# -gt 0 ]]; do
       SSH_HOST="$2"
       shift 2
       ;;
+    --mode)
+      MODE="$2"
+      shift 2
+      ;;
+    --live-repo-path)
+      LIVE_REPO_PATH="$2"
+      shift 2
+      ;;
     *)
       log_error "Unknown argument: $1"
       exit 1
@@ -58,8 +68,45 @@ done
 require_var CURRENT_SHA || exit 1
 require_var TARGET_REF || exit 1
 require_var INPUT_STACKS || exit 1
-require_var SSH_USER || exit 1
-require_var SSH_HOST || exit 1
+
+# Validate mode
+if [[ "$MODE" != "ssh" && "$MODE" != "local" ]]; then
+  echo "❌ --mode must be 'ssh' or 'local', got: $MODE"
+  exit 1
+fi
+
+if [[ "$MODE" == "ssh" ]]; then
+  require_var SSH_USER || exit 1
+  require_var SSH_HOST || exit 1
+  # Preserve historical default for SSH mode (remote tree path)
+  : "${LIVE_REPO_PATH:=/opt/compose}"
+else
+  # local mode requires LIVE_REPO_PATH
+  if [[ -z "$LIVE_REPO_PATH" ]]; then
+    log_error "--live-repo-path (or LIVE_REPO_PATH env) is required when --mode local"
+    exit 1
+  fi
+fi
+
+# run_remote: dispatches a bash script body (stdin) to either local bash or SSH.
+# Usage: echo "<bash script>" | run_remote arg1 arg2 ...
+# LIVE_REPO_PATH is propagated to the remote/local shell so heredoc bodies can
+# reference "$LIVE_REPO_PATH" agnostic of execution mode.
+run_remote() {
+  if [[ "$MODE" == "local" ]]; then
+    if [[ $# -gt 0 ]]; then
+      LIVE_REPO_PATH="$LIVE_REPO_PATH" bash -s "$@"
+    else
+      LIVE_REPO_PATH="$LIVE_REPO_PATH" bash -s
+    fi
+  else
+    local quoted_args=""
+    if [[ $# -gt 0 ]]; then
+      quoted_args="${*@Q}"
+    fi
+    ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST LIVE_REPO_PATH=${LIVE_REPO_PATH@Q} /bin/bash -s $quoted_args"
+  fi
+}
 
 # Parse input stacks JSON to space-delimited list
 INPUT_STACKS_LIST=$(echo "$INPUT_STACKS" | jq -r '.[]' | tr '\n' ' ')
@@ -104,7 +151,7 @@ detect_removed_stacks_gitdiff() {
   CURRENT_SHA="$1"
   TARGET_REF="$2"
 
-  cd /opt/compose
+  cd "$LIVE_REPO_PATH"
 
   # Fetch target ref to ensure we have it
   if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
@@ -136,7 +183,7 @@ detect_removed_stacks_gitdiff() {
 DETECT_EOF
   )
 
-  echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$current_sha\" \"$target_ref\""
+  echo "$detect_script" | run_remote "$current_sha" "$target_ref"
 }
 
 # === DETECTION FUNCTION: TREE COMPARISON (REMOVED) ===
@@ -150,7 +197,7 @@ detect_removed_stacks_tree() {
   set -e
   TARGET_REF="$1"
 
-  cd /opt/compose
+  cd "$LIVE_REPO_PATH"
 
   # Fetch target ref to ensure we have it
   if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
@@ -174,21 +221,21 @@ detect_removed_stacks_tree() {
   COMMIT_DIRS=$(git ls-tree --name-only "$TARGET_SHA" 2>/dev/null | sort)
 
   # Get directories on server filesystem (exclude .git and hidden dirs)
-  SERVER_DIRS=$(find /opt/compose -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | sort)
+  SERVER_DIRS=$(find "$LIVE_REPO_PATH" -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | sort)
 
   # Find directories on server but not in commit
   MISSING_IN_COMMIT=$(comm -13 <(echo "$COMMIT_DIRS") <(echo "$SERVER_DIRS"))
 
   # Filter for directories with compose.yaml files
   for dir in $MISSING_IN_COMMIT; do
-    if [ -f "/opt/compose/$dir/compose.yaml" ]; then
+    if [ -f "$LIVE_REPO_PATH/$dir/compose.yaml" ]; then
       echo "$dir"
     fi
   done
 DETECT_TREE_EOF
   )
 
-  echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$target_ref\""
+  echo "$detect_script" | run_remote "$target_ref"
 }
 
 # === DETECTION FUNCTION: DISCOVERY ANALYSIS (REMOVED) ===
@@ -214,7 +261,7 @@ detect_removed_stacks_discovery() {
 DETECT_DISCOVERY_EOF
   )
 
-  echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$removed_files_b64\""
+  echo "$detect_script" | run_remote "$removed_files_b64"
 }
 
 # ================================================================
@@ -234,7 +281,7 @@ detect_new_stacks_gitdiff() {
   CURRENT_SHA="$1"
   TARGET_REF="$2"
 
-  cd /opt/compose
+  cd "$LIVE_REPO_PATH"
 
   # Fetch target ref to ensure we have it
   if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
@@ -265,7 +312,7 @@ detect_new_stacks_gitdiff() {
 DETECT_NEW_EOF
   )
 
-  echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$current_sha\" \"$target_ref\""
+  echo "$detect_script" | run_remote "$current_sha" "$target_ref"
 }
 
 # === DETECTION FUNCTION: TREE COMPARISON (NEW) ===
@@ -279,7 +326,7 @@ detect_new_stacks_tree() {
   set -e
   TARGET_REF="$1"
 
-  cd /opt/compose
+  cd "$LIVE_REPO_PATH"
 
   # Fetch target ref to ensure we have it
   if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
@@ -306,8 +353,8 @@ detect_new_stacks_tree() {
   done | sort)
 
   # Get directories on server filesystem with compose.yaml
-  SERVER_STACKS=$(find /opt/compose -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | while read -r dir; do
-    if [ -f "/opt/compose/$dir/compose.yaml" ]; then
+  SERVER_STACKS=$(find "$LIVE_REPO_PATH" -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | while read -r dir; do
+    if [ -f "$LIVE_REPO_PATH/$dir/compose.yaml" ]; then
       echo "$dir"
     fi
   done | sort)
@@ -317,7 +364,7 @@ detect_new_stacks_tree() {
 DETECT_NEW_TREE_EOF
   )
 
-  echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash -s \"$target_ref\""
+  echo "$detect_script" | run_remote "$target_ref"
 }
 
 # === DETECTION FUNCTION: INPUT FILTER (NEW) ===
@@ -330,18 +377,18 @@ detect_new_stacks_input() {
   local detect_script
   detect_script=$(cat << 'DETECT_INPUT_EOF'
   set -e
-  cd /opt/compose
+  cd "$LIVE_REPO_PATH"
 
   # Get directories with compose.yaml files
-  find /opt/compose -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | while read -r dir; do
-    if [ -f "/opt/compose/$dir/compose.yaml" ]; then
+  find "$LIVE_REPO_PATH" -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | while read -r dir; do
+    if [ -f "$LIVE_REPO_PATH/$dir/compose.yaml" ]; then
       echo "$dir"
     fi
   done | sort
 DETECT_INPUT_EOF
   )
 
-  DEPLOYED_STACKS=$(echo "$detect_script" | ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST /bin/bash")
+  DEPLOYED_STACKS=$(echo "$detect_script" | run_remote)
 
   # Filter input stacks - those not in deployed stacks are new
   echo "$input_stacks" | jq -r '.[]' | while read -r stack; do
