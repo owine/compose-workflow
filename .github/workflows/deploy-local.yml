@@ -214,11 +214,20 @@ jobs:
             echo "skipped=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Update live tree
+      # actions/checkout authenticates via GITHUB_TOKEN; the deploy user has no
+      # GitHub credentials, so we fetch into the workspace and then sync the
+      # live tree from the local workspace (no network auth required).
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        if: steps.gate.outputs.skipped == 'false'
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.target-ref }}
+
+      - name: Update live tree from local workspace
         if: steps.gate.outputs.skipped == 'false'
         run: |
           set -euo pipefail
-          git -C "$LIVE_REPO_PATH" fetch
+          git -C "$LIVE_REPO_PATH" fetch "$GITHUB_WORKSPACE" "$TARGET_REF"
           git -C "$LIVE_REPO_PATH" reset --hard "$TARGET_REF"
           echo "✅ live tree now at $TARGET_REF"
 
