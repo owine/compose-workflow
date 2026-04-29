@@ -1,0 +1,562 @@
+---
+name: Deploy (Local Self-Hosted)
+
+on:
+  workflow_call:
+    inputs:
+      live-repo-path:
+        description: "Absolute path to the live compose tree on the runner host"
+        required: true
+        type: string
+      live-dockge-path:
+        description: "Absolute path to dockge's compose tree (when has-dockge=true)"
+        required: false
+        type: string
+        default: /opt/dockge
+      repo-name:
+        required: true
+        type: string
+      webhook-url:
+        required: true
+        type: string
+      discord-user-id:
+        required: true
+        type: string
+      target-ref:
+        required: true
+        type: string
+      has-dockge:
+        type: boolean
+        default: false
+      force-deploy:
+        type: boolean
+        default: false
+      auto-detect-critical:
+        type: boolean
+        default: true
+      critical-services:
+        type: string
+        default: '[]'
+      image-pull-timeout:
+        type: number
+        default: 600
+      service-startup-timeout:
+        type: number
+        default: 300
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 5
+    outputs:
+      previous_sha: ${{ steps.previous-sha.outputs.previous_sha }}
+      has_previous_sha: ${{ steps.previous-sha.outputs.has_previous_sha }}
+      removed_stacks: ${{ steps.detect-changes.outputs.removed_stacks }}
+      existing_stacks: ${{ steps.detect-changes.outputs.existing_stacks }}
+      new_stacks: ${{ steps.detect-changes.outputs.new_stacks }}
+      has_removed_stacks: ${{ steps.detect-changes.outputs.has_removed_stacks }}
+      has_existing_stacks: ${{ steps.detect-changes.outputs.has_existing_stacks }}
+      has_new_stacks: ${{ steps.detect-changes.outputs.has_new_stacks }}
+      critical_stacks: ${{ steps.detect-critical.outputs.critical_stacks }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.target-ref }}
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: owine/compose-workflow
+          ref: main
+          path: .compose-workflow
+
+      - name: Capture previous deployment SHA from live tree
+        id: previous-sha
+        env:
+          LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -d "$LIVE_REPO_PATH/.git" ]]; then
+            echo "❌ LIVE_REPO_PATH '$LIVE_REPO_PATH' is not a git repository (no .git directory found)" >&2
+            echo "❌ Verify the runner host has the repo cloned at this path and ownership matches the runner user." >&2
+            exit 1
+          fi
+
+          CURRENT_SHA=$(git -C "$LIVE_REPO_PATH" rev-parse HEAD)
+          if [[ "$CURRENT_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
+            echo "previous_sha=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
+            echo "has_previous_sha=true" >> "$GITHUB_OUTPUT"
+            echo "✅ previous_sha=$CURRENT_SHA"
+          else
+            echo "❌ Live tree HEAD is not a valid 40-character commit SHA: '$CURRENT_SHA'" >&2
+            exit 1
+          fi
+
+      - name: Get changed files (for removal detection)
+        id: changed-files
+        if: steps.previous-sha.outputs.previous_sha != inputs.target-ref
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
+        with:
+          json: true
+          sha: ${{ inputs.target-ref }}
+          base_sha: ${{ steps.previous-sha.outputs.previous_sha }}
+
+      - name: Detect stack changes
+        id: detect-changes
+        env:
+          LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+          PREVIOUS_SHA: ${{ steps.previous-sha.outputs.previous_sha }}
+          TARGET_REF: ${{ inputs.target-ref }}
+          REMOVED_FILES: ${{ steps.changed-files.outputs.deleted_files != '' && steps.changed-files.outputs.deleted_files || '[]' }}
+        run: |
+          ./.compose-workflow/scripts/deployment/detect-stack-changes.sh \
+            --mode local \
+            --current-sha "$PREVIOUS_SHA" \
+            --target-ref "$TARGET_REF" \
+            --live-repo-path "$LIVE_REPO_PATH" \
+            --removed-files "$REMOVED_FILES"
+
+      - name: Detect critical stacks
+        id: detect-critical
+        if: inputs.auto-detect-critical
+        run: ./.compose-workflow/scripts/deployment/detect-critical-stacks.sh
+
+  teardown-removed:
+    needs: prepare
+    if: needs.prepare.outputs.has_removed_stacks == 'true'
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 10
+    env:
+      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+      REMOVED_STACKS: ${{ needs.prepare.outputs.removed_stacks }}
+    steps:
+      - name: Stop removed stacks (uses pre-reset compose files)
+        run: |
+          set -euo pipefail
+          for stack in $(echo "$REMOVED_STACKS" | jq -r '.[]'); do
+            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $stack"; exit 1; }
+            compose_file=""
+            for ext in yaml yml; do
+              if [[ -f "$LIVE_REPO_PATH/$stack/compose.$ext" ]]; then
+                compose_file="$LIVE_REPO_PATH/$stack/compose.$ext"
+                break
+              fi
+            done
+            if [[ -n "$compose_file" ]]; then
+              echo "🛑 Stopping $stack"
+              docker compose -f "$compose_file" down || echo "::warning::down failed for $stack"
+            else
+              echo "::warning::compose file missing for removed stack $stack"
+            fi
+          done
+
+  update-tree:
+    needs: [prepare, teardown-removed]
+    # Run if teardown-removed succeeded OR was skipped (no removed stacks)
+    if: |
+      always() && needs.prepare.result == 'success'
+      && (needs.teardown-removed.result == 'success' || needs.teardown-removed.result == 'skipped')
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 5
+    outputs:
+      skipped: ${{ steps.gate.outputs.skipped }}
+    env:
+      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+      TARGET_REF: ${{ inputs.target-ref }}
+      FORCE_DEPLOY: ${{ inputs.force-deploy }}
+    steps:
+      - name: Skip if already at target SHA (and not forced)
+        id: gate
+        run: |
+          set -euo pipefail
+          CURRENT_SHA=$(git -C "$LIVE_REPO_PATH" rev-parse HEAD)
+          if [[ "$CURRENT_SHA" == "$TARGET_REF" && "$FORCE_DEPLOY" != "true" ]]; then
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            echo "ℹ️  Already at $TARGET_REF; skipping update"
+          else
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update live tree
+        if: steps.gate.outputs.skipped == 'false'
+        run: |
+          set -euo pipefail
+          git -C "$LIVE_REPO_PATH" fetch
+          git -C "$LIVE_REPO_PATH" reset --hard "$TARGET_REF"
+          echo "✅ live tree now at $TARGET_REF"
+
+  deploy-dockge:
+    needs: [prepare, update-tree]
+    if: |
+      always() && needs.update-tree.result == 'success'
+      && needs.update-tree.outputs.skipped == 'false'
+      && inputs.has-dockge
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 10
+    env:
+      DOCKGE_PATH: ${{ inputs.live-dockge-path }}
+      IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
+      SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
+    steps:
+      - name: Pull and start dockge
+        run: |
+          set -euo pipefail
+          cd "$DOCKGE_PATH"
+          timeout "$IMAGE_PULL_TIMEOUT" docker compose pull
+          timeout "$SERVICE_STARTUP_TIMEOUT" docker compose up -d --wait
+
+  deploy-existing:
+    needs: [prepare, update-tree, deploy-dockge]
+    if: |
+      always()
+      && needs.update-tree.result == 'success'
+      && needs.update-tree.outputs.skipped == 'false'
+      && (needs.deploy-dockge.result == 'success' || needs.deploy-dockge.result == 'skipped')
+      && needs.prepare.outputs.has_existing_stacks == 'true'
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: ${{ fromJSON(needs.prepare.outputs.existing_stacks) }}
+    env:
+      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+      IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
+      SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
+      STACK: ${{ matrix.stack }}
+    steps:
+      - name: Pull and deploy ${{ matrix.stack }}
+        run: |
+          set -euo pipefail
+          [[ "$STACK" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $STACK"; exit 1; }
+          cd "$LIVE_REPO_PATH/$STACK"
+          timeout "$IMAGE_PULL_TIMEOUT" docker compose pull
+          timeout "$SERVICE_STARTUP_TIMEOUT" docker compose up -d --wait
+
+  deploy-new:
+    needs: [prepare, update-tree, deploy-existing]
+    if: |
+      always()
+      && needs.update-tree.result == 'success'
+      && needs.update-tree.outputs.skipped == 'false'
+      && (needs.deploy-existing.result == 'success' || needs.deploy-existing.result == 'skipped')
+      && needs.prepare.outputs.has_new_stacks == 'true'
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: ${{ fromJSON(needs.prepare.outputs.new_stacks) }}
+    env:
+      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+      IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
+      SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
+      STACK: ${{ matrix.stack }}
+    steps:
+      - name: Pull and deploy ${{ matrix.stack }}
+        run: |
+          set -euo pipefail
+          [[ "$STACK" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $STACK"; exit 1; }
+          cd "$LIVE_REPO_PATH/$STACK"
+          timeout "$IMAGE_PULL_TIMEOUT" docker compose pull
+          timeout "$SERVICE_STARTUP_TIMEOUT" docker compose up -d --wait
+
+  health-check:
+    needs: [prepare, deploy-existing, deploy-new]
+    if: |
+      always()
+      && (needs.deploy-existing.result == 'success' || needs.deploy-existing.result == 'skipped')
+      && (needs.deploy-new.result == 'success' || needs.deploy-new.result == 'skipped')
+      && (needs.deploy-existing.result == 'success' || needs.deploy-new.result == 'success')
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 5
+    outputs:
+      status: ${{ steps.h.outputs.status }}
+    env:
+      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+      CRITICAL_STACKS: ${{ inputs.auto-detect-critical && needs.prepare.outputs.critical_stacks || inputs.critical-services }}
+    steps:
+      - name: Health check critical stacks
+        id: h
+        run: |
+          set -euo pipefail
+          CRITICAL_STACKS="${CRITICAL_STACKS:-[]}"
+          failed=()
+          for stack in $(echo "$CRITICAL_STACKS" | jq -r '.[]'); do
+            cd "$LIVE_REPO_PATH/$stack"
+            services=$(docker compose ps --format json | jq -s '.')
+            unhealthy=$(echo "$services" | jq -r \
+              '[.[] | select(.Health == "unhealthy" or (.Health == "" and .State != "running"))] | length')
+            if [[ "$unhealthy" -gt 0 ]]; then
+              failed+=("$stack")
+              echo "::error::Critical stack $stack has $unhealthy unhealthy services"
+              docker compose logs --tail 50
+            fi
+          done
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "status=healthy" >> "$GITHUB_OUTPUT"
+
+  rollback:
+    needs: [prepare, deploy-existing, deploy-new, health-check]
+    if: |
+      always()
+      && needs.prepare.outputs.has_previous_sha == 'true'
+      && (needs.deploy-existing.result == 'failure'
+          || needs.deploy-new.result == 'failure'
+          || needs.health-check.result == 'failure')
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 15
+    env:
+      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+      PREVIOUS_SHA: ${{ needs.prepare.outputs.previous_sha }}
+    steps:
+      - name: Tear down new stacks (will not exist after reset)
+        if: needs.prepare.outputs.has_new_stacks == 'true'
+        env:
+          NEW_STACKS: ${{ needs.prepare.outputs.new_stacks }}
+        run: |
+          set -euo pipefail
+          for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
+            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $stack"; exit 1; }
+            compose_file=""
+            for ext in yaml yml; do
+              if [[ -f "$LIVE_REPO_PATH/$stack/compose.$ext" ]]; then
+                compose_file="$LIVE_REPO_PATH/$stack/compose.$ext"
+                break
+              fi
+            done
+            if [[ -n "$compose_file" ]]; then
+              echo "🛑 Tearing down new stack $stack before rollback"
+              docker compose -f "$compose_file" down || echo "::warning::down failed for $stack"
+            fi
+          done
+
+      - name: Reset live tree to previous SHA
+        run: git -C "$LIVE_REPO_PATH" reset --hard "$PREVIOUS_SHA"
+
+      - name: Redeploy stacks at previous SHA
+        run: |
+          set -euo pipefail
+          for stack_dir in "$LIVE_REPO_PATH"/*/; do
+            [[ -f "$stack_dir/compose.yaml" || -f "$stack_dir/compose.yml" ]] || continue
+            cd "$stack_dir"
+            docker compose pull || true
+            docker compose up -d --wait || echo "::warning::rollback up failed for $stack_dir"
+          done
+
+  cleanup-failed-new:
+    needs: [prepare, deploy-new]
+    if: always() && needs.deploy-new.result == 'failure'
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 5
+    env:
+      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+      NEW_STACKS: ${{ needs.prepare.outputs.new_stacks }}
+    steps:
+      - name: Tear down failed new stacks
+        run: |
+          set -euo pipefail
+          for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
+            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $stack"; exit 1; }
+            cd "$LIVE_REPO_PATH/$stack" 2>/dev/null || continue
+            docker compose down || true
+          done
+
+  notify:
+    name: Discord Notification
+    needs:
+      - prepare
+      - teardown-removed
+      - update-tree
+      - deploy-dockge
+      - deploy-existing
+      - deploy-new
+      - health-check
+      - rollback
+    if: always()
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 5
+    steps:
+      - name: Configure 1Password Service Account
+        uses: 1password/load-secrets-action/configure@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Get commit message
+        id: commit-msg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_REF: ${{ inputs.target-ref }}
+        run: |
+          set -euo pipefail
+          COMMIT_MSG=$(gh api "repos/$GH_REPO/commits/$TARGET_REF" \
+            --jq '.commit.message // "No commit message available"' | head -1)
+          SHORT_SHA="${TARGET_REF:0:7}"
+          {
+            echo "message=$COMMIT_MSG"
+            echo "short-sha=$SHORT_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compute notification status
+        id: status
+        env:
+          UPDATE_TREE_RESULT: ${{ needs.update-tree.result }}
+          UPDATE_TREE_SKIPPED: ${{ needs.update-tree.outputs.skipped }}
+          TEARDOWN_RESULT: ${{ needs.teardown-removed.result }}
+          DEPLOY_DOCKGE_RESULT: ${{ needs.deploy-dockge.result }}
+          DEPLOY_EXISTING_RESULT: ${{ needs.deploy-existing.result }}
+          DEPLOY_NEW_RESULT: ${{ needs.deploy-new.result }}
+          HEALTH_RESULT: ${{ needs.health-check.result }}
+          HEALTH_STATUS: ${{ needs.health-check.outputs.status }}
+          ROLLBACK_RESULT: ${{ needs.rollback.result }}
+          HAS_REMOVED: ${{ needs.prepare.outputs.has_removed_stacks }}
+          HAS_EXISTING: ${{ needs.prepare.outputs.has_existing_stacks }}
+          HAS_NEW: ${{ needs.prepare.outputs.has_new_stacks }}
+          REMOVED_STACKS: ${{ needs.prepare.outputs.removed_stacks }}
+          FORCE_DEPLOY: ${{ inputs.force-deploy }}
+        run: |
+          set -euo pipefail
+
+          # Determine if any deployment work happened
+          deployment_needed="true"
+          if [[ "$HAS_REMOVED" != "true" && "$HAS_EXISTING" != "true" && "$HAS_NEW" != "true" ]]; then
+            deployment_needed="false"
+          elif [[ "${UPDATE_TREE_RESULT:-}" == "success" && "${UPDATE_TREE_SKIPPED:-}" == "true" && "${FORCE_DEPLOY:-}" != "true" ]]; then
+            deployment_needed="false"
+          fi
+
+          # Determine deploy phase aggregate status
+          deploy_status="success"
+          if [[ "$DEPLOY_EXISTING_RESULT" == "failure" || "$DEPLOY_NEW_RESULT" == "failure" \
+                || "$DEPLOY_DOCKGE_RESULT" == "failure" || "$UPDATE_TREE_RESULT" == "failure" \
+                || "$TEARDOWN_RESULT" == "failure" ]]; then
+            deploy_status="failure"
+          fi
+
+          # Health status (default to success if skipped/empty)
+          health_status="${HEALTH_STATUS:-}"
+          if [[ -z "$health_status" ]]; then
+            if [[ "$HEALTH_RESULT" == "success" || "$HEALTH_RESULT" == "skipped" ]]; then
+              health_status="success"
+            else
+              health_status="failure"
+            fi
+          fi
+
+          rollback_status="$ROLLBACK_RESULT"
+
+          # Final overall status
+          if [[ "$deployment_needed" == "false" ]]; then
+            overall="no-changes"
+            title_suffix="No Changes"
+            description="📋 **Repository already at target commit**"
+            color="7105644"   # 0x6c757d gray
+          elif [[ "$deploy_status" == "success" && "$health_status" == "success" ]]; then
+            overall="success"
+            if [[ "$FORCE_DEPLOY" == "true" ]]; then
+              description="🔄 **Force deployment completed successfully**"
+            else
+              description="✅ **Deployment completed successfully**"
+            fi
+            title_suffix="Deployed"
+            color="2664261"   # 0x28a745 green
+          elif [[ "$rollback_status" == "success" ]]; then
+            overall="rolled-back"
+            title_suffix="Rolled Back"
+            description="🔄 **Deployment failed but rolled back successfully**"
+            color="16763904"  # 0xffc107 yellow
+          else
+            overall="failure"
+            title_suffix="Failed"
+            description="❌ **Deployment failed**"
+            color="14431557"  # 0xdc3545 red
+          fi
+
+          {
+            echo "deployment_needed=$deployment_needed"
+            echo "deploy_status=$deploy_status"
+            echo "health_status=$health_status"
+            echo "rollback_status=$rollback_status"
+            echo "overall=$overall"
+            echo "title_suffix=$title_suffix"
+            echo "description<<EOF"
+            echo "$description"
+            echo "EOF"
+            echo "color=$color"
+          } >> "$GITHUB_OUTPUT"
+
+          # Pipeline status line
+          deploy_icon="✅"; [[ "$deploy_status" != "success" ]] && deploy_icon="❌"
+          health_icon="✅"
+          if [[ "$HEALTH_RESULT" == "skipped" ]]; then
+            health_icon="⏭️"
+          elif [[ "$health_status" != "success" ]]; then
+            health_icon="❌"
+          fi
+          rollback_line=""
+          if [[ "$rollback_status" != "skipped" ]]; then
+            rb_icon="✅"; [[ "$rollback_status" != "success" ]] && rb_icon="❌"
+            rollback_line=" → $rb_icon Rollback"
+          fi
+          pipeline="$deploy_icon Deploy → $health_icon Health$rollback_line"
+          {
+            echo "pipeline<<EOF"
+            echo "$pipeline"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          # Removed stacks line
+          removed_line=""
+          if [[ "$HAS_REMOVED" == "true" ]]; then
+            removed_names=$(echo "$REMOVED_STACKS" | jq -r '. | join(", ")' 2>/dev/null || echo "")
+            if [[ -n "$removed_names" ]]; then
+              removed_line="🗑️ **Removed stacks:** $removed_names"
+            fi
+          fi
+          {
+            echo "removed_line<<EOF"
+            echo "$removed_line"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Load Discord webhook and user ID
+        id: op-load-discord
+        uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
+        with:
+          unset-previous: true
+        env:
+          DISCORD_WEBHOOK: ${{ inputs.webhook-url }}
+          DISCORD_USER_ID: ${{ inputs.discord-user-id != '' && inputs.discord-user-id || 'SKIP' }}
+
+      - name: Send Discord notification
+        uses: sarisia/actions-status-discord@eb045afee445dc055c18d3d90bd0f244fd062708  # v1.16.0
+        with:
+          webhook: ${{ steps.op-load-discord.outputs.DISCORD_WEBHOOK }}
+          content: ${{ (steps.status.outputs.overall == 'failure' || steps.status.outputs.overall == 'rolled-back') && inputs.discord-user-id != '' && steps.op-load-discord.outputs.DISCORD_USER_ID != 'SKIP' && format('<@{0}>', steps.op-load-discord.outputs.DISCORD_USER_ID) || '' }}
+          status: ${{ (steps.status.outputs.overall == 'success' || steps.status.outputs.overall == 'no-changes') && 'success' || 'failure' }}
+          title: "🚀 ${{ inputs.repo-name }} • ${{ steps.status.outputs.title_suffix }}"
+          description: |
+            ${{ steps.status.outputs.description }}
+
+            ${{ steps.status.outputs.removed_line }}
+
+            ${{ steps.status.outputs.deployment_needed == 'true' && format('**🔄 Pipeline Status**
+            {0}', steps.status.outputs.pipeline) || '' }}
+
+            ${{ github.event_name == 'workflow_dispatch' && '🔧 **Triggered manually**' || format('📝 **Commit:** [`{0}`](https://github.com/{1}/commit/{2}) {3}', steps.commit-msg.outputs.short-sha, github.repository, inputs.target-ref, steps.commit-msg.outputs.message) }}
+          color: ${{ steps.status.outputs.color }}
+          username: "Compose Deploy"
+          avatar_url: "https://cdn-icons-png.flaticon.com/512/919/919853.png"
+
+      - name: Unload Discord webhook
+        uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
+        with:
+          unset-previous: true
