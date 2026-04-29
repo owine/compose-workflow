@@ -108,7 +108,11 @@ jobs:
       - name: Detect stack changes
         id: detect-changes
         env:
-          LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+          # Run change detection against the runner's workspace checkout
+          # (has full history and authenticated git remote via actions/checkout),
+          # NOT against the live tree at inputs.live-repo-path (which has no
+          # GitHub credentials when running as the self-hosted runner user).
+          DETECTION_TREE: ${{ github.workspace }}
           PREVIOUS_SHA: ${{ steps.previous-sha.outputs.previous_sha }}
           TARGET_REF: ${{ inputs.target-ref }}
           REMOVED_FILES: ${{ steps.changed-files.outputs.deleted_files != '' && steps.changed-files.outputs.deleted_files || '[]' }}
@@ -117,7 +121,7 @@ jobs:
             --mode local \
             --current-sha "$PREVIOUS_SHA" \
             --target-ref "$TARGET_REF" \
-            --live-repo-path "$LIVE_REPO_PATH" \
+            --live-repo-path "$DETECTION_TREE" \
             --removed-files "$REMOVED_FILES"
 
       - name: Detect critical stacks
