@@ -166,6 +166,7 @@ jobs:
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       REMOVED_STACKS: ${{ needs.prepare.outputs.removed_stacks }}
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
       - name: Stop removed stacks (uses pre-reset compose files)
         run: |
@@ -181,7 +182,7 @@ jobs:
             done
             if [[ -n "$compose_file" ]]; then
               echo "🛑 Stopping $stack"
-              docker compose -f "$compose_file" down || echo "::warning::down failed for $stack"
+              op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose -f "$compose_file" down || echo "::warning::down failed for $stack"
             else
               echo "::warning::compose file missing for removed stack $stack"
             fi
@@ -241,15 +242,17 @@ jobs:
     timeout-minutes: 10
     env:
       DOCKGE_PATH: ${{ inputs.live-dockge-path }}
+      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
       SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
       - name: Pull and start dockge
         run: |
           set -euo pipefail
           cd "$DOCKGE_PATH"
-          timeout "$IMAGE_PULL_TIMEOUT" docker compose pull
-          timeout "$SERVICE_STARTUP_TIMEOUT" docker compose up -d --wait
+          timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+            docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
 
   deploy-existing:
     needs: [prepare, update-tree, deploy-dockge]
@@ -270,14 +273,15 @@ jobs:
       IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
       SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
       STACK: ${{ matrix.stack }}
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
       - name: Pull and deploy ${{ matrix.stack }}
         run: |
           set -euo pipefail
           [[ "$STACK" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $STACK"; exit 1; }
           cd "$LIVE_REPO_PATH/$STACK"
-          timeout "$IMAGE_PULL_TIMEOUT" docker compose pull
-          timeout "$SERVICE_STARTUP_TIMEOUT" docker compose up -d --wait
+          timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+            docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
 
   deploy-new:
     needs: [prepare, update-tree, deploy-existing]
@@ -298,14 +302,15 @@ jobs:
       IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
       SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
       STACK: ${{ matrix.stack }}
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
       - name: Pull and deploy ${{ matrix.stack }}
         run: |
           set -euo pipefail
           [[ "$STACK" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $STACK"; exit 1; }
           cd "$LIVE_REPO_PATH/$STACK"
-          timeout "$IMAGE_PULL_TIMEOUT" docker compose pull
-          timeout "$SERVICE_STARTUP_TIMEOUT" docker compose up -d --wait
+          timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+            docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
 
   health-check:
     needs: [prepare, deploy-existing, deploy-new]
@@ -321,6 +326,7 @@ jobs:
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       CRITICAL_STACKS: ${{ inputs.auto-detect-critical && needs.prepare.outputs.critical_stacks || inputs.critical-services }}
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
       - name: Health check critical stacks
         id: h
@@ -330,13 +336,13 @@ jobs:
           failed=()
           for stack in $(echo "$CRITICAL_STACKS" | jq -r '.[]'); do
             cd "$LIVE_REPO_PATH/$stack"
-            services=$(docker compose ps --format json | jq -s '.')
+            services=$(op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose ps --format json | jq -s '.')
             unhealthy=$(echo "$services" | jq -r \
               '[.[] | select(.Health == "unhealthy" or (.Health == "" and .State != "running"))] | length')
             if [[ "$unhealthy" -gt 0 ]]; then
               failed+=("$stack")
               echo "::error::Critical stack $stack has $unhealthy unhealthy services"
-              docker compose logs --tail 50
+              op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail 50
             fi
           done
           if [[ ${#failed[@]} -gt 0 ]]; then
@@ -358,6 +364,7 @@ jobs:
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       PREVIOUS_SHA: ${{ needs.prepare.outputs.previous_sha }}
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
       - name: Tear down new stacks (will not exist after reset)
         if: needs.prepare.outputs.has_new_stacks == 'true'
@@ -376,7 +383,7 @@ jobs:
             done
             if [[ -n "$compose_file" ]]; then
               echo "🛑 Tearing down new stack $stack before rollback"
-              docker compose -f "$compose_file" down || echo "::warning::down failed for $stack"
+              op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose -f "$compose_file" down || echo "::warning::down failed for $stack"
             fi
           done
 
@@ -389,8 +396,9 @@ jobs:
           for stack_dir in "$LIVE_REPO_PATH"/*/; do
             [[ -f "$stack_dir/compose.yaml" || -f "$stack_dir/compose.yml" ]] || continue
             cd "$stack_dir"
-            docker compose pull || true
-            docker compose up -d --wait || echo "::warning::rollback up failed for $stack_dir"
+            op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+              docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans \
+              || echo "::warning::rollback up failed for $stack_dir"
           done
 
   cleanup-failed-new:
@@ -401,6 +409,7 @@ jobs:
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       NEW_STACKS: ${{ needs.prepare.outputs.new_stacks }}
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
       - name: Tear down failed new stacks
         run: |
@@ -408,7 +417,7 @@ jobs:
           for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
             [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $stack"; exit 1; }
             cd "$LIVE_REPO_PATH/$stack" 2>/dev/null || continue
-            docker compose down || true
+            op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose down || true
           done
 
   notify:
