@@ -71,7 +71,7 @@ require_var INPUT_STACKS || exit 1
 
 # Validate mode
 if [[ "$MODE" != "ssh" && "$MODE" != "local" ]]; then
-  echo "❌ --mode must be 'ssh' or 'local', got: $MODE"
+  log_error "--mode must be 'ssh' or 'local', got: $MODE"
   exit 1
 fi
 
@@ -104,7 +104,7 @@ run_remote() {
     if [[ $# -gt 0 ]]; then
       quoted_args="${*@Q}"
     fi
-    ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST LIVE_REPO_PATH=${LIVE_REPO_PATH@Q} /bin/bash -s $quoted_args"
+    ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env LIVE_REPO_PATH=${LIVE_REPO_PATH@Q} /bin/bash -s $quoted_args"
   fi
 }
 
