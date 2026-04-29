@@ -53,6 +53,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       previous_sha: ${{ steps.previous-sha.outputs.previous_sha }}
+      has_previous_sha: ${{ steps.previous-sha.outputs.has_previous_sha }}
       removed_stacks: ${{ steps.detect-changes.outputs.removed_stacks }}
       existing_stacks: ${{ steps.detect-changes.outputs.existing_stacks }}
       new_stacks: ${{ steps.detect-changes.outputs.new_stacks }}
@@ -81,9 +82,11 @@ jobs:
           CURRENT_SHA=$(git -C "$LIVE_REPO_PATH" rev-parse HEAD 2>/dev/null || echo "")
           if [[ "$CURRENT_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
             echo "previous_sha=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
+            echo "has_previous_sha=true" >> "$GITHUB_OUTPUT"
             echo "✅ previous_sha=$CURRENT_SHA"
           else
             echo "previous_sha=HEAD^" >> "$GITHUB_OUTPUT"
+            echo "has_previous_sha=false" >> "$GITHUB_OUTPUT"
             echo "⚠️  Live tree HEAD unreadable — using HEAD^ as fallback"
           fi
 
@@ -130,8 +133,15 @@ jobs:
         run: |
           set -euo pipefail
           for stack in $(echo "$REMOVED_STACKS" | jq -r '.[]'); do
-            compose_file="$LIVE_REPO_PATH/$stack/compose.yaml"
-            if [[ -f "$compose_file" ]]; then
+            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $stack"; exit 1; }
+            compose_file=""
+            for ext in yaml yml; do
+              if [[ -f "$LIVE_REPO_PATH/$stack/compose.$ext" ]]; then
+                compose_file="$LIVE_REPO_PATH/$stack/compose.$ext"
+                break
+              fi
+            done
+            if [[ -n "$compose_file" ]]; then
               echo "🛑 Stopping $stack"
               docker compose -f "$compose_file" down || echo "::warning::down failed for $stack"
             else
@@ -147,6 +157,8 @@ jobs:
       && (needs.teardown-removed.result == 'success' || needs.teardown-removed.result == 'skipped')
     runs-on: [self-hosted, piwine-office]
     timeout-minutes: 5
+    outputs:
+      skipped: ${{ steps.gate.outputs.skipped }}
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       TARGET_REF: ${{ inputs.target-ref }}
@@ -176,6 +188,7 @@ jobs:
     needs: [prepare, update-tree]
     if: |
       always() && needs.update-tree.result == 'success'
+      && needs.update-tree.outputs.skipped == 'false'
       && inputs.has-dockge
     runs-on: [self-hosted, piwine-office]
     timeout-minutes: 10
@@ -196,6 +209,7 @@ jobs:
     if: |
       always()
       && needs.update-tree.result == 'success'
+      && needs.update-tree.outputs.skipped == 'false'
       && (needs.deploy-dockge.result == 'success' || needs.deploy-dockge.result == 'skipped')
       && needs.prepare.outputs.has_existing_stacks == 'true'
     runs-on: [self-hosted, piwine-office]
@@ -213,6 +227,7 @@ jobs:
       - name: Pull and deploy ${{ matrix.stack }}
         run: |
           set -euo pipefail
+          [[ "$STACK" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $STACK"; exit 1; }
           cd "$LIVE_REPO_PATH/$STACK"
           timeout "$IMAGE_PULL_TIMEOUT" docker compose pull
           timeout "$SERVICE_STARTUP_TIMEOUT" docker compose up -d --wait
@@ -222,6 +237,7 @@ jobs:
     if: |
       always()
       && needs.update-tree.result == 'success'
+      && needs.update-tree.outputs.skipped == 'false'
       && (needs.deploy-existing.result == 'success' || needs.deploy-existing.result == 'skipped')
       && needs.prepare.outputs.has_new_stacks == 'true'
     runs-on: [self-hosted, piwine-office]
@@ -239,6 +255,7 @@ jobs:
       - name: Pull and deploy ${{ matrix.stack }}
         run: |
           set -euo pipefail
+          [[ "$STACK" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $STACK"; exit 1; }
           cd "$LIVE_REPO_PATH/$STACK"
           timeout "$IMAGE_PULL_TIMEOUT" docker compose pull
           timeout "$SERVICE_STARTUP_TIMEOUT" docker compose up -d --wait
@@ -249,7 +266,7 @@ jobs:
       always()
       && (needs.deploy-existing.result == 'success' || needs.deploy-existing.result == 'skipped')
       && (needs.deploy-new.result == 'success' || needs.deploy-new.result == 'skipped')
-      && (needs.deploy-existing.result != 'skipped' || needs.deploy-new.result != 'skipped')
+      && (needs.deploy-existing.result == 'success' || needs.deploy-new.result == 'success')
     runs-on: [self-hosted, piwine-office]
     timeout-minutes: 5
     outputs:
@@ -284,7 +301,7 @@ jobs:
     needs: [prepare, deploy-existing, deploy-new, health-check]
     if: |
       always()
-      && needs.prepare.outputs.previous_sha != 'HEAD^'
+      && needs.prepare.outputs.has_previous_sha == 'true'
       && (needs.deploy-existing.result == 'failure'
           || needs.deploy-new.result == 'failure'
           || needs.health-check.result == 'failure')
@@ -294,6 +311,27 @@ jobs:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       PREVIOUS_SHA: ${{ needs.prepare.outputs.previous_sha }}
     steps:
+      - name: Tear down new stacks (will not exist after reset)
+        if: needs.prepare.outputs.has_new_stacks == 'true'
+        env:
+          NEW_STACKS: ${{ needs.prepare.outputs.new_stacks }}
+        run: |
+          set -euo pipefail
+          for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
+            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $stack"; exit 1; }
+            compose_file=""
+            for ext in yaml yml; do
+              if [[ -f "$LIVE_REPO_PATH/$stack/compose.$ext" ]]; then
+                compose_file="$LIVE_REPO_PATH/$stack/compose.$ext"
+                break
+              fi
+            done
+            if [[ -n "$compose_file" ]]; then
+              echo "🛑 Tearing down new stack $stack before rollback"
+              docker compose -f "$compose_file" down || echo "::warning::down failed for $stack"
+            fi
+          done
+
       - name: Reset live tree to previous SHA
         run: git -C "$LIVE_REPO_PATH" reset --hard "$PREVIOUS_SHA"
 
@@ -301,7 +339,7 @@ jobs:
         run: |
           set -euo pipefail
           for stack_dir in "$LIVE_REPO_PATH"/*/; do
-            [[ -f "$stack_dir/compose.yaml" ]] || continue
+            [[ -f "$stack_dir/compose.yaml" || -f "$stack_dir/compose.yml" ]] || continue
             cd "$stack_dir"
             docker compose pull || true
             docker compose up -d --wait || echo "::warning::rollback up failed for $stack_dir"
@@ -320,6 +358,7 @@ jobs:
         run: |
           set -euo pipefail
           for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
+            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $stack"; exit 1; }
             cd "$LIVE_REPO_PATH/$stack" 2>/dev/null || continue
             docker compose down || true
           done
