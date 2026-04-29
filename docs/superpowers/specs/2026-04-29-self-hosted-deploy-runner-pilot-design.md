@@ -54,6 +54,12 @@ Today, the deploy reusable workflow (`compose-workflow/.github/workflows/deploy.
 
 **Runner labels:** `self-hosted, Linux, ARM64, piwine-office`. The first three are auto-assigned by GitHub at registration; only `piwine-office` is specified explicitly. This per-repo label keeps each future runner independently targetable.
 
+**`runs-on` strategy:** For the pilot, `deploy-local.yml` hardcodes `runs-on: [self-hosted, piwine-office]`. GitHub Actions does support label expressions in `runs-on`, but reusable-workflow input interpolation in `runs-on` arrays has had inconsistent behavior across runner versions, so the pilot avoids it. When rolling to `docker-piwine` and `docker-zendc`, the implementer must choose one of:
+1. Parameterize via `runs-on: [self-hosted, "${{ inputs.runner-label }}"]` — verify against the runner version in use and pin behavior in a smoke-test workflow before relying on it.
+2. Maintain one reusable workflow per repo (`deploy-local-piwine.yml`, etc.) with the label hardcoded — verbose but unambiguous.
+3. Use a matrix with a single entry — works around the input-in-`runs-on` issue at the cost of an extra YAML layer.
+The plan-implementer must pick one explicitly during pilot bake-in, before the second-repo migration. Keeping option 1 unverified through to the second migration is the failure mode to avoid.
+
 ## Host Setup (One-Time)
 
 Performed by a human admin with sudo. After completion, no runtime sudo is required.
@@ -64,7 +70,7 @@ sudo useradd -m -s /bin/bash deploy
 sudo usermod -aG docker deploy
 # Verify: as deploy, `docker ps` works without sudo
 
-# 2. Hand over compose paths to the deploy user
+# 2. Hand over the compose and dockge paths to the deploy user
 sudo chown -R deploy:deploy /opt/compose /opt/dockge
 
 # 3. Install runner (as deploy user)
@@ -146,6 +152,14 @@ The invariant: **`/opt/compose` HEAD must remain at the previous SHA when change
 1. **Step 3 must precede step 8.** `previous_sha` is read from `/opt/compose` HEAD; once step 8 hard-resets, that reading is gone.
 2. **Step 7 must precede step 8.** Removed stacks need their old `compose.yaml` to do `docker compose down` cleanly. After the hard reset those files are gone.
 3. **Steps 4–6 do not touch `/opt/compose`.** They run inside the runner's `_work/` checkout, which is at the new SHA. Pure metadata work.
+
+### Recovery from partial failure between steps 7 and 8
+
+If `docker compose down` succeeds for one or more removed stacks and the job is then cancelled or the runner crashes *before* step 8 completes, the host is left with: services stopped, `/opt/compose` still on `previous_sha`. On the next workflow run, Phase 1 will read `/opt/compose` HEAD as `previous_sha` (unchanged), `target-ref` will be the new SHA (or possibly the same one, if re-running the same deploy), and `detect-stack-changes.sh` will again classify those stacks as removed. Step 7 will issue `docker compose down` against already-stopped stacks (idempotent, no-op or near-no-op), and step 8 will then complete the reset. The torn-down removed stacks remain torn down, which is the desired outcome. If instead the operator wants to *resurrect* a removed stack mid-failure, they must do so manually (re-add the directory to the repo, re-deploy) — the workflow is not designed to undo a partially-applied removal automatically.
+
+### Runner workspace staleness
+
+The runner reuses `_work/` across jobs. `actions/checkout@v6` with `fetch-depth: 0` and an explicit `ref` will fetch and reset the workspace to match `target-ref` reliably. If a prior job leaves `_work/` in a dirty or detached state, the next checkout normalizes it. There is no SSH sandbox to blow away between runs; the runner host is the persistent environment. No special handling is required, but operators should be aware that any debugging artifacts written into `_work/` will be visible to subsequent jobs until cleared.
 
 ## Reuse vs. Duplication
 
