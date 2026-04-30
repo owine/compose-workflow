@@ -54,6 +54,10 @@ on:
       service-startup-timeout:
         type: number
         default: 300
+      failed-container-log-lines:
+        description: "Number of log lines to capture from failing containers on deploy/health failure"
+        type: number
+        default: 50
 
 permissions:
   contents: read
@@ -190,6 +194,7 @@ jobs:
       TARGET_REF: ${{ inputs.target-ref }}
       FORCE_DEPLOY: ${{ inputs.force-deploy }}
       SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
+      FAILED_LOG_LINES: ${{ inputs.failed-container-log-lines }}
       HAS_DOCKGE: ${{ inputs.has-dockge }}
       HAS_REMOVED: ${{ needs.prepare.outputs.has_removed_stacks }}
       HAS_EXISTING: ${{ needs.prepare.outputs.has_existing_stacks }}
@@ -336,6 +341,32 @@ jobs:
           # (matches the prior matrix's fail-fast: false). Per-stack timeout
           # via the `timeout` command preserves the matrix's per-entry budget.
           set +e
+
+          # shellcheck disable=SC2317  # invoked from subshells below
+          dump_failed_stack() {
+            local stack="$1"
+            local lines="${FAILED_LOG_LINES:-50}"
+            echo "::group::🔍 Diagnostics: $stack"
+            echo "── docker compose ps -a ──"
+            op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose ps -a 2>&1 || true
+            local rows
+            rows=$(op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose ps -a --format json 2>/dev/null \
+              | jq -rs '.[] | select(.Health=="unhealthy" or (.State=="exited" and (.ExitCode//0)!=0) or (.Health=="" and .State!="running" and .State!="exited")) | [.Service,.Name,.State,(.Health//""),((.ExitCode//0)|tostring)] | @tsv' 2>/dev/null || true)
+            if [[ -z "$rows" ]]; then
+              echo "── (no specific failing container identified; tailing all services) ──"
+              op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail "$lines" --no-color 2>&1 || true
+            else
+              while IFS=$'\t' read -r service name state health exit_code; do
+                [[ -z "$service" ]] && continue
+                echo "── ❌ $service (container=$name state=$state health=${health:-none} exit=$exit_code) ──"
+                docker inspect --format '{{if .State.Health}}healthcheck history:{{"\n"}}{{range $i,$h := .State.Health.Log}}  [#{{$i}}] exit={{$h.ExitCode}} start={{$h.Start}}{{"\n"}}    {{$h.Output}}{{"\n"}}{{end}}{{else}}(no healthcheck defined){{end}}' "$name" 2>/dev/null || true
+                op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail "$lines" --no-color "$service" 2>&1 || true
+              done <<< "$rows"
+            fi
+            echo "::endgroup::"
+          }
+          export -f dump_failed_stack
+
           failed=()
           succeeded=0
           for stack in $(echo "$EXISTING_STACKS" | jq -r '.[]'); do
@@ -347,8 +378,11 @@ jobs:
             echo "::group::Deploy existing: $stack"
             (
               cd "$LIVE_REPO_PATH/$stack"
-              timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-                docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
+              if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+                  docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans; then
+                dump_failed_stack "$stack"
+                exit 1
+              fi
             )
             rc=$?
             echo "::endgroup::"
@@ -384,6 +418,32 @@ jobs:
           && (steps.deploy-existing.outcome == 'success' || steps.deploy-existing.outcome == 'skipped')
         run: |
           set +e
+
+          # shellcheck disable=SC2317
+          dump_failed_stack() {
+            local stack="$1"
+            local lines="${FAILED_LOG_LINES:-50}"
+            echo "::group::🔍 Diagnostics: $stack"
+            echo "── docker compose ps -a ──"
+            op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose ps -a 2>&1 || true
+            local rows
+            rows=$(op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose ps -a --format json 2>/dev/null \
+              | jq -rs '.[] | select(.Health=="unhealthy" or (.State=="exited" and (.ExitCode//0)!=0) or (.Health=="" and .State!="running" and .State!="exited")) | [.Service,.Name,.State,(.Health//""),((.ExitCode//0)|tostring)] | @tsv' 2>/dev/null || true)
+            if [[ -z "$rows" ]]; then
+              echo "── (no specific failing container identified; tailing all services) ──"
+              op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail "$lines" --no-color 2>&1 || true
+            else
+              while IFS=$'\t' read -r service name state health exit_code; do
+                [[ -z "$service" ]] && continue
+                echo "── ❌ $service (container=$name state=$state health=${health:-none} exit=$exit_code) ──"
+                docker inspect --format '{{if .State.Health}}healthcheck history:{{"\n"}}{{range $i,$h := .State.Health.Log}}  [#{{$i}}] exit={{$h.ExitCode}} start={{$h.Start}}{{"\n"}}    {{$h.Output}}{{"\n"}}{{end}}{{else}}(no healthcheck defined){{end}}' "$name" 2>/dev/null || true
+                op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail "$lines" --no-color "$service" 2>&1 || true
+              done <<< "$rows"
+            fi
+            echo "::endgroup::"
+          }
+          export -f dump_failed_stack
+
           failed=()
           succeeded=0
           for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
@@ -395,8 +455,11 @@ jobs:
             echo "::group::Deploy new: $stack"
             (
               cd "$LIVE_REPO_PATH/$stack"
-              timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-                docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
+              if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+                  docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans; then
+                dump_failed_stack "$stack"
+                exit 1
+              fi
             )
             rc=$?
             echo "::endgroup::"
@@ -472,6 +535,7 @@ jobs:
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       CRITICAL_STACKS: ${{ inputs.auto-detect-critical && needs.prepare.outputs.critical_stacks || inputs.critical-services }}
+      FAILED_LOG_LINES: ${{ inputs.failed-container-log-lines }}
       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
       - name: Health check critical stacks
@@ -479,6 +543,33 @@ jobs:
         run: |
           set -euo pipefail
           CRITICAL_STACKS="${CRITICAL_STACKS:-[]}"
+
+          # Mirror of dump_failed_stack used in the deploy job — kept inline
+          # since steps don't share function scope and these jobs don't check
+          # out compose-workflow on the runner.
+          dump_failed_stack() {
+            local stack="$1"
+            local lines="${FAILED_LOG_LINES:-50}"
+            echo "::group::🔍 Diagnostics: $stack"
+            echo "── docker compose ps -a ──"
+            op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose ps -a 2>&1 || true
+            local rows
+            rows=$(op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose ps -a --format json 2>/dev/null \
+              | jq -rs '.[] | select(.Health=="unhealthy" or (.State=="exited" and (.ExitCode//0)!=0) or (.Health=="" and .State!="running" and .State!="exited")) | [.Service,.Name,.State,(.Health//""),((.ExitCode//0)|tostring)] | @tsv' 2>/dev/null || true)
+            if [[ -z "$rows" ]]; then
+              echo "── (no specific failing container identified; tailing all services) ──"
+              op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail "$lines" --no-color 2>&1 || true
+            else
+              while IFS=$'\t' read -r service name state health exit_code; do
+                [[ -z "$service" ]] && continue
+                echo "── ❌ $service (container=$name state=$state health=${health:-none} exit=$exit_code) ──"
+                docker inspect --format '{{if .State.Health}}healthcheck history:{{"\n"}}{{range $i,$h := .State.Health.Log}}  [#{{$i}}] exit={{$h.ExitCode}} start={{$h.Start}}{{"\n"}}    {{$h.Output}}{{"\n"}}{{end}}{{else}}(no healthcheck defined){{end}}' "$name" 2>/dev/null || true
+                op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail "$lines" --no-color "$service" 2>&1 || true
+              done <<< "$rows"
+            fi
+            echo "::endgroup::"
+          }
+
           failed=()
           for stack in $(echo "$CRITICAL_STACKS" | jq -r '.[]'); do
             cd "$LIVE_REPO_PATH/$stack"
@@ -495,7 +586,7 @@ jobs:
             if [[ "$unhealthy" -gt 0 ]]; then
               failed+=("$stack")
               echo "::error::Critical stack $stack has $unhealthy unhealthy services"
-              op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail 50
+              dump_failed_stack "$stack"
             fi
           done
           if [[ ${#failed[@]} -gt 0 ]]; then
