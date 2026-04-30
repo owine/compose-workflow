@@ -492,15 +492,23 @@ jobs:
             deploy_status="failure"
           fi
 
-          # Health status (default to success if skipped/empty)
-          health_status="${HEALTH_STATUS:-}"
-          if [[ -z "$health_status" ]]; then
-            if [[ "$HEALTH_RESULT" == "success" || "$HEALTH_RESULT" == "skipped" ]]; then
-              health_status="success"
-            else
-              health_status="failure"
-            fi
-          fi
+          # Health status (default to success if skipped/empty).
+          # The health-check job emits "healthy" / "failed" (semantic) via its
+          # outputs.status; the rest of this script compares against
+          # "success" / "failure". Normalize here so both vocabularies map.
+          raw_health="${HEALTH_STATUS:-}"
+          case "$raw_health" in
+            healthy|success) health_status="success" ;;
+            failed|failure)  health_status="failure" ;;
+            "")
+              if [[ "$HEALTH_RESULT" == "success" || "$HEALTH_RESULT" == "skipped" ]]; then
+                health_status="success"
+              else
+                health_status="failure"
+              fi
+              ;;
+            *) health_status="failure" ;;
+          esac
 
           rollback_status="$ROLLBACK_RESULT"
 
