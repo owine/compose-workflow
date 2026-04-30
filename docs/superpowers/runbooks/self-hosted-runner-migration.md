@@ -108,6 +108,22 @@ The inline `health-check` job emits `outputs.status=healthy` / `failed` (semanti
 
 Fixed in `6b3cf2b` via a `case` statement that maps `healthy → success` and `failed → failure` at the top of the notify job's status computation. If you copy `deploy-local.yml` for a per-repo file (option 2 of the runs-on strategy), keep that normalization block intact. The pipeline-status icon block downstream consumes the normalized `$health_status`, so fixing once fixes both.
 
+### One-shot containers (exit 0) must not fail the health gate
+
+Stacks like `yas` use `service_completed_successfully` to gate workers/api on a one-shot migration container (alembic, etc.). After `up --wait` settles, that container is in state `exited` with exit code `0` — a *success*, not a failure.
+
+The inline health-check job in `deploy-local.yml` accounts for this in its `unhealthy` jq selector:
+```jq
+[.[] | select(
+  .Health == "unhealthy"
+  or (.Health == "" and .State != "running" and .State != "exited")
+  or (.State == "exited" and (.ExitCode // 0) != 0)
+)] | length
+```
+Note `docker compose ps -a` (with `-a`) — without it, exited containers don't appear, which masks both the false-positive *and* the ability to spot a real one-shot failure post-hoc.
+
+**SSH-path equivalent fixes:** `e9d37e4` (logic), `3684dd6` (parsing). The second is a sharp edge worth knowing if anyone rewrites the gate: Go-template `--format` strings like `'{{.Service}}\t{{.Health}}\t{{.ExitCode}}'` silently drop trailing fields when an intermediate field is empty (e.g. `.Health=""` for containers without a healthcheck), leaving downstream values unparseable in `bash` reads. Use `--format json | jq -r '[…] | @tsv'` instead — JSON enforces a fixed schema. The deploy-local.yml inline gate already operates on parsed JSON via `jq`, so it's not vulnerable today, but don't "simplify" it to Go templates.
+
 ### `actionlint.yaml` per repo
 
 Both `compose-workflow` and the caller repo need `.github/actionlint.yaml`:
