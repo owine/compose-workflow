@@ -336,9 +336,16 @@ jobs:
           failed=()
           for stack in $(echo "$CRITICAL_STACKS" | jq -r '.[]'); do
             cd "$LIVE_REPO_PATH/$stack"
-            services=$(op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose ps --format json | jq -s '.')
-            unhealthy=$(echo "$services" | jq -r \
-              '[.[] | select(.Health == "unhealthy" or (.Health == "" and .State != "running"))] | length')
+            services=$(op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose ps -a --format json | jq -s '.')
+            # Unhealthy if: explicit "unhealthy", non-running with no healthcheck (and not a clean one-shot exit),
+            # or exited with non-zero code. Exited+0 is a one-shot success (e.g. alembic migrations gated via
+            # service_completed_successfully) and must not fail the gate.
+            unhealthy=$(echo "$services" | jq -r '
+              [.[] | select(
+                .Health == "unhealthy"
+                or (.Health == "" and .State != "running" and .State != "exited")
+                or (.State == "exited" and (.ExitCode // 0) != 0)
+              )] | length')
             if [[ "$unhealthy" -gt 0 ]]; then
               failed+=("$stack")
               echo "::error::Critical stack $stack has $unhealthy unhealthy services"
