@@ -61,13 +61,21 @@ sudo usermod -aG owine deploy
 
 # Tell git the runner user can operate on a tree it doesn't own
 sudo -u deploy git config --global --add safe.directory /opt/compose
+
+# CRITICAL: set umask 002 for the admin user so future files created via
+# SSH (manual edits, git pull, ad-hoc commands) inherit group-write
+echo 'umask 002' | tee -a ~/.zshrc ~/.bashrc
 ```
 
 **Why `safe.directory` is required:** git refuses to operate on repos whose top-level dir is owned by a different uid (the "dubious ownership" error). Group membership doesn't satisfy the check — only owner uid or root does. The `safe.directory` config tells the runner user "this specific path is OK." Without this line, *every* git step in the workflow fails before the deploy can begin.
 
+**Why `umask 002` for the admin user is required (not optional):** without it, the symmetric model silently rots. Whenever the admin user creates a new file or directory in `/opt/compose` via SSH — manual config edits, `git pull` on the host, or an SSH-path deploy elsewhere that touches this tree — the default umask 022 produces files mode 644 and dirs mode 755. Setgid on the parent dir correctly puts new files in the `owine` group, but the **mode bits don't get group-write**. The runner user then can't `git reset --hard` (unlink permission denied) and the next deploy fails with `fatal: Could not reset index file to revision …`.
+
+This bit us on piwine 2026-04-30: an SSH-path deploy added `housemanager/` and `trips/` as new stack dirs; both got mode 755 (no group-write); the next self-hosted deploy's git reset failed on `unable to unlink old housemanager/compose.yaml: Permission denied`. One-time recursive `chmod -R g+w` repaired the residue, but **without setting umask 002 the problem recurs** the next time owine creates a new file on the host. The `deploy` user's umask is already 002 by default on Ubuntu 24.04, so self-hosted-deploy-driven file creation is fine. The fix targets the admin SSH path specifically.
+
 **`/opt/dockge` doesn't need `safe.directory`** today (it's not a git repo — just a compose tree). Add it if that ever changes.
 
-**Don't `chown -R deploy:deploy`** the tree — earlier guidance recommended this; it works but creates an asymmetric setup where the SSH-path admin can no longer manage files without sudo, and the chown itself is a recursive blast-radius operation across many stacks. The group + `safe.directory` pattern avoids both.
+**Don't `chown -R deploy:deploy`** the tree — earlier guidance recommended this; it works but creates an asymmetric setup where the SSH-path admin can no longer manage files without sudo, and the chown itself is a recursive blast-radius operation across many stacks. The group + `safe.directory` + symmetric umask 002 pattern avoids both.
 
 ### Runner registration
 
@@ -301,9 +309,9 @@ Things to record per migration to inform the next one:
 - **Discord embed parity.** The new path's notify job dropped per-stack healthy/degraded/failed counts (the inline health-check is simpler than `health-check.sh`). If that detail matters in practice, expand the inline health-check to emit the counts. Otherwise leave it.
 - **Anything Tailscale/SSH was implicitly providing** that's now missing. None observed in the pilot, but worth a check.
 
-### Known issues (open, not yet diagnosed)
+### Resolved issues
 
-- **ghcr.io pull timeouts on first deploy of `housemanager` and `trips` (piwine, 2026-04-30).** `registry-login` succeeded — the *pull* of those images during `deploy-new` timed out with `Get "https://ghcr.io/v2/": context deadline exceeded`. Existing stacks (already-cached images) deployed fine. Likely candidates: large image size on a slow link, transient ghcr.io throttling, or DNS/TLS handshake stall on the runner host. Existing-stack pulls pull *deltas* via cached layers; first-time pulls of multi-GB images amplify any flake. If this recurs on piwine after the next deploy, investigate before enabling the workflow_run trigger. Rollback fired correctly in all cases — blast radius zero.
+- **`housemanager` / `trips` deploy failures (piwine, 2026-04-30).** Initially looked like ghcr.io pull timeouts during `deploy-new`. The actual root cause was a permission issue: the SSH-path deploy that introduced these two stacks was running as `owine` with default umask 022, producing dirs mode 755 / files mode 644 — no group-write. The self-hosted deploy's `git reset --hard` then failed to unlink those files (the `deploy` user is in `owine` group but the bit wasn't set), surfacing as opaque "stack failed" symptoms in the deploy phase rather than the actual git error in update-tree (because the failure point was in a different step). Fixed by (a) one-time `chmod -R g+w /opt/compose` to repair residue, and (b) `umask 002` in `owine`'s shell rcs so future SSH-driven changes don't recreate the state. See path-ownership section above.
 
 ### Job consolidation (DONE 2026-04-30, commit `df6b173`)
 
