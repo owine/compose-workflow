@@ -305,13 +305,31 @@ Things to record per migration to inform the next one:
 
 - **ghcr.io pull timeouts on first deploy of `housemanager` and `trips` (piwine, 2026-04-30).** `registry-login` succeeded — the *pull* of those images during `deploy-new` timed out with `Get "https://ghcr.io/v2/": context deadline exceeded`. Existing stacks (already-cached images) deployed fine. Likely candidates: large image size on a slow link, transient ghcr.io throttling, or DNS/TLS handshake stall on the runner host. Existing-stack pulls pull *deltas* via cached layers; first-time pulls of multi-GB images amplify any flake. If this recurs on piwine after the next deploy, investigate before enabling the workflow_run trigger. Rollback fired correctly in all cases — blast radius zero.
 
-### Architectural follow-up (deferred)
+### Job consolidation (DONE 2026-04-30, commit `df6b173`)
 
-The current 17-job structure was inherited from the GitHub-hosted SSH `deploy.yml` where matrix entries fan out to ephemeral runners in parallel. **On a single self-hosted runner with concurrency=1, matrix entries serialize** — there's no parallelism benefit, only per-job cold-start cost (env setup, secrets injection, dispatch handshake) multiplied by N stacks. Last full pilot run had 11 `deploy-existing` matrix entries running one-at-a-time.
+The original structure was inherited from the GitHub-hosted SSH `deploy.yml` where matrix entries fan out to ephemeral runners in parallel. On a single self-hosted runner with concurrency=1, **matrix entries serialize** — no parallelism benefit, only per-job cold-start cost (env setup, secrets injection, dispatch handshake) multiplied by N stacks. The full piwine deploy was hitting 11 `deploy-existing` matrix entries running one-at-a-time = 11 sequential cold-starts.
 
-Target: consolidate to ~4 jobs — `prepare`, `deploy` (registry-login + deploy-dockge + per-stack loop in one bash context), `health-check`, `notify`. Step-level `timeout-minutes:` preserves per-stack timeout enforcement. Open design questions for the refactor: keep `teardown-removed`, `update-tree`, `rollback`, and `cleanup-failed-new` as separate jobs (clean diff, GitHub UI shows each phase) or fold them into the consolidated `deploy` job (less YAML, simpler dependency graph). Trade-off is GitHub UI granularity vs. job count.
+**Final structure: 5 jobs** (down from 11 logical / 17 runtime jobs):
 
-Defer until: (a) the ghcr.io pull-timeout above is diagnosed against the current architecture (so a refactor doesn't conflate "the refactor broke X" with "X was already broken"), and (b) all three repos have migrated and baked at least a week.
+1. `prepare` — discover stacks, capture previous SHA, classify removed/existing/new.
+2. `deploy` — **merged**. Steps: skip-gate → teardown-removed → tree update → 1P configure → load creds → 4× registry login → dockge → existing-stack loop → new-stack loop → cleanup-on-failure → summary outputs.
+3. `health-check` — separate (distinct timeout profile, clean gate for rollback condition).
+4. `rollback` — separate (must be reachable from *either* `deploy.result == 'failure'` or `health-check.result == 'failure'`; step-level `if: failure()` only sees prior steps in the same job).
+5. `notify` — separate (`if: always()`, final aggregator).
+
+**Key implementation details:**
+
+- **Per-stack timeout** is enforced with `timeout $SERVICE_STARTUP_TIMEOUT` inside the loop, not step-level `timeout-minutes:`. Step-level would apply to the *whole loop*; the bash `timeout` command preserves the prior matrix's per-entry budget.
+- **Per-stack failure isolation** uses `set +e` + a `failed=()` array; the loop step exits non-zero only at the end if any stack failed. Matches the prior matrix's `fail-fast: false` semantics.
+- **Failed-stack lists** are surfaced as step outputs (`failed_stacks`) and appended to `$GITHUB_STEP_SUMMARY` for at-a-glance visibility — replaces the per-matrix-entry pass/fail in the GitHub UI's job list. The trade-off (no per-stack rows in the jobs panel) was deemed acceptable given the cold-start savings.
+- **`deploy.outputs.deployed_anything`** replaces the prior cross-job condition `(deploy-existing.result == 'success' || deploy-new.result == 'success')` that gated `health-check`. Computed in the `summary` step from per-loop `succeeded` counters.
+- **`deploy.outputs.skipped`** replaces `update-tree.outputs.skipped`. The notify job consumes it for the `deployment_needed` check.
+- **Notify `deploy_status` simplification**: previously OR'd six job results (`UPDATE_TREE_RESULT`, `TEARDOWN_RESULT`, `REGISTRY_LOGIN_RESULT`, `DEPLOY_DOCKGE_RESULT`, `DEPLOY_EXISTING_RESULT`, `DEPLOY_NEW_RESULT`) — now just checks `DEPLOY_RESULT`. The `healthy/failed → success/failure` case statement is preserved verbatim.
+- **`logout: false`** on every `docker/login-action` step (still required) — without it, the action wipes `~/.docker/config.json` at job-end and downstream `docker compose pull` fails.
+
+**Validation:** pilot smoke-test on docker-piwine via `workflow_run` chain (lint → deploy) confirmed 5 jobs, correct step ordering, correct rollback fire on partial-deploy failure, correct skip-gate, correct Discord notification status. Pre-existing housemanager/trips stack issue surfaced identically to before — not a regression.
+
+**Caller update procedure** (when bumping to a SHA that includes the refactor): no input changes, but bump the consumer SHA pin in the same push session that picks up the refactor commit. Renovate will follow but with a window of mismatch where neither `runner-label` nor the new outputs structure has stabilized.
 
 ---
 
