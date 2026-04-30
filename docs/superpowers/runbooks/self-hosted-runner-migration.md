@@ -102,6 +102,12 @@ up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
 ```
 Collapse pull+up into one invocation (`--pull always` does both). `--remove-orphans` is non-optional — without it, renamed sidecars (old `<primary>_<sidecar>` → new `<primary>-<sidecar>`) leave stale containers.
 
+### Health-status vocabulary alignment
+
+The inline `health-check` job emits `outputs.status=healthy` / `failed` (semantic). The notify job's status-branching logic compares against `success` / `failure`. Without normalization, every successful deploy renders as a red "Failed" embed in Discord — every job runs green, but the message is wrong.
+
+Fixed in `6b3cf2b` via a `case` statement that maps `healthy → success` and `failed → failure` at the top of the notify job's status computation. If you copy `deploy-local.yml` for a per-repo file (option 2 of the runs-on strategy), keep that normalization block intact. The pipeline-status icon block downstream consumes the normalized `$health_status`, so fixing once fixes both.
+
 ### `actionlint.yaml` per repo
 
 Both `compose-workflow` and the caller repo need `.github/actionlint.yaml`:
