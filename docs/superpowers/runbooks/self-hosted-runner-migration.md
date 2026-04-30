@@ -1,6 +1,6 @@
 # Self-Hosted Runner Migration Runbook
 
-Operational reference for migrating a docker-compose repo from the SSH-based `deploy.yml` to the workflow-native `deploy-local.yml`. Distilled from the `docker-piwine-office` pilot (2026-04-29). Read this *before* starting host setup on the next host.
+Operational reference for migrating a docker-compose repo from the SSH-based `deploy.yml` to the workflow-native `deploy-local.yml`. Distilled from the `docker-piwine-office` pilot (2026-04-29) and the `docker-piwine` migration (2026-04-30). Read this *before* starting host setup on the next host (`docker-zendc` is the only one left).
 
 **Spec:** `docs/superpowers/specs/2026-04-29-self-hosted-deploy-runner-pilot-design.md`
 **Original plan:** `docs/superpowers/plans/2026-04-29-self-hosted-deploy-runner-pilot.md`
@@ -44,14 +44,30 @@ If this fails, the workflow will too. The biggest wins from this step on piwine-
 - Volume permissions on tailscale state dirs
 - 1Password service account token scope mismatches
 
-### Path ownership
+### Path ownership (admin owns tree, runner gets group access)
+
+**Standardized 2026-04-30 across both piwine-office and piwine** — earlier piwine-office instructions said to `chown -R deploy:deploy` the tree. That's been reverted. The current pattern keeps the tree owned by the human admin (`owine`) and grants the `deploy` runner user access via group membership + `safe.directory`. Symmetric with the SSH path, doesn't require a recursive ownership change of a multi-stack tree, and survives `git reset --hard` cleanly.
 
 ```bash
-sudo chown -R deploy:deploy /opt/compose /opt/dockge   # zendc has no /opt/dockge
+# Tree stays owned by the admin user
+sudo chown -R owine:owine /opt/compose /opt/dockge   # zendc has no /opt/dockge
+
+# Group-writable + setgid so files created by `deploy` inherit the owine group
 sudo chmod -R g+rwX /opt/compose /opt/dockge
-sudo find /opt/compose /opt/dockge -type d -exec chmod g+s {} \;   # sgid: new files inherit deploy group
-sudo usermod -aG deploy <your-admin-user>   # so you can also write/git in /opt/compose
+sudo find /opt/compose /opt/dockge -type d -exec chmod g+s {} +
+
+# Add deploy user to the admin's group (NOT the other way around)
+sudo usermod -aG owine deploy
+
+# Tell git the runner user can operate on a tree it doesn't own
+sudo -u deploy git config --global --add safe.directory /opt/compose
 ```
+
+**Why `safe.directory` is required:** git refuses to operate on repos whose top-level dir is owned by a different uid (the "dubious ownership" error). Group membership doesn't satisfy the check — only owner uid or root does. The `safe.directory` config tells the runner user "this specific path is OK." Without this line, *every* git step in the workflow fails before the deploy can begin.
+
+**`/opt/dockge` doesn't need `safe.directory`** today (it's not a git repo — just a compose tree). Add it if that ever changes.
+
+**Don't `chown -R deploy:deploy`** the tree — earlier guidance recommended this; it works but creates an asymmetric setup where the SSH-path admin can no longer manage files without sudo, and the chown itself is a recursive blast-radius operation across many stacks. The group + `safe.directory` pattern avoids both.
 
 ### Runner registration
 
@@ -171,7 +187,33 @@ PATs only need read/pull scope on each registry. Store each as a 1Password API C
 
 **SSH-path equivalent:** `71877b8` (GHCR only, via `op read` inline in `deploy-stacks.sh`/`rollback-stacks.sh`; the self-hosted version is broader because it covers all four registries the runner pulls from).
 
-### `actionlint.yaml` per repo
+### Replacing the runner user (rename or reset)
+
+If you misname the runner user during initial setup (e.g. created `gh-runner` then realized the convention is `deploy`), **don't try to `usermod -l`** — too many side-effects (home-dir name, group name, systemd unit user). Tear down and recreate:
+
+```bash
+# 1. Get a removal token (single-use)
+REMOVAL_TOKEN=$(gh api -X POST repos/owine/<repo>/actions/runners/remove-token --jq .token)
+
+# 2. Stop and uninstall the systemd service (as your sudo user)
+sudo bash -c 'cd /home/<old-user>/actions-runner && ./svc.sh stop && ./svc.sh uninstall'
+
+# 3. Deregister from GitHub (run as the old runner user, with the token)
+sudo -iu <old-user> bash -c "cd ~/actions-runner && ./config.sh remove --token \"$REMOVAL_TOKEN\""
+
+# 4. Delete the user — beware orphan processes
+sudo userdel -r <old-user>
+```
+
+**Gotcha: orphan `op daemon` processes.** The runner spawns long-running `op` daemons during deploys. They can outlive the systemd service shutdown and hold the user open, causing `userdel` to fail with "user is currently used by process N." If `userdel` complains:
+
+```bash
+sudo kill <pid>     # or pkill -u <old-user>
+sleep 2
+sudo userdel -r <old-user>
+```
+
+Then create the new user, re-download the runner package (don't try to reuse the old install dir under the old home), and re-run `config.sh` with a fresh registration token. The new install gets a new uid; that's fine — uids are host-local, no need to match across hosts.
 
 Both `compose-workflow` and the caller repo need `.github/actionlint.yaml`:
 ```yaml
@@ -206,15 +248,47 @@ The old SSH `deploy.yml` had `args:` and `health-check-command-timeout:` inputs.
 
 ---
 
-## `runs-on` strategy decision (REQUIRED before 2nd repo migration)
+## `runs-on` strategy — RESOLVED (2026-04-30)
 
-The reusable `deploy-local.yml` currently hardcodes `runs-on: [self-hosted, piwine-office]`. Three options for piwine and zendc:
+We chose **option 1: parameterize via input.** Verified working on actions/runner v2.334.0 against piwine and piwine-office in the same workflow file. List-element interpolation `runs-on: [self-hosted, "${{ inputs.runner-label }}"]` is reliable on modern runners — the prior runbook's caution about version fragility no longer applies.
 
-1. **Parameterize via input:** `runs-on: [self-hosted, "${{ inputs.runner-label }}"]`. Cleanest, but GitHub Actions has had inconsistent behavior for input interpolation in `runs-on` arrays across runner versions. Verify with a smoke-test workflow on the actual runner version before relying on it.
-2. **Per-repo workflow file:** `deploy-local-piwine.yml`, `deploy-local-zendc.yml`. Verbose, but unambiguous and easy to debug.
-3. **Single-entry matrix wrapping the runs-on:** workaround that pushes the input through matrix expansion. Extra YAML layer.
+**Implementation pattern:**
 
-**Recommendation:** option 2. You only have two repos left to migrate; the duplication cost is bounded, and there's no version-fragility risk.
+```yaml
+# In deploy-local.yml
+on:
+  workflow_call:
+    inputs:
+      runner-label:
+        description: "Custom self-hosted runner label (e.g. piwine, piwine-office)."
+        required: true
+        type: string
+
+jobs:
+  prepare:
+    runs-on: [self-hosted, "${{ inputs.runner-label }}"]
+    # ...
+```
+
+Each caller passes its own label:
+
+```yaml
+# In docker-piwine/.github/workflows/deploy-self-hosted.yml
+with:
+  runner-label: piwine
+```
+
+**Breaking-change handling when adding a required input:** callers pinned to the pre-input SHA fail with "invalid input: runner-label" on the next deploy. Bump every caller's SHA pin in the same push session, manually — Renovate eventually does this but with a window of broken deploys in between. Procedure: push the reusable-workflow change, get the new SHA, edit each caller's `uses:` line in the same minute, push.
+
+**actionlint.yaml in the reusable-workflow's repo** must list **every** label any caller passes — otherwise `actionlint` blocks PRs to compose-workflow with "label X is unknown" once a new caller starts using a new label. Edit `compose-workflow/.github/actionlint.yaml` whenever a new host comes online:
+
+```yaml
+self-hosted-runner:
+  labels:
+    - piwine
+    - piwine-office
+    # add zendc when migrated
+```
 
 ---
 
@@ -226,6 +300,18 @@ Things to record per migration to inform the next one:
 - **Flake rate** on stack recreation, especially compose `--wait` interactions during cascading restarts. Run 6 of the pilot hit a "No such container" race after partial-state rollbacks; once stable, deploys succeed cleanly. Watch over the first ~10 deploys.
 - **Discord embed parity.** The new path's notify job dropped per-stack healthy/degraded/failed counts (the inline health-check is simpler than `health-check.sh`). If that detail matters in practice, expand the inline health-check to emit the counts. Otherwise leave it.
 - **Anything Tailscale/SSH was implicitly providing** that's now missing. None observed in the pilot, but worth a check.
+
+### Known issues (open, not yet diagnosed)
+
+- **ghcr.io pull timeouts on first deploy of `housemanager` and `trips` (piwine, 2026-04-30).** `registry-login` succeeded — the *pull* of those images during `deploy-new` timed out with `Get "https://ghcr.io/v2/": context deadline exceeded`. Existing stacks (already-cached images) deployed fine. Likely candidates: large image size on a slow link, transient ghcr.io throttling, or DNS/TLS handshake stall on the runner host. Existing-stack pulls pull *deltas* via cached layers; first-time pulls of multi-GB images amplify any flake. If this recurs on piwine after the next deploy, investigate before enabling the workflow_run trigger. Rollback fired correctly in all cases — blast radius zero.
+
+### Architectural follow-up (deferred)
+
+The current 17-job structure was inherited from the GitHub-hosted SSH `deploy.yml` where matrix entries fan out to ephemeral runners in parallel. **On a single self-hosted runner with concurrency=1, matrix entries serialize** — there's no parallelism benefit, only per-job cold-start cost (env setup, secrets injection, dispatch handshake) multiplied by N stacks. Last full pilot run had 11 `deploy-existing` matrix entries running one-at-a-time.
+
+Target: consolidate to ~4 jobs — `prepare`, `deploy` (registry-login + deploy-dockge + per-stack loop in one bash context), `health-check`, `notify`. Step-level `timeout-minutes:` preserves per-stack timeout enforcement. Open design questions for the refactor: keep `teardown-removed`, `update-tree`, `rollback`, and `cleanup-failed-new` as separate jobs (clean diff, GitHub UI shows each phase) or fold them into the consolidated `deploy` job (less YAML, simpler dependency graph). Trade-off is GitHub UI granularity vs. job count.
+
+Defer until: (a) the ghcr.io pull-timeout above is diagnosed against the current architecture (so a refactor doesn't conflate "the refactor broke X" with "X was already broken"), and (b) all three repos have migrated and baked at least a week.
 
 ---
 
