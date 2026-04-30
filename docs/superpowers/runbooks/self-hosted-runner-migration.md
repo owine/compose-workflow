@@ -124,6 +124,53 @@ Note `docker compose ps -a` (with `-a`) — without it, exited containers don't 
 
 **SSH-path equivalent fixes:** `e9d37e4` (logic), `3684dd6` (parsing). The second is a sharp edge worth knowing if anyone rewrites the gate: Go-template `--format` strings like `'{{.Service}}\t{{.Health}}\t{{.ExitCode}}'` silently drop trailing fields when an intermediate field is empty (e.g. `.Health=""` for containers without a healthcheck), leaving downstream values unparseable in `bash` reads. Use `--format json | jq -r '[…] | @tsv'` instead — JSON enforces a fixed schema. The deploy-local.yml inline gate already operates on parsed JSON via `jq`, so it's not vulnerable today, but don't "simplify" it to Go templates.
 
+### Private container registries need a `registry-login` job
+
+Most private registries (GHCR, Docker Hub PRs, GitLab Container Registry, etc.) require cached creds in the runner host's `~/.docker/config.json` for `docker compose pull` to succeed. New self-hosted hosts won't have those creds on first deploy. GHCR is the most common gotcha — packages stay private even when their source repo is public.
+
+The fix is a dedicated `registry-login` job that runs after `update-tree` and before any deploy job. Two-step pattern:
+
+1. **One** `1password/load-secrets-action` step that pulls **all** username/token pairs in a single round trip (one map of `KEY: op://...` references in the step's `env:`).
+2. **One `docker/login-action` step per registry**, each `continue-on-error: true` and `logout: false`, consuming `${{ steps.creds.outputs.* }}`.
+
+```yaml
+registry-login:
+  needs: [prepare, update-tree]
+  steps:
+    - uses: 1password/load-secrets-action/configure@<sha>
+      with: { service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }} }
+    - id: creds
+      uses: 1password/load-secrets-action@<sha>
+      with: { unset-previous: true }
+      env:
+        GHCR_USERNAME: op://Docker/ghcr-pat/username
+        GHCR_TOKEN:    op://Docker/ghcr-pat/pat
+        DOCKERHUB_USERNAME: op://Docker/docker-hub/username
+        DOCKERHUB_TOKEN:    op://Docker/docker-hub/token
+        # ... (one pair per registry)
+    - uses: docker/login-action@<sha>
+      continue-on-error: true
+      with:
+        registry: ghcr.io
+        username: ${{ steps.creds.outputs.GHCR_USERNAME }}
+        password: ${{ steps.creds.outputs.GHCR_TOKEN }}
+        logout: false
+    # ... (one step per registry; omit `registry:` for Docker Hub)
+```
+
+**Why these tools, not alternatives:**
+- `1password/load-secrets-action` (not `op read` / `op run` inline) — masks values in logs, exposes both env and step outputs, pairs with `unset-previous: true` for explicit cleanup. Matches the existing notify-job pattern. Reserve `op` CLI for the bulk `compose.env` resolution at deploy time, where it's the right tool.
+- `docker/login-action` (not inline `echo … | docker login --password-stdin`) — handles password stdin piping correctly, masks credentials, and is the canonical action.
+- **One** load step for **all** registries — minimizes round trips to 1Password and keeps the credential map in one place. Don't fragment into per-registry load steps.
+
+**Failure mode:** load step is **fatal** (a missing 1P item should fail loud, not silently skip a registry); per-registry login is **non-fatal** via `continue-on-error: true` (a single misconfigured registry shouldn't block deploys that may not pull from it; cached creds from a prior run may still work). `logout: false` is critical — without it, the action wipes `~/.docker/config.json` at job end and the next job has no creds.
+
+The login persists in `~/.docker/config.json` on the runner host, so a single job suffices — `deploy-dockge`, `deploy-existing`, `deploy-new`, and `rollback` all inherit the cached creds. Add `registry-login` to each deploy job's `needs:` and gate each `if:` on `needs.registry-login.result == 'success'`. **Also add it to `notify.needs`** and check `REGISTRY_LOGIN_RESULT == 'failure'` in the deploy_status block — otherwise a login failure cascades into `skipped` deploys, which the status logic mistakes for success.
+
+PATs only need read/pull scope on each registry. Store each as a 1Password API Credential item (matching existing `docker-hub` shape: `username` + `token` fields, with `hostname` for human reference).
+
+**SSH-path equivalent:** `71877b8` (GHCR only, via `op read` inline in `deploy-stacks.sh`/`rollback-stacks.sh`; the self-hosted version is broader because it covers all four registries the runner pulls from).
+
 ### `actionlint.yaml` per repo
 
 Both `compose-workflow` and the caller repo need `.github/actionlint.yaml`:
