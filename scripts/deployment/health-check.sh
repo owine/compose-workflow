@@ -173,8 +173,14 @@ set +e
     cd "/opt/compose/$stack" 2>/dev/null || return 1
 
     # Get container states and identify problematic ones
+    # Use JSON+jq to guarantee tab separation and correct ExitCode rendering;
+    # the Go template form (e.g. '{{.Health}}\t{{.ExitCode}}') has been observed
+    # to drop fields when intermediate values are empty (disabled healthcheck),
+    # leaving exit_code parsed as "" and clean one-shots misclassified as failures.
     local ps_output
-    ps_output=$($COMPOSE_CMD -f compose.yaml ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}\t{{.ExitCode}}' 2>/dev/null || echo "")
+    ps_output=$($COMPOSE_CMD -f compose.yaml ps -a --format json 2>/dev/null \
+      | jq -r '[.Name, .Service, .State, (.Health // ""), (.ExitCode | tostring)] | @tsv' 2>/dev/null \
+      || echo "")
 
     local found_issues=false
     while IFS=$'\t' read -r name service state health exit_code; do
@@ -279,10 +285,15 @@ set +e
 
     local attempt=0
     while true; do
-      # Get container state, health, and exit code in one call using custom format
-      # Format: Service State Health ExitCode (tab-separated)
+      # Get container state, health, and exit code in one call using JSON+jq.
+      # JSON output is more robust than Go templates with embedded \t — observed
+      # rendering quirk: when intermediate template fields (e.g. .Health) are
+      # empty, downstream fields (.ExitCode) get dropped, leaving exit_code as
+      # an empty string and clean one-shot exits misclassified as failures.
       local ps_output
-      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT $COMPOSE_CMD -f compose.yaml ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}\t{{.ExitCode}}' 2>/dev/null || echo "")
+      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT $COMPOSE_CMD -f compose.yaml ps -a --format json 2>/dev/null \
+        | jq -r '[.Service, .State, (.Health // ""), (.ExitCode | tostring)] | @tsv' 2>/dev/null \
+        || echo "")
 
       # Parse output to count different states and health conditions
       local running_healthy=0
