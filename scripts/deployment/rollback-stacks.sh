@@ -161,6 +161,22 @@ ROLLBACK_RESULT=$({
 
   echo "🔄 Rolling back to $PREVIOUS_SHA..."
 
+  # Authenticate to ghcr.io for private package pulls during rollback.
+  # Same pattern as deploy-stacks.sh; non-fatal so rollbacks of only-public-image
+  # stacks still succeed if the 1P item is missing.
+  GHCR_USER=$(op read "op://Docker/ghcr-pat/username" 2>/dev/null || true)
+  GHCR_PAT=$(op read "op://Docker/ghcr-pat/pat" 2>/dev/null || true)
+  if [ -n "$GHCR_USER" ] && [ -n "$GHCR_PAT" ]; then
+    if echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null 2>&1; then
+      echo "🔐 ghcr.io: authenticated as $GHCR_USER"
+    else
+      echo "⚠️ ghcr.io: docker login failed (continuing with cached creds if any)"
+    fi
+  else
+    echo "ℹ️ ghcr.io: skipping login (op://Docker/ghcr-pat unavailable)"
+  fi
+  unset GHCR_PAT
+
   # Add timeout protection to git operations
   if ! timeout $GIT_FETCH_TIMEOUT git -C /opt/compose/ fetch; then
     echo "❌ Git fetch timed out after ${GIT_FETCH_TIMEOUT}s"

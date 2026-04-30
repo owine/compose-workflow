@@ -391,6 +391,22 @@ fi
   # authentication failures when multiple op run calls race simultaneously
   op run --env-file=/opt/compose/compose.env -- true >/dev/null 2>&1 || true
 
+  # Authenticate to ghcr.io for private package pulls.
+  # Token at op://Docker/ghcr-pat — non-fatal so deploys with only public images
+  # keep working if the item is missing (e.g. on hosts that don't need it).
+  GHCR_USER=$(op read "op://Docker/ghcr-pat/username" 2>/dev/null || true)
+  GHCR_PAT=$(op read "op://Docker/ghcr-pat/pat" 2>/dev/null || true)
+  if [ -n "$GHCR_USER" ] && [ -n "$GHCR_PAT" ]; then
+    if echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null 2>&1; then
+      echo "🔐 ghcr.io: authenticated as $GHCR_USER"
+    else
+      echo "⚠️ ghcr.io: docker login failed (continuing with cached creds if any)"
+    fi
+  else
+    echo "ℹ️ ghcr.io: skipping login (op://Docker/ghcr-pat unavailable)"
+  fi
+  unset GHCR_PAT
+
   # Run pre-deployment validation
   if ! validate_all_stacks; then
     echo "DEPLOYMENT_STATUS=failed_validation"
