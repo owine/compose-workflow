@@ -174,17 +174,19 @@ set +e
 
     # Get container states and identify problematic ones
     local ps_output
-    ps_output=$($COMPOSE_CMD -f compose.yaml ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+    ps_output=$($COMPOSE_CMD -f compose.yaml ps -a --format '{{.Name}}\t{{.Service}}\t{{.State}}\t{{.Health}}\t{{.ExitCode}}' 2>/dev/null || echo "")
 
     local found_issues=false
-    while IFS=$'\t' read -r name service state health; do
+    while IFS=$'\t' read -r name service state health exit_code; do
       [ -z "$name" ] && continue
 
       # Capture logs for containers that are:
       # - unhealthy (health check failed)
       # - starting (health check not yet passed - can indicate slow startup or issues)
-      # - exited (crashed or stopped)
+      # - exited with non-zero code (crashed or stopped abnormally)
       # - restarting (crash loop)
+      # One-shot containers that exited cleanly (exit 0) are skipped — they are
+      # expected terminal states (e.g. migrations gated via service_completed_successfully).
       local capture=false
       local reason=""
 
@@ -199,8 +201,10 @@ set +e
           fi
           ;;
         exited)
-          capture=true
-          reason="exited"
+          if [ "$exit_code" != "0" ]; then
+            capture=true
+            reason="exited (code $exit_code)"
+          fi
           ;;
         restarting)
           capture=true
@@ -275,20 +279,21 @@ set +e
 
     local attempt=0
     while true; do
-      # Get container state and health in one call using custom format
-      # Format: Service State Health (tab-separated)
+      # Get container state, health, and exit code in one call using custom format
+      # Format: Service State Health ExitCode (tab-separated)
       local ps_output
-      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT $COMPOSE_CMD -f compose.yaml ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null || echo "")
+      ps_output=$(timeout $HEALTH_CHECK_CMD_TIMEOUT $COMPOSE_CMD -f compose.yaml ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}\t{{.ExitCode}}' 2>/dev/null || echo "")
 
       # Parse output to count different states and health conditions
       local running_healthy=0
       local running_starting=0
       local running_unhealthy=0
       local running_no_health=0
-      local exited_count=0
+      local exited_count=0       # exited with non-zero exit code (failure)
+      local completed_count=0    # exited with code 0 (one-shot success, e.g. migrations)
       local restarting_count=0
 
-      while IFS=$'\t' read -r service state health; do
+      while IFS=$'\t' read -r service state health exit_code; do
         # Skip empty lines
         [ -z "$service" ] && continue
 
@@ -311,7 +316,14 @@ set +e
             esac
             ;;
           exited)
-            exited_count=$((exited_count + 1))
+            # Exit code 0 = one-shot completed successfully (e.g. db migration gated
+            # via service_completed_successfully); treat as healthy and exclude from
+            # the failure gate. Non-zero exits remain failures.
+            if [ "$exit_code" = "0" ]; then
+              completed_count=$((completed_count + 1))
+            else
+              exited_count=$((exited_count + 1))
+            fi
             ;;
           restarting)
             restarting_count=$((restarting_count + 1))
@@ -322,7 +334,7 @@ set +e
       # Total running containers (all health states)
       local running_count=$((running_healthy + running_starting + running_unhealthy + running_no_health))
 
-      echo "$stack status: $running_count/$total_count running (healthy: $running_healthy, starting: $running_starting, unhealthy: $running_unhealthy, no-check: $running_no_health), exited: $exited_count, restarting: $restarting_count"
+      echo "$stack status: $running_count running, $completed_count completed (one-shot), $total_count total — healthy: $running_healthy, starting: $running_starting, unhealthy: $running_unhealthy, no-check: $running_no_health, exited (failed): $exited_count, restarting: $restarting_count"
 
       # Fast fail on detection of unhealthy containers
       if [ "$running_unhealthy" -gt 0 ]; then
@@ -330,15 +342,15 @@ set +e
         return 1
       fi
 
-      # Calculate healthy containers (healthy + no health check defined)
-      local healthy_total=$((running_healthy + running_no_health))
+      # Calculate healthy containers (healthy + no health check defined + one-shot completed)
+      local healthy_total=$((running_healthy + running_no_health + completed_count))
 
-      # Success condition: all containers running and healthy (or no health check)
+      # Success condition: every service is either running-healthy or completed (exit 0)
       if [ "$healthy_total" -eq "$total_count" ] && [ "$total_count" -gt 0 ] && [ "$running_starting" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
         echo "✅ $stack: All $total_count services healthy"
         return 0
-      # Degraded but stable: all running and healthy, but fewer than expected
-      elif [ "$healthy_total" -gt 0 ] && [ "$healthy_total" -eq "$running_count" ] && [ "$running_starting" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
+      # Degraded but stable: everything that's accounted for is healthy/completed, but fewer than expected
+      elif [ "$healthy_total" -gt 0 ] && [ "$healthy_total" -eq "$((running_count + completed_count))" ] && [ "$running_starting" -eq 0 ] && [ "$exited_count" -eq 0 ] && [ "$restarting_count" -eq 0 ]; then
         echo "⚠️ $stack: $healthy_total/$total_count services healthy (degraded but stable)"
         return 2  # Degraded but acceptable
       # Services still starting - retry to allow health checks to complete
@@ -548,10 +560,14 @@ set +e
 
   for STACK in $STACKS; do
     STACK_RUNNING=$(cd /opt/compose/$STACK 2>/dev/null && $COMPOSE_CMD -f compose.yaml ps --services --filter "status=running" 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
+    # Count one-shot containers that exited cleanly as "running" for metrics purposes —
+    # these are expected terminal states and should not depress success rate.
+    STACK_COMPLETED=$(cd /opt/compose/$STACK 2>/dev/null && $COMPOSE_CMD -f compose.yaml ps -a --format '{{.State}}\t{{.ExitCode}}' 2>/dev/null | awk -F'\t' '$1 == "exited" && $2 == "0" {n++} END {print n+0}' || echo "0")
     STACK_TOTAL=$(cd /opt/compose/$STACK 2>/dev/null && $COMPOSE_CMD -f compose.yaml ps -a --services 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$' 2>/dev/null | wc -l | tr -d " " || echo "0")
-    echo "  $STACK: $STACK_RUNNING/$STACK_TOTAL services"
+    STACK_ACTIVE=$((STACK_RUNNING + STACK_COMPLETED))
+    echo "  $STACK: $STACK_ACTIVE/$STACK_TOTAL services ($STACK_RUNNING running, $STACK_COMPLETED completed)"
     TOTAL_CONTAINERS=$((TOTAL_CONTAINERS + STACK_TOTAL))
-    RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_RUNNING))
+    RUNNING_CONTAINERS=$((RUNNING_CONTAINERS + STACK_ACTIVE))
   done
 
   # Write outputs to temp file to ensure capture even if script exits early
