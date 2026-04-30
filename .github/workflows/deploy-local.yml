@@ -1,6 +1,13 @@
 ---
 name: Deploy (Local Self-Hosted)
 
+# Job structure (consolidated 2026-04-30; see runbook for rationale):
+#   prepare      → discover stacks, capture previous SHA, classify removed/existing/new
+#   deploy       → skip-gate, teardown, tree update, registry login, dockge, all stacks
+#   health-check → validate critical stacks (separate job for distinct timeout profile)
+#   rollback     → git reset to previous SHA + redeploy on deploy/health failure
+#   notify       → Discord notification (always)
+
 on:
   workflow_call:
     inputs:
@@ -162,17 +169,52 @@ jobs:
             --stacks "${{ join(fromJSON(steps.discover-stacks.outputs.stacks), ' ') }}" \
             --repo-dir "$DETECTION_TREE"
 
-  teardown-removed:
+  deploy:
+    # Consolidated deploy phase. Replaces 7 prior jobs:
+    # teardown-removed, update-tree, registry-login, deploy-dockge,
+    # deploy-existing (matrix), deploy-new (matrix), cleanup-failed-new.
+    # Single self-hosted runner serializes matrix entries anyway, so the
+    # collapse just removes job cold-start overhead with no parallelism loss.
     needs: prepare
-    if: needs.prepare.outputs.has_removed_stacks == 'true'
+    if: always() && needs.prepare.result == 'success'
     runs-on: [self-hosted, "${{ inputs.runner-label }}"]
-    timeout-minutes: 10
+    timeout-minutes: 60
+    outputs:
+      skipped: ${{ steps.skip-gate.outputs.skipped }}
+      deployed_anything: ${{ steps.summary.outputs.deployed_anything }}
+      existing_failed_stacks: ${{ steps.summary.outputs.existing_failed_stacks }}
+      new_failed_stacks: ${{ steps.summary.outputs.new_failed_stacks }}
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
+      DOCKGE_PATH: ${{ inputs.live-dockge-path }}
+      TARGET_REF: ${{ inputs.target-ref }}
+      FORCE_DEPLOY: ${{ inputs.force-deploy }}
+      SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
+      HAS_DOCKGE: ${{ inputs.has-dockge }}
+      HAS_REMOVED: ${{ needs.prepare.outputs.has_removed_stacks }}
+      HAS_EXISTING: ${{ needs.prepare.outputs.has_existing_stacks }}
+      HAS_NEW: ${{ needs.prepare.outputs.has_new_stacks }}
       REMOVED_STACKS: ${{ needs.prepare.outputs.removed_stacks }}
+      EXISTING_STACKS: ${{ needs.prepare.outputs.existing_stacks }}
+      NEW_STACKS: ${{ needs.prepare.outputs.new_stacks }}
       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
-      - name: Stop removed stacks (uses pre-reset compose files)
+      - name: Skip gate (already at target SHA?)
+        id: skip-gate
+        run: |
+          set -euo pipefail
+          CURRENT_SHA=$(git -C "$LIVE_REPO_PATH" rev-parse HEAD)
+          if [[ "$CURRENT_SHA" == "$TARGET_REF" && "$FORCE_DEPLOY" != "true" ]]; then
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            echo "ℹ️  Already at $TARGET_REF; skipping deploy phase"
+          else
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Teardown removed stacks (uses pre-reset compose files)
+        if: |
+          steps.skip-gate.outputs.skipped == 'false'
+          && env.HAS_REMOVED == 'true'
         run: |
           set -euo pipefail
           for stack in $(echo "$REMOVED_STACKS" | jq -r '.[]'); do
@@ -192,73 +234,32 @@ jobs:
             fi
           done
 
-  update-tree:
-    needs: [prepare, teardown-removed]
-    # Run if teardown-removed succeeded OR was skipped (no removed stacks)
-    if: |
-      always() && needs.prepare.result == 'success'
-      && (needs.teardown-removed.result == 'success' || needs.teardown-removed.result == 'skipped')
-    runs-on: [self-hosted, "${{ inputs.runner-label }}"]
-    timeout-minutes: 5
-    outputs:
-      skipped: ${{ steps.gate.outputs.skipped }}
-    env:
-      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
-      TARGET_REF: ${{ inputs.target-ref }}
-      FORCE_DEPLOY: ${{ inputs.force-deploy }}
-    steps:
-      - name: Skip if already at target SHA (and not forced)
-        id: gate
-        run: |
-          set -euo pipefail
-          CURRENT_SHA=$(git -C "$LIVE_REPO_PATH" rev-parse HEAD)
-          if [[ "$CURRENT_SHA" == "$TARGET_REF" && "$FORCE_DEPLOY" != "true" ]]; then
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-            echo "ℹ️  Already at $TARGET_REF; skipping update"
-          else
-            echo "skipped=false" >> "$GITHUB_OUTPUT"
-          fi
-
       # actions/checkout authenticates via GITHUB_TOKEN; the deploy user has no
       # GitHub credentials, so we fetch into the workspace and then sync the
       # live tree from the local workspace (no network auth required).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        if: steps.gate.outputs.skipped == 'false'
+        if: steps.skip-gate.outputs.skipped == 'false'
         with:
           fetch-depth: 0
           ref: ${{ inputs.target-ref }}
 
       - name: Update live tree from local workspace
-        if: steps.gate.outputs.skipped == 'false'
+        if: steps.skip-gate.outputs.skipped == 'false'
         run: |
           set -euo pipefail
           git -C "$LIVE_REPO_PATH" fetch "$GITHUB_WORKSPACE" "$TARGET_REF"
           git -C "$LIVE_REPO_PATH" reset --hard "$TARGET_REF"
           echo "✅ live tree now at $TARGET_REF"
 
-  registry-login:
-    # Private container registries require cached creds in ~/.docker/config.json
-    # for `docker compose pull` to succeed. One login per registry here populates
-    # the runner host; all downstream jobs (deploy-dockge, deploy-existing,
-    # deploy-new, rollback) inherit the cached creds.
-    # Per-registry login is non-fatal (warns on failure) so a single misconfigured
-    # registry doesn't block deploys that may not even pull from it. The 1P load
-    # itself is fatal — if a referenced item is missing, fix it before deploying.
-    # SSH-path equivalent: 71877b8 (ghcr only, via op read in deploy-stacks.sh).
-    needs: [prepare, update-tree]
-    if: |
-      always() && needs.update-tree.result == 'success'
-      && needs.update-tree.outputs.skipped == 'false'
-    runs-on: [self-hosted, "${{ inputs.runner-label }}"]
-    timeout-minutes: 3
-    steps:
       - name: Configure 1Password Service Account
+        if: steps.skip-gate.outputs.skipped == 'false'
         uses: 1password/load-secrets-action/configure@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load registry credentials
         id: creds
+        if: steps.skip-gate.outputs.skipped == 'false'
         uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
         with:
           unset-previous: true
@@ -275,8 +276,9 @@ jobs:
       # Per-registry login is non-fatal (continue-on-error: true). The runner
       # host's ~/.docker/config.json is updated on success; failures warn but
       # don't block the deploy in case cached creds from a prior run still work.
-      # logout: false leaves the cached creds in place for downstream jobs.
+      # logout: false leaves the cached creds in place for downstream steps.
       - name: Login to ghcr.io
+        if: steps.skip-gate.outputs.skipped == 'false'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         continue-on-error: true
         with:
@@ -286,6 +288,7 @@ jobs:
           logout: false
 
       - name: Login to docker.io
+        if: steps.skip-gate.outputs.skipped == 'false'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         continue-on-error: true
         with:
@@ -294,6 +297,7 @@ jobs:
           logout: false
 
       - name: Login to registry.gitlab.com
+        if: steps.skip-gate.outputs.skipped == 'false'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         continue-on-error: true
         with:
@@ -303,6 +307,7 @@ jobs:
           logout: false
 
       - name: Login to gitlab-container.zenterprise.org
+        if: steps.skip-gate.outputs.skipped == 'false'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         continue-on-error: true
         with:
@@ -311,96 +316,155 @@ jobs:
           password: ${{ steps.creds.outputs.ZGITLAB_TOKEN }}
           logout: false
 
-  deploy-dockge:
-    needs: [prepare, update-tree, registry-login]
-    if: |
-      always() && needs.update-tree.result == 'success'
-      && needs.update-tree.outputs.skipped == 'false'
-      && needs.registry-login.result == 'success'
-      && inputs.has-dockge
-    runs-on: [self-hosted, "${{ inputs.runner-label }}"]
-    timeout-minutes: 10
-    env:
-      DOCKGE_PATH: ${{ inputs.live-dockge-path }}
-      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
-      IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
-      SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
-      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    steps:
-      - name: Pull and start dockge
+      - name: Deploy dockge
+        if: |
+          steps.skip-gate.outputs.skipped == 'false'
+          && env.HAS_DOCKGE == 'true'
         run: |
           set -euo pipefail
           cd "$DOCKGE_PATH"
           timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
             docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
 
-  deploy-existing:
-    needs: [prepare, update-tree, registry-login, deploy-dockge]
-    if: |
-      always()
-      && needs.update-tree.result == 'success'
-      && needs.update-tree.outputs.skipped == 'false'
-      && needs.registry-login.result == 'success'
-      && (needs.deploy-dockge.result == 'success' || needs.deploy-dockge.result == 'skipped')
-      && needs.prepare.outputs.has_existing_stacks == 'true'
-    runs-on: [self-hosted, "${{ inputs.runner-label }}"]
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        stack: ${{ fromJSON(needs.prepare.outputs.existing_stacks) }}
-    env:
-      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
-      IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
-      SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
-      STACK: ${{ matrix.stack }}
-      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    steps:
-      - name: Pull and deploy ${{ matrix.stack }}
+      - name: Deploy existing stacks
+        id: deploy-existing
+        if: |
+          steps.skip-gate.outputs.skipped == 'false'
+          && env.HAS_EXISTING == 'true'
         run: |
-          set -euo pipefail
-          [[ "$STACK" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $STACK"; exit 1; }
-          cd "$LIVE_REPO_PATH/$STACK"
-          timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-            docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
+          # Loop with set +e so one stack failure doesn't abort the loop
+          # (matches the prior matrix's fail-fast: false). Per-stack timeout
+          # via the `timeout` command preserves the matrix's per-entry budget.
+          set +e
+          failed=()
+          succeeded=0
+          for stack in $(echo "$EXISTING_STACKS" | jq -r '.[]'); do
+            if [[ ! "$stack" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+              echo "::error::invalid stack name: $stack"
+              failed+=("$stack")
+              continue
+            fi
+            echo "::group::Deploy existing: $stack"
+            (
+              cd "$LIVE_REPO_PATH/$stack"
+              timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+                docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
+            )
+            rc=$?
+            echo "::endgroup::"
+            if [[ $rc -ne 0 ]]; then
+              echo "::error::Stack $stack failed (exit $rc)"
+              failed+=("$stack")
+            else
+              succeeded=$((succeeded + 1))
+            fi
+          done
+          # Emit JSON array for downstream consumers; exit non-zero if any failed
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            json=$(printf '"%s",' "${failed[@]}" | sed 's/,$//')
+            echo "failed_stacks=[$json]" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Existing-stack failures"
+              for f in "${failed[@]}"; do echo "- \`$f\`"; done
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "failed_stacks=[]" >> "$GITHUB_OUTPUT"
+          fi
+          echo "succeeded=$succeeded" >> "$GITHUB_OUTPUT"
+          [[ ${#failed[@]} -eq 0 ]]
 
-  deploy-new:
-    needs: [prepare, update-tree, registry-login, deploy-existing]
-    if: |
-      always()
-      && needs.update-tree.result == 'success'
-      && needs.update-tree.outputs.skipped == 'false'
-      && needs.registry-login.result == 'success'
-      && (needs.deploy-existing.result == 'success' || needs.deploy-existing.result == 'skipped')
-      && needs.prepare.outputs.has_new_stacks == 'true'
-    runs-on: [self-hosted, "${{ inputs.runner-label }}"]
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        stack: ${{ fromJSON(needs.prepare.outputs.new_stacks) }}
-    env:
-      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
-      IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
-      SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
-      STACK: ${{ matrix.stack }}
-      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    steps:
-      - name: Pull and deploy ${{ matrix.stack }}
+      - name: Deploy new stacks
+        id: deploy-new
+        # Only attempt new stacks if existing stacks succeeded (preserves the
+        # prior cross-job dependency). If existing failed, new is skipped and
+        # the rollback path runs.
+        if: |
+          steps.skip-gate.outputs.skipped == 'false'
+          && env.HAS_NEW == 'true'
+          && (steps.deploy-existing.outcome == 'success' || steps.deploy-existing.outcome == 'skipped')
+        run: |
+          set +e
+          failed=()
+          succeeded=0
+          for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
+            if [[ ! "$stack" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+              echo "::error::invalid stack name: $stack"
+              failed+=("$stack")
+              continue
+            fi
+            echo "::group::Deploy new: $stack"
+            (
+              cd "$LIVE_REPO_PATH/$stack"
+              timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+                docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
+            )
+            rc=$?
+            echo "::endgroup::"
+            if [[ $rc -ne 0 ]]; then
+              echo "::error::Stack $stack failed (exit $rc)"
+              failed+=("$stack")
+            else
+              succeeded=$((succeeded + 1))
+            fi
+          done
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            json=$(printf '"%s",' "${failed[@]}" | sed 's/,$//')
+            echo "failed_stacks=[$json]" >> "$GITHUB_OUTPUT"
+            {
+              echo "## New-stack failures"
+              for f in "${failed[@]}"; do echo "- \`$f\`"; done
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "failed_stacks=[]" >> "$GITHUB_OUTPUT"
+          fi
+          echo "succeeded=$succeeded" >> "$GITHUB_OUTPUT"
+          [[ ${#failed[@]} -eq 0 ]]
+
+      - name: Cleanup new stacks on failure
+        # Tears down ALL new stacks (not just failed ones) so docker doesn't
+        # have orphan containers when rollback's git-reset removes their
+        # compose dirs. Matches the prior cleanup-failed-new behavior.
+        if: |
+          always()
+          && steps.deploy-new.outcome == 'failure'
+        run: |
+          set +e
+          for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
+            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::warning::skipping invalid stack: $stack"; continue; }
+            cd "$LIVE_REPO_PATH/$stack" 2>/dev/null || continue
+            op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose down || true
+          done
+
+      - name: Compute deploy summary outputs
+        id: summary
+        if: always()
+        env:
+          EXISTING_OUTCOME: ${{ steps.deploy-existing.outcome }}
+          NEW_OUTCOME: ${{ steps.deploy-new.outcome }}
+          EXISTING_FAILED: ${{ steps.deploy-existing.outputs.failed_stacks }}
+          NEW_FAILED: ${{ steps.deploy-new.outputs.failed_stacks }}
+          EXISTING_SUCCEEDED: ${{ steps.deploy-existing.outputs.succeeded }}
+          NEW_SUCCEEDED: ${{ steps.deploy-new.outputs.succeeded }}
         run: |
           set -euo pipefail
-          [[ "$STACK" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $STACK"; exit 1; }
-          cd "$LIVE_REPO_PATH/$STACK"
-          timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-            docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
+          # deployed_anything: at least one stack was deployed successfully.
+          # Health-check uses this to decide whether to run.
+          deployed_anything="false"
+          if [[ "${EXISTING_SUCCEEDED:-0}" -gt 0 || "${NEW_SUCCEEDED:-0}" -gt 0 ]]; then
+            deployed_anything="true"
+          fi
+          {
+            echo "deployed_anything=$deployed_anything"
+            echo "existing_failed_stacks=${EXISTING_FAILED:-[]}"
+            echo "new_failed_stacks=${NEW_FAILED:-[]}"
+          } >> "$GITHUB_OUTPUT"
 
   health-check:
-    needs: [prepare, deploy-existing, deploy-new]
+    needs: [prepare, deploy]
     if: |
       always()
-      && (needs.deploy-existing.result == 'success' || needs.deploy-existing.result == 'skipped')
-      && (needs.deploy-new.result == 'success' || needs.deploy-new.result == 'skipped')
-      && (needs.deploy-existing.result == 'success' || needs.deploy-new.result == 'success')
+      && needs.deploy.result == 'success'
+      && needs.deploy.outputs.deployed_anything == 'true'
     runs-on: [self-hosted, "${{ inputs.runner-label }}"]
     timeout-minutes: 5
     outputs:
@@ -441,13 +505,11 @@ jobs:
           echo "status=healthy" >> "$GITHUB_OUTPUT"
 
   rollback:
-    needs: [prepare, deploy-existing, deploy-new, health-check]
+    needs: [prepare, deploy, health-check]
     if: |
       always()
       && needs.prepare.outputs.has_previous_sha == 'true'
-      && (needs.deploy-existing.result == 'failure'
-          || needs.deploy-new.result == 'failure'
-          || needs.health-check.result == 'failure')
+      && (needs.deploy.result == 'failure' || needs.health-check.result == 'failure')
     runs-on: [self-hosted, "${{ inputs.runner-label }}"]
     timeout-minutes: 15
     env:
@@ -490,35 +552,11 @@ jobs:
               || echo "::warning::rollback up failed for $stack_dir"
           done
 
-  cleanup-failed-new:
-    needs: [prepare, deploy-new]
-    if: always() && needs.deploy-new.result == 'failure'
-    runs-on: [self-hosted, "${{ inputs.runner-label }}"]
-    timeout-minutes: 5
-    env:
-      LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
-      NEW_STACKS: ${{ needs.prepare.outputs.new_stacks }}
-      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    steps:
-      - name: Tear down failed new stacks
-        run: |
-          set -euo pipefail
-          for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
-            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $stack"; exit 1; }
-            cd "$LIVE_REPO_PATH/$stack" 2>/dev/null || continue
-            op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose down || true
-          done
-
   notify:
     name: Discord Notification
     needs:
       - prepare
-      - teardown-removed
-      - update-tree
-      - registry-login
-      - deploy-dockge
-      - deploy-existing
-      - deploy-new
+      - deploy
       - health-check
       - rollback
     if: always()
@@ -549,13 +587,8 @@ jobs:
       - name: Compute notification status
         id: status
         env:
-          UPDATE_TREE_RESULT: ${{ needs.update-tree.result }}
-          UPDATE_TREE_SKIPPED: ${{ needs.update-tree.outputs.skipped }}
-          TEARDOWN_RESULT: ${{ needs.teardown-removed.result }}
-          REGISTRY_LOGIN_RESULT: ${{ needs.registry-login.result }}
-          DEPLOY_DOCKGE_RESULT: ${{ needs.deploy-dockge.result }}
-          DEPLOY_EXISTING_RESULT: ${{ needs.deploy-existing.result }}
-          DEPLOY_NEW_RESULT: ${{ needs.deploy-new.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DEPLOY_SKIPPED: ${{ needs.deploy.outputs.skipped }}
           HEALTH_RESULT: ${{ needs.health-check.result }}
           HEALTH_STATUS: ${{ needs.health-check.outputs.status }}
           ROLLBACK_RESULT: ${{ needs.rollback.result }}
@@ -567,19 +600,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Determine if any deployment work happened
+          # Determine if any deployment work happened.
           deployment_needed="true"
           if [[ "$HAS_REMOVED" != "true" && "$HAS_EXISTING" != "true" && "$HAS_NEW" != "true" ]]; then
             deployment_needed="false"
-          elif [[ "${UPDATE_TREE_RESULT:-}" == "success" && "${UPDATE_TREE_SKIPPED:-}" == "true" && "${FORCE_DEPLOY:-}" != "true" ]]; then
+          elif [[ "${DEPLOY_RESULT:-}" == "success" && "${DEPLOY_SKIPPED:-}" == "true" && "${FORCE_DEPLOY:-}" != "true" ]]; then
             deployment_needed="false"
           fi
 
-          # Determine deploy phase aggregate status
+          # Deploy phase aggregate: just the consolidated job's result.
           deploy_status="success"
-          if [[ "$DEPLOY_EXISTING_RESULT" == "failure" || "$DEPLOY_NEW_RESULT" == "failure" \
-                || "$DEPLOY_DOCKGE_RESULT" == "failure" || "$UPDATE_TREE_RESULT" == "failure" \
-                || "$TEARDOWN_RESULT" == "failure" || "$REGISTRY_LOGIN_RESULT" == "failure" ]]; then
+          if [[ "$DEPLOY_RESULT" == "failure" ]]; then
             deploy_status="failure"
           fi
 
