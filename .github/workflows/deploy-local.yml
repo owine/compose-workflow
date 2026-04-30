@@ -232,11 +232,87 @@ jobs:
           git -C "$LIVE_REPO_PATH" reset --hard "$TARGET_REF"
           echo "✅ live tree now at $TARGET_REF"
 
-  deploy-dockge:
+  registry-login:
+    # Private container registries require cached creds in ~/.docker/config.json
+    # for `docker compose pull` to succeed. One login per registry here populates
+    # the runner host; all downstream jobs (deploy-dockge, deploy-existing,
+    # deploy-new, rollback) inherit the cached creds.
+    # Per-registry login is non-fatal (warns on failure) so a single misconfigured
+    # registry doesn't block deploys that may not even pull from it. The 1P load
+    # itself is fatal — if a referenced item is missing, fix it before deploying.
+    # SSH-path equivalent: 71877b8 (ghcr only, via op read in deploy-stacks.sh).
     needs: [prepare, update-tree]
     if: |
       always() && needs.update-tree.result == 'success'
       && needs.update-tree.outputs.skipped == 'false'
+    runs-on: [self-hosted, piwine-office]
+    timeout-minutes: 3
+    steps:
+      - name: Configure 1Password Service Account
+        uses: 1password/load-secrets-action/configure@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Load registry credentials
+        id: creds
+        uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
+        with:
+          unset-previous: true
+        env:
+          GHCR_USERNAME: op://Docker/ghcr-pat/username
+          GHCR_TOKEN: op://Docker/ghcr-pat/pat
+          DOCKERHUB_USERNAME: op://Docker/docker-hub/username
+          DOCKERHUB_TOKEN: op://Docker/docker-hub/token
+          GITLAB_USERNAME: op://Docker/gitlab-registry/username
+          GITLAB_TOKEN: op://Docker/gitlab-registry/token
+          ZGITLAB_USERNAME: op://Docker/gitlab-container-zenterprise/username
+          ZGITLAB_TOKEN: op://Docker/gitlab-container-zenterprise/token
+
+      # Per-registry login is non-fatal (continue-on-error: true). The runner
+      # host's ~/.docker/config.json is updated on success; failures warn but
+      # don't block the deploy in case cached creds from a prior run still work.
+      # logout: false leaves the cached creds in place for downstream jobs.
+      - name: Login to ghcr.io
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        continue-on-error: true
+        with:
+          registry: ghcr.io
+          username: ${{ steps.creds.outputs.GHCR_USERNAME }}
+          password: ${{ steps.creds.outputs.GHCR_TOKEN }}
+          logout: false
+
+      - name: Login to docker.io
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        continue-on-error: true
+        with:
+          username: ${{ steps.creds.outputs.DOCKERHUB_USERNAME }}
+          password: ${{ steps.creds.outputs.DOCKERHUB_TOKEN }}
+          logout: false
+
+      - name: Login to registry.gitlab.com
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        continue-on-error: true
+        with:
+          registry: registry.gitlab.com
+          username: ${{ steps.creds.outputs.GITLAB_USERNAME }}
+          password: ${{ steps.creds.outputs.GITLAB_TOKEN }}
+          logout: false
+
+      - name: Login to gitlab-container.zenterprise.org
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        continue-on-error: true
+        with:
+          registry: gitlab-container.zenterprise.org
+          username: ${{ steps.creds.outputs.ZGITLAB_USERNAME }}
+          password: ${{ steps.creds.outputs.ZGITLAB_TOKEN }}
+          logout: false
+
+  deploy-dockge:
+    needs: [prepare, update-tree, registry-login]
+    if: |
+      always() && needs.update-tree.result == 'success'
+      && needs.update-tree.outputs.skipped == 'false'
+      && needs.registry-login.result == 'success'
       && inputs.has-dockge
     runs-on: [self-hosted, piwine-office]
     timeout-minutes: 10
@@ -255,11 +331,12 @@ jobs:
             docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
 
   deploy-existing:
-    needs: [prepare, update-tree, deploy-dockge]
+    needs: [prepare, update-tree, registry-login, deploy-dockge]
     if: |
       always()
       && needs.update-tree.result == 'success'
       && needs.update-tree.outputs.skipped == 'false'
+      && needs.registry-login.result == 'success'
       && (needs.deploy-dockge.result == 'success' || needs.deploy-dockge.result == 'skipped')
       && needs.prepare.outputs.has_existing_stacks == 'true'
     runs-on: [self-hosted, piwine-office]
@@ -284,11 +361,12 @@ jobs:
             docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
 
   deploy-new:
-    needs: [prepare, update-tree, deploy-existing]
+    needs: [prepare, update-tree, registry-login, deploy-existing]
     if: |
       always()
       && needs.update-tree.result == 'success'
       && needs.update-tree.outputs.skipped == 'false'
+      && needs.registry-login.result == 'success'
       && (needs.deploy-existing.result == 'success' || needs.deploy-existing.result == 'skipped')
       && needs.prepare.outputs.has_new_stacks == 'true'
     runs-on: [self-hosted, piwine-office]
@@ -433,6 +511,7 @@ jobs:
       - prepare
       - teardown-removed
       - update-tree
+      - registry-login
       - deploy-dockge
       - deploy-existing
       - deploy-new
@@ -469,6 +548,7 @@ jobs:
           UPDATE_TREE_RESULT: ${{ needs.update-tree.result }}
           UPDATE_TREE_SKIPPED: ${{ needs.update-tree.outputs.skipped }}
           TEARDOWN_RESULT: ${{ needs.teardown-removed.result }}
+          REGISTRY_LOGIN_RESULT: ${{ needs.registry-login.result }}
           DEPLOY_DOCKGE_RESULT: ${{ needs.deploy-dockge.result }}
           DEPLOY_EXISTING_RESULT: ${{ needs.deploy-existing.result }}
           DEPLOY_NEW_RESULT: ${{ needs.deploy-new.result }}
@@ -495,7 +575,7 @@ jobs:
           deploy_status="success"
           if [[ "$DEPLOY_EXISTING_RESULT" == "failure" || "$DEPLOY_NEW_RESULT" == "failure" \
                 || "$DEPLOY_DOCKGE_RESULT" == "failure" || "$UPDATE_TREE_RESULT" == "failure" \
-                || "$TEARDOWN_RESULT" == "failure" ]]; then
+                || "$TEARDOWN_RESULT" == "failure" || "$REGISTRY_LOGIN_RESULT" == "failure" ]]; then
             deploy_status="failure"
           fi
 
