@@ -1,6 +1,6 @@
 # Self-Hosted Runner Migration Runbook
 
-Operational reference for migrating a docker-compose repo from the SSH-based `deploy.yml` to the workflow-native `deploy-local.yml`. Distilled from the `docker-piwine-office` pilot (2026-04-29) and the `docker-piwine` migration (2026-04-30). Read this *before* starting host setup on the next host (`docker-zendc` is the only one left).
+Operational reference for migrating a docker-compose repo from the SSH-based `deploy.yml` to the workflow-native `deploy-local.yml`. All three repos have now migrated: `docker-piwine-office` (2026-04-29 pilot), `docker-piwine` (2026-04-30), `docker-zendc` (2026-05-02). Keep this for future hosts and as the reference for end-state cleanup.
 
 **Spec:** `docs/superpowers/specs/2026-04-29-self-hosted-deploy-runner-pilot-design.md`
 **Original plan:** `docs/superpowers/plans/2026-04-29-self-hosted-deploy-runner-pilot.md`
@@ -295,7 +295,7 @@ self-hosted-runner:
   labels:
     - piwine
     - piwine-office
-    # add zendc when migrated
+    - zendc
 ```
 
 ---
@@ -308,6 +308,15 @@ Things to record per migration to inform the next one:
 - **Flake rate** on stack recreation, especially compose `--wait` interactions during cascading restarts. Run 6 of the pilot hit a "No such container" race after partial-state rollbacks; once stable, deploys succeed cleanly. Watch over the first ~10 deploys.
 - **Discord embed parity.** The new path's notify job dropped per-stack healthy/degraded/failed counts (the inline health-check is simpler than `health-check.sh`). If that detail matters in practice, expand the inline health-check to emit the counts. Otherwise leave it.
 - **Anything Tailscale/SSH was implicitly providing** that's now missing. None observed in the pilot, but worth a check.
+
+### zendc migration notes (2026-05-02)
+
+- Host was already on Ubuntu 22.04 with `seed` as admin user. All 5 required tools (`docker jq timeout gh op`) were already on PATH; no installs needed.
+- `/opt/compose` was already `seed:seed` so the `chown` step was a no-op — the `chmod -R g+rwX` + setgid + `safe.directory` + umask 002 still all required. Pattern was completely idempotent.
+- All `${APPDATA_PATH}` bind mounts resolve to a path *outside* `/opt/compose` (1P-resolved), so the chmod recursion had zero blast radius into container data. Verify this before chmod on any new host: `grep '^\s*-' /opt/compose/*/compose.yaml | grep -v APPDATA_PATH` should only return system paths (`/etc/passwd`, `/mnt`, `/dev`, `/var/log`).
+- Pre-existing `hetzner-vm` runner on the same GitHub repo did **not** interfere — it lacks the `zendc` label, and `runs-on: [self-hosted, zendc]` is intersection-matched. No action needed.
+- Cutover hit a Renovate race twice in two minutes: Renovate bumped the SHA pin on `deploy.yml` (the *old* file) while we were trying to push the cutover (which switches `uses:` from `deploy.yml` to `deploy-local.yml`). Resolution was trivial — keep our `deploy-local.yml` line, take Renovate's bumped SHA. Lesson: bump the pin to *current* compose-workflow main when you cut over, not to the SHA you started from, to avoid one extra rebase.
+- Both queued deploys (Renovate's bump + the cutover) ran cleanly on the new self-hosted runner because `workflow_run` reads the caller workflow file from default-branch HEAD at dispatch time, not at the head_sha. So even the deploy that "belonged to" the Renovate commit ran on the self-hosted path.
 
 ### Resolved issues
 
