@@ -1000,11 +1000,8 @@ jobs:
             exit 0
           fi
           MARKER="<!-- compose-deploy-result:${{ inputs.repo-name }} -->"
-          if ! EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
-            --jq "[.[] | select(.body | startswith(\"$MARKER\"))] | .[0].id // empty"); then
-            echo "::warning::Failed to list comments on PR #${PR} — proceeding as if no existing comment (will POST instead of PATCH)"
-            EXISTING=""
-          fi
+          EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
+            --jq "[.[] | select(.body | startswith(\"$MARKER\"))] | .[0].id // empty")
           # Note: when no existing comment is found, $EXISTING is empty.
           # GitHub Actions maps `comment_id=` to an empty-string output, which the
           # next step's `[[ -n "$COMMENT_ID" ]]` guard correctly treats as falsy.
