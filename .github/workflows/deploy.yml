@@ -887,10 +887,18 @@ jobs:
 
   notify:
     name: Discord Notification
-    runs-on: ${{ inputs.runner }}
+    runs-on: ubuntu-24.04
     needs: [deploy]
     if: always()
     steps:
+      - name: Checkout compose-workflow scripts
+        if: inputs.force-deploy != true && needs.deploy.outputs.deployment_needed != 'false'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: owine/compose-workflow
+          sparse-checkout: scripts/deployment
+          sparse-checkout-cone-mode: false
+
       - name: Configure 1Password Service Account
         uses: 1password/load-secrets-action/configure@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
         with:
@@ -976,6 +984,77 @@ jobs:
             needs.deploy.outputs.degraded_stacks != '' && 0xfd7e14 || 0xdc3545 }}
           username: "Compose Deploy"
           avatar_url: "https://cdn-icons-png.flaticon.com/512/919/919853.png"
+
+      - name: Resolve PR for deploy
+        id: pr
+        if: inputs.force-deploy != true && needs.deploy.outputs.deployment_needed != 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PR=$(gh api "repos/${{ github.repository }}/commits/${{ inputs.target-ref }}/pulls" \
+            --jq '[.[] | select(.merged_at != null)] | .[0].number // empty')
+          if [[ -z "$PR" ]]; then
+            echo "ℹ️ No merged PR for ${{ inputs.target-ref }} — skipping comment"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          MARKER="<!-- compose-deploy-result:${{ inputs.repo-name }} -->"
+          EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
+            --jq "[.[] | select(.body | startswith(\"$MARKER\"))] | .[0].id // empty")
+          # Note: when no existing comment is found, $EXISTING is empty.
+          # GitHub Actions maps `comment_id=` to an empty-string output, which the
+          # next step's `[[ -n "$COMMENT_ID" ]]` guard correctly treats as falsy.
+          # Do NOT add a `// empty` guard or default value here — the empty-string
+          # contract is what drives create-vs-update branching downstream.
+          {
+            echo "pr=$PR"
+            echo "comment_id=$EXISTING"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
+          echo "✅ Resolved PR #$PR (existing comment: ${EXISTING:-none})"
+
+      - name: Post PR deploy comment
+        if: steps.pr.conclusion == 'success' && steps.pr.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.pr }}
+          COMMENT_ID: ${{ steps.pr.outputs.comment_id }}
+          REPO_NAME: ${{ inputs.repo-name }}
+          TARGET_REF: ${{ inputs.target-ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          REPOSITORY: ${{ github.repository }}
+          DEPLOY_STATUS: ${{ needs.deploy.outputs.deploy_status }}
+          HEALTH_STATUS: ${{ needs.deploy.outputs.health_status }}
+          CLEANUP_STATUS: ${{ needs.deploy.outputs.cleanup_status }}
+          ROLLBACK_STATUS: ${{ needs.deploy.outputs.rollback_status }}
+          ROLLBACK_HEALTH_STATUS: ${{ needs.deploy.outputs.rollback_health_status }}
+          HEALTHY_STACKS: ${{ needs.deploy.outputs.healthy_stacks }}
+          DEGRADED_STACKS: ${{ needs.deploy.outputs.degraded_stacks }}
+          FAILED_STACKS: ${{ needs.deploy.outputs.failed_stacks }}
+          ROLLBACK_HEALTHY_STACKS: ${{ needs.deploy.outputs.rollback_healthy_stacks }}
+          ROLLBACK_DEGRADED_STACKS: ${{ needs.deploy.outputs.rollback_degraded_stacks }}
+          ROLLBACK_FAILED_STACKS: ${{ needs.deploy.outputs.rollback_failed_stacks }}
+          RUNNING_CONTAINERS: ${{ needs.deploy.outputs.running_containers }}
+          TOTAL_CONTAINERS: ${{ needs.deploy.outputs.total_containers }}
+          SUCCESS_RATE: ${{ needs.deploy.outputs.success_rate }}
+          ROLLBACK_RUNNING_CONTAINERS: ${{ needs.deploy.outputs.rollback_running_containers }}
+          ROLLBACK_TOTAL_CONTAINERS: ${{ needs.deploy.outputs.rollback_total_containers }}
+          ROLLBACK_SUCCESS_RATE: ${{ needs.deploy.outputs.rollback_success_rate }}
+          COMMIT_SUBJECT: ${{ steps.commit-msg.outputs.message }}
+        run: |
+          set -euo pipefail
+          BODY=$(./scripts/deployment/build-pr-comment.sh)
+          if [[ -n "$COMMENT_ID" ]]; then
+            echo "🔄 Updating existing comment $COMMENT_ID"
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              -f body="$BODY"
+          else
+            echo "📝 Posting new comment to PR #$PR"
+            gh api -X POST "repos/${{ github.repository }}/issues/${PR}/comments" \
+              -f body="$BODY"
+          fi
 
       - name: Unload Discord webhook
         uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
