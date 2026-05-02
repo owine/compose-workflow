@@ -657,6 +657,7 @@ jobs:
       - name: Checkout compose-workflow scripts
         if: >-
           inputs.force-deploy != true &&
+          needs.prepare.result == 'success' &&
           (needs.prepare.outputs.has_removed_stacks == 'true' ||
            needs.prepare.outputs.has_existing_stacks == 'true' ||
            needs.prepare.outputs.has_new_stacks == 'true')
@@ -844,20 +845,28 @@ jobs:
         id: pr
         if: >-
           inputs.force-deploy != true &&
+          needs.prepare.result == 'success' &&
           steps.status.outputs.deployment_needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_REF: ${{ inputs.target-ref }}
+          REPO_NAME: ${{ inputs.repo-name }}
         run: |
           set -euo pipefail
-          PR=$(gh api "repos/${{ github.repository }}/commits/${{ inputs.target-ref }}/pulls" \
-            --jq '[.[] | select(.merged_at != null)] | .[0].number // empty')
-          if [[ -z "$PR" ]]; then
-            echo "ℹ️ No merged PR for ${{ inputs.target-ref }} — skipping comment"
+          if ! PR=$(gh api "repos/${GH_REPO}/commits/${TARGET_REF}/pulls" \
+            --jq '[.[] | select(.merged_at != null)] | .[0].number // empty'); then
+            echo "::warning::Failed to look up PR for ${TARGET_REF} — skipping comment"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          MARKER="<!-- compose-deploy-result:${{ inputs.repo-name }} -->"
-          if ! EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
+          if [[ -z "$PR" ]]; then
+            echo "ℹ️ No merged PR for ${TARGET_REF} — skipping comment"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          MARKER="<!-- compose-deploy-result:${REPO_NAME} -->"
+          if ! EXISTING=$(gh api "repos/${GH_REPO}/issues/${PR}/comments" \
             --jq "[.[] | select(.body | startswith(\"$MARKER\"))] | .[0].id // empty"); then
             echo "::warning::Failed to list comments on PR #${PR} — proceeding as if no existing comment (will POST instead of PATCH)"
             EXISTING=""
@@ -876,6 +885,7 @@ jobs:
         if: steps.pr.conclusion == 'success' && steps.pr.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
           COMMENT_ID: ${{ steps.pr.outputs.comment_id }}
           REPO_NAME: ${{ inputs.repo-name }}
@@ -894,11 +904,11 @@ jobs:
           BODY=$(./scripts/deployment/build-pr-comment.sh)
           if [[ -n "$COMMENT_ID" ]]; then
             echo "🔄 Updating existing comment $COMMENT_ID"
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+            gh api -X PATCH "repos/${GH_REPO}/issues/comments/${COMMENT_ID}" \
               -f body="$BODY"
           else
             echo "📝 Posting new comment to PR #$PR"
-            gh api -X POST "repos/${{ github.repository }}/issues/${PR}/comments" \
+            gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
               -f body="$BODY"
           fi
 
