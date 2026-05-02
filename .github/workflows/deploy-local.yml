@@ -651,9 +651,21 @@ jobs:
       - health-check
       - rollback
     if: always()
-    runs-on: [self-hosted, "${{ inputs.runner-label }}"]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Checkout compose-workflow scripts
+        if: >-
+          inputs.force-deploy != true &&
+          (needs.prepare.outputs.has_removed_stacks == 'true' ||
+           needs.prepare.outputs.has_existing_stacks == 'true' ||
+           needs.prepare.outputs.has_new_stacks == 'true')
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: owine/compose-workflow
+          sparse-checkout: scripts/deployment
+          sparse-checkout-cone-mode: false
+
       - name: Configure 1Password Service Account
         uses: 1password/load-secrets-action/configure@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
         with:
@@ -827,6 +839,68 @@ jobs:
           color: ${{ steps.status.outputs.color }}
           username: "Compose Deploy"
           avatar_url: "https://cdn-icons-png.flaticon.com/512/919/919853.png"
+
+      - name: Resolve PR for deploy
+        id: pr
+        if: >-
+          inputs.force-deploy != true &&
+          steps.status.outputs.deployment_needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PR=$(gh api "repos/${{ github.repository }}/commits/${{ inputs.target-ref }}/pulls" \
+            --jq '[.[] | select(.merged_at != null)] | .[0].number // empty')
+          if [[ -z "$PR" ]]; then
+            echo "ℹ️ No merged PR for ${{ inputs.target-ref }} — skipping comment"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          MARKER="<!-- compose-deploy-result:${{ inputs.repo-name }} -->"
+          if ! EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
+            --jq "[.[] | select(.body | startswith(\"$MARKER\"))] | .[0].id // empty"); then
+            echo "::warning::Failed to list comments on PR #${PR} — proceeding as if no existing comment (will POST instead of PATCH)"
+            EXISTING=""
+          fi
+          # Note: when no existing comment is found, $EXISTING is empty.
+          # GitHub Actions maps `comment_id=` to an empty-string output, which the
+          # next step's `[[ -n "$COMMENT_ID" ]]` guard correctly treats as falsy.
+          {
+            echo "pr=$PR"
+            echo "comment_id=$EXISTING"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
+          echo "✅ Resolved PR #$PR (existing comment: ${EXISTING:-none})"
+
+      - name: Post PR deploy comment
+        if: steps.pr.conclusion == 'success' && steps.pr.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.pr }}
+          COMMENT_ID: ${{ steps.pr.outputs.comment_id }}
+          REPO_NAME: ${{ inputs.repo-name }}
+          TARGET_REF: ${{ inputs.target-ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          REPOSITORY: ${{ github.repository }}
+          OVERALL: ${{ steps.status.outputs.overall }}
+          TITLE_SUFFIX: ${{ steps.status.outputs.title_suffix }}
+          DESCRIPTION: ${{ steps.status.outputs.description }}
+          PIPELINE: ${{ steps.status.outputs.pipeline }}
+          REMOVED_LINE: ${{ steps.status.outputs.removed_line }}
+          COMMIT_SUBJECT: ${{ steps.commit-msg.outputs.message }}
+        run: |
+          set -euo pipefail
+          BODY=$(./scripts/deployment/build-pr-comment.sh)
+          if [[ -n "$COMMENT_ID" ]]; then
+            echo "🔄 Updating existing comment $COMMENT_ID"
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              -f body="$BODY"
+          else
+            echo "📝 Posting new comment to PR #$PR"
+            gh api -X POST "repos/${{ github.repository }}/issues/${PR}/comments" \
+              -f body="$BODY"
+          fi
 
       - name: Unload Discord webhook
         uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
