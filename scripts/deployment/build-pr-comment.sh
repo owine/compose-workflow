@@ -3,6 +3,34 @@
 # All inputs are read from environment variables (see header comment for full list).
 set -euo pipefail
 
+# Default all expected env vars to empty so set -u doesn't abort if the caller
+# omits one. Numeric vars already use ${VAR:-0} at their references.
+: "${REPO_NAME:=}"
+: "${TARGET_REF:=}"
+: "${REPOSITORY:=}"
+: "${RUN_ID:=}"
+: "${RUN_NUMBER:=}"
+: "${COMMIT_SUBJECT:=}"
+: "${DEPLOY_STATUS:=}"
+: "${HEALTH_STATUS:=}"
+: "${CLEANUP_STATUS:=}"
+: "${ROLLBACK_STATUS:=}"
+: "${ROLLBACK_HEALTH_STATUS:=}"
+: "${HEALTHY_STACKS:=}"
+: "${DEGRADED_STACKS:=}"
+: "${FAILED_STACKS:=}"
+: "${ROLLBACK_HEALTHY_STACKS:=}"
+: "${ROLLBACK_DEGRADED_STACKS:=}"
+: "${ROLLBACK_FAILED_STACKS:=}"
+
+# Sanitize COMMIT_SUBJECT — it's user-controlled (PR commit message).
+# Strip newlines and any leading/trailing whitespace, truncate to 120 chars.
+# Rendered as inline code (backticks) downstream to neutralize markdown.
+COMMIT_SUBJECT="${COMMIT_SUBJECT%%$'\n'*}"
+COMMIT_SUBJECT="${COMMIT_SUBJECT%%$'\r'*}"
+COMMIT_SUBJECT="${COMMIT_SUBJECT:0:120}"
+COMMIT_SUBJECT="${COMMIT_SUBJECT//\`/\'}"
+
 short_sha="${TARGET_REF:0:7}"
 
 # Determine outcome: deployed | rolled-back | failed
@@ -68,7 +96,7 @@ render_pipeline_line() {
 printf '<!-- compose-deploy-result:%s -->\n' "$REPO_NAME"
 printf '## 🚀 %s deploy: %s %s\n\n' "$REPO_NAME" "$status_emoji" "$status_word"
 # shellcheck disable=SC2016 # backticks in markdown link, not shell expansion
-printf '**Commit:** [`%s`](https://github.com/%s/commit/%s) %s\n' \
+printf '**Commit:** [`%s`](https://github.com/%s/commit/%s) `%s`\n' \
   "$short_sha" "$REPOSITORY" "$TARGET_REF" "$COMMIT_SUBJECT"
 printf '**Run:** [#%s](https://github.com/%s/actions/runs/%s)\n' \
   "$RUN_NUMBER" "$REPOSITORY" "$RUN_ID"
