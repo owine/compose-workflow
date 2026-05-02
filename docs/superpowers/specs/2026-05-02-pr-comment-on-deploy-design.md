@@ -3,6 +3,8 @@
 **Date:** 2026-05-02
 **Status:** Draft
 
+> **Correction (2026-05-02):** Initial draft targeted `deploy.yml`, but consumer repos (`docker-piwine`, `docker-piwine-office`, `docker-zendc`) all call `deploy-local.yml@<sha>`, the self-hosted-runner workflow consolidated 2026-04-30. `deploy.yml` is effectively legacy. This spec has been corrected to target `deploy-local.yml`, which has a different job structure (`prepare` / `deploy` / `health-check` / `rollback` / `notify`) and high-level aggregated outputs (no per-stack health buckets, no per-container counts) — driving a simpler comment body.
+
 ## Problem
 
 When the deploy workflow runs after a PR merge, the result is announced on Discord but not recorded on the PR itself. PR authors and reviewers have no in-context signal that their merged change deployed successfully (or failed and rolled back), and Discord history is ephemeral. We want a durable, in-PR record of the deploy outcome that ties the deployed SHA back to the PR that introduced it.
@@ -25,11 +27,11 @@ When the deploy workflow runs after a PR merge, the result is announced on Disco
 
 ### Where the logic lives
 
-Three new steps in the existing `notify` job in `compose-workflow/.github/workflows/deploy.yml`, running after the Discord step: a sparse checkout (notify currently has no checkout — needed to access the script), a PR resolver, and a comment poster. Body-building logic lives in `compose-workflow/scripts/deployment/build-pr-comment.sh`, consistent with the existing pattern of factoring complex logic out of YAML (see `deploy-stacks.sh`, `health-check.sh`) and matching the established `scripts/deployment/` location.
+Three new steps in the existing `notify` job in `compose-workflow/.github/workflows/deploy-local.yml`, running after the Discord step: a sparse checkout (notify currently has no checkout — needed to access the script), a PR resolver, and a comment poster. Body-building logic lives in `compose-workflow/scripts/deployment/build-pr-comment.sh`, consistent with the existing pattern of factoring complex logic out of YAML (see `deploy-stacks.sh`, `health-check.sh`) and matching the established `scripts/deployment/` location.
 
 ### Notify job runner
 
-Change `notify` job's `runs-on:` from `${{ inputs.runner }}` to `ubuntu-24.04`. The notify job has never needed deploy-host access — Discord and GH API calls are pure cloud-to-cloud — and pinning it to a GitHub-hosted runner ensures notifications fire even if the self-hosted runner is down (which is precisely when notifications matter most). Deploy job stays on `${{ inputs.runner }}`.
+Change `notify` job's `runs-on:` from `[self-hosted, "${{ inputs.runner-label }}"]` to `ubuntu-24.04`. The notify job has never needed deploy-host access — Discord and GH API calls are pure cloud-to-cloud — and pinning it to a GitHub-hosted runner ensures notifications fire even if the self-hosted runner is down (which is precisely when notifications matter most). Deploy/health-check/rollback jobs stay on `[self-hosted, "${{ inputs.runner-label }}"]`.
 
 ### When to comment (gating logic)
 
@@ -60,7 +62,7 @@ The `<repo-name>` suffix scopes the marker per consumer repo so multi-repo scena
 
 ### Comment body structure
 
-Markdown rendered by GitHub. Sections:
+Markdown rendered by GitHub. Sections (simplified from the original draft because `deploy-local.yml` only emits high-level aggregated outputs — no per-stack health buckets and no per-container counts):
 
 **Marker line** (hidden, first line):
 ```
@@ -71,36 +73,25 @@ Markdown rendered by GitHub. Sections:
 ```
 ## 🚀 <repo-name> deploy: <status emoji> <status word>
 ```
-Status word is one of `Deployed`, `Rolled back`, `Failed` — mirrors the Discord title states (sans `No Changes`, which is filtered out at the gate).
+Status word comes from `steps.status.outputs.title_suffix` — one of `Deployed`, `Rolled Back`, `Failed`. (`No Changes` is filtered out at the gate.)
 
 **Summary block**:
 ```
-**Commit:** [`<short-sha>`](…/commit/<sha>) <commit subject>
+**Commit:** [`<short-sha>`](…/commit/<sha>) `<commit subject>`
 **Run:** [#<run_number>](…/actions/runs/<run_id>)
-**Health:** 🟢 <running>/<total> services (<rate>%)
 ```
+Commit subject is wrapped in inline-code backticks to neutralize markdown injection.
 
-**Stack table** (only when stack data is present):
+**Description line**: the rich one-liner from `steps.status.outputs.description` (e.g., `✅ **Deployment completed successfully**`, `🔄 **Deployment failed but rolled back successfully**`, `❌ **Deployment failed**`).
 
-```markdown
-| Status | Stacks |
-|--------|--------|
-| ✅ Healthy | dockge, portainer, swag, … |
-| ⚠️ Degraded | monitoring |
-| ❌ Failed | — |
-```
-Empty buckets render as `—` for stable table shape. On rollback, a second table titled "Rollback Stack Status" appears below using the rollback-prefixed outputs.
+**Removed-stacks line** (only when present): from `steps.status.outputs.removed_line` — e.g. `🗑️ **Removed stacks:** foo, bar`.
 
-**Pipeline pills**:
+**Pipeline pills**: from `steps.status.outputs.pipeline` (e.g., `✅ Deploy → ✅ Health` or `❌ Deploy → ❌ Health → ✅ Rollback`).
 
-- On success: collapsed inside `<details>` since most readers won't need it.
-- On any failure: emitted as raw markdown (auto-expanded) so failure context doesn't require a click.
+- On success: collapsed inside `<details><summary>Pipeline</summary>` since most readers won't need it.
+- On any failure: emitted as raw `**Pipeline:** …` line (auto-expanded) so failure context doesn't require a click.
 
-```
-✅ Deploy → ✅ Health → ✅ Cleanup
-```
-
-(With ` → <emoji> Rollback` and ` → <emoji> Verify` appended when applicable.)
+**Why simpler than original draft:** `deploy-local.yml` consolidated multiple jobs and dropped per-stack output enumeration in favor of a single aggregated `status` step. Adding stack-level outputs back across `deploy` and `health-check` jobs would be scope creep; the comment matches the data the workflow actually exposes.
 
 ### Permissions
 
@@ -125,10 +116,10 @@ PR comments use the issues comments API endpoint (PRs are issues under the hood)
 
 ### Files touched
 
-1. **`compose-workflow/.github/workflows/deploy.yml`**
-   - Change `notify` job `runs-on:` from `${{ inputs.runner }}` to `ubuntu-24.04`.
+1. **`compose-workflow/.github/workflows/deploy-local.yml`**
+   - Change `notify` job `runs-on:` from `[self-hosted, "${{ inputs.runner-label }}"]` to `ubuntu-24.04`.
    - Add step `Checkout compose-workflow scripts` (sparse-checkout `scripts/deployment/`) — notify currently has no checkout; needed to access `build-pr-comment.sh`.
-   - Add step `Resolve PR for deploy` (gated by force-deploy and deployment-needed checks; resolves PR number and existing sticky comment ID).
+   - Add step `Resolve PR for deploy` (gated by force-deploy and the existing `steps.status.outputs.deployment_needed` check; resolves PR number and existing sticky comment ID).
    - Add step `Post PR deploy comment` (builds body via `build-pr-comment.sh`, posts or patches via `gh api`).
 
 2. **`compose-workflow/scripts/deployment/build-pr-comment.sh`** (new, ~80 lines)
