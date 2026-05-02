@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Correction (2026-05-02):** This plan originally targeted `deploy.yml`. Consumer repos all call `deploy-local.yml@<sha>` (the canonical self-hosted-runner workflow consolidated 2026-04-30); `deploy.yml` is legacy. Initial Task 2 commits against `deploy.yml` were reverted (`a44fd14`, `86743a8`); Task 2 has been rewritten below to target `deploy-local.yml` with corrected output mappings. Task 1 (script) and Task 3 (consumer permissions) were not affected and remain valid.
+
 **Goal:** Post a sticky markdown comment to the originating PR when the reusable deploy workflow completes for a SHA that maps to a merged PR.
 
-**Architecture:** Three new steps added to the existing `notify` job in `compose-workflow/.github/workflows/deploy.yml` (sparse-checkout → resolve PR → post/patch comment). Body construction lives in a new `scripts/deployment/build-pr-comment.sh` script. Notify job moves from inherited `${{ inputs.runner }}` to GitHub-hosted `ubuntu-24.04` so notifications fire even when self-hosted runners are unhealthy. Each consumer repo's caller workflow gains a `pull-requests: write` permission grant.
+**Architecture:** Three new steps added to the existing `notify` job in `compose-workflow/.github/workflows/deploy-local.yml` (sparse-checkout → resolve PR → post/patch comment). Body construction lives in a new `scripts/deployment/build-pr-comment.sh` script. Notify job moves from `[self-hosted, "${{ inputs.runner-label }}"]` to GitHub-hosted `ubuntu-24.04` so notifications fire even when self-hosted runners are unhealthy. Each consumer repo's caller workflow gains a `pull-requests: write` permission grant.
 
 **Tech Stack:** GitHub Actions, bash, `gh` CLI, `jq`, GitHub REST API.
 
