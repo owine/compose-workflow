@@ -1,9 +1,16 @@
 # Self-Hosted Runner Migration Runbook
 
-Operational reference for migrating a docker-compose repo from the SSH-based deploy reusable workflow to the self-hosted-runner-based replacement. All three repos have now migrated: `docker-piwine-office` (2026-04-29 pilot), `docker-piwine` (2026-04-30), `docker-zendc` (2026-05-02). The replacement workflow was originally introduced as `deploy-local.yml` and renamed to `deploy.yml` on 2026-05-03 after the SSH-based file was deleted. Keep this for future hosts and as the reference for end-state cleanup.
+> **Status: migration COMPLETE as of 2026-05-03.** All three docker repos run on self-hosted runners. The SSH-based `deploy.yml`, its supporting scripts, the `tailscale/github-action` cache, and the `SSH_USER`/`SSH_HOST` repo secrets have all been removed. The reusable workflow (originally introduced as `deploy-local.yml`) has been renamed back to `deploy.yml`. **This runbook now serves two purposes:** (1) reference for adding *new* self-hosted hosts in the future, and (2) historical record of how the migration unfolded — kept verbatim because the incidents documented here (umask 002 lesson, Renovate races, ghcr pull-timeout misdiagnosis, etc.) are reusable lessons.
+
+| Repo | Migrated | Runner label | Admin user | Has dockge? |
+|---|---|---|---|---|
+| `docker-piwine-office` | 2026-04-29 (pilot) | `piwine-office` | `owine` | yes |
+| `docker-piwine` | 2026-04-30 | `piwine` | `owine` | yes |
+| `docker-zendc` | 2026-05-02 | `zendc` | `seed` | no |
 
 **Spec:** `docs/superpowers/specs/2026-04-29-self-hosted-deploy-runner-pilot-design.md`
 **Original plan:** `docs/superpowers/plans/2026-04-29-self-hosted-deploy-runner-pilot.md`
+**Rename validation:** all 3 caller deploys ran green on `deploy.yml@5f9fa59` immediately after rename push (zendc → piwine → piwine-office, 2026-05-03).
 
 ---
 
