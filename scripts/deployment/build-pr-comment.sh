@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a markdown PR comment body from deploy-local notify-job outputs.
+# Build a markdown PR comment body from the deploy workflow's notify-job outputs.
 # All inputs are read from environment variables (see header comment for full list).
 set -euo pipefail
 

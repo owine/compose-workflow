@@ -1,5 +1,5 @@
 ---
-name: Deploy (Local Self-Hosted)
+name: Deploy
 
 # Job structure (consolidated 2026-04-30; see runbook for rationale):
 #   prepare      → discover stacks, capture previous SHA, classify removed/existing/new
