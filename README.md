@@ -110,7 +110,7 @@ Calling repos need exactly **one** secret:
 
 - `OP_SERVICE_ACCOUNT_TOKEN` — 1Password service account token. Used by both lint (GitGuardian API key) and deploy (env-file resolution + multi-registry credentials + Discord webhook).
 
-The previously-required `SSH_USER` / `SSH_HOST` secrets are no longer used by `deploy.yml` and can be deleted from caller repos.
+The previously-required `SSH_USER` / `SSH_HOST` secrets were deleted from all three caller repos on 2026-05-03; only `OP_SERVICE_ACCOUNT_TOKEN` remains.
 
 ### 1Password references
 
