@@ -360,11 +360,13 @@ All three repos migrated and baked. Cleanup completed in a single push session:
 - ✅ **Tailscale references** were removed from CI long before this cleanup (the rewrite to self-hosted runners eliminated Tailscale dependency entirely). Verified no remaining `tailscale/github-action` references in workflows or active docs. Historical mentions in this runbook are intentional context and stay.
 - ✅ **CLAUDE.md and README.md** rewritten to describe the deploy-local.yml-only architecture. Old SSH-multiplexing/Tailscale/SSH_USER+SSH_HOST narrative replaced with self-hosted-runner reality.
 
-### Manual follow-up (one-time, not yet done)
+### Manual follow-up (DONE 2026-05-03)
 
-- [ ] `gh secret delete SSH_USER --repo owine/docker-piwine`
-- [ ] `gh secret delete SSH_HOST --repo owine/docker-piwine`
-- [ ] `gh secret delete SSH_USER --repo owine/docker-piwine-office`
-- [ ] `gh secret delete SSH_HOST --repo owine/docker-piwine-office`
-- [ ] `gh secret delete SSH_USER --repo owine/docker-zendc`
-- [ ] `gh secret delete SSH_HOST --repo owine/docker-zendc`
+- ✅ `gh secret delete SSH_USER --repo owine/docker-piwine`
+- ✅ `gh secret delete SSH_HOST --repo owine/docker-piwine`
+- ✅ `gh secret delete SSH_USER --repo owine/docker-piwine-office`
+- ✅ `gh secret delete SSH_HOST --repo owine/docker-piwine-office`
+- ✅ `gh secret delete SSH_USER --repo owine/docker-zendc`
+- ✅ `gh secret delete SSH_HOST --repo owine/docker-zendc`
+
+Each docker repo now has exactly one secret: `OP_SERVICE_ACCOUNT_TOKEN`.
