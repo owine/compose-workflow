@@ -1,6 +1,6 @@
 # Self-Hosted Runner Migration Runbook
 
-Operational reference for migrating a docker-compose repo from the SSH-based `deploy.yml` to the workflow-native `deploy-local.yml`. All three repos have now migrated: `docker-piwine-office` (2026-04-29 pilot), `docker-piwine` (2026-04-30), `docker-zendc` (2026-05-02). Keep this for future hosts and as the reference for end-state cleanup.
+Operational reference for migrating a docker-compose repo from the SSH-based deploy reusable workflow to the self-hosted-runner-based replacement. All three repos have now migrated: `docker-piwine-office` (2026-04-29 pilot), `docker-piwine` (2026-04-30), `docker-zendc` (2026-05-02). The replacement workflow was originally introduced as `deploy-local.yml` and renamed to `deploy.yml` on 2026-05-03 after the SSH-based file was deleted. Keep this for future hosts and as the reference for end-state cleanup.
 
 **Spec:** `docs/superpowers/specs/2026-04-29-self-hosted-deploy-runner-pilot-design.md`
 **Original plan:** `docs/superpowers/plans/2026-04-29-self-hosted-deploy-runner-pilot.md`
@@ -88,7 +88,7 @@ Standard. Capture in your runbook:
 
 ## Workflow gotchas
 
-These all bit the pilot. The `deploy-local.yml` reusable workflow handles them; if writing a new caller or modifying the reusable workflow, validate each.
+These all bit the pilot. The `deploy.yml` reusable workflow handles them; if writing a new caller or modifying the reusable workflow, validate each.
 
 ### Auth boundary: workspace vs. live tree
 
@@ -102,7 +102,7 @@ The deploy user has **no GitHub credentials**. The runner workspace (`$GITHUB_WO
 
 | Script | Required args (caller must pass) |
 |---|---|
-| `detect-stack-changes.sh` | `--mode local --current-sha --target-ref --live-repo-path --input-stacks --removed-files` |
+| `detect-stack-changes.sh` | `--current-sha --target-ref --live-repo-path --input-stacks --removed-files` |
 | `detect-critical-stacks.sh` | `--stacks "<space-separated>" --repo-dir <path>` |
 
 The plan's original prepare job omitted `--input-stacks` and the args for `detect-critical-stacks.sh`. Both surfaced as opaque "Required variable not set" errors mid-run.
@@ -130,13 +130,13 @@ Collapse pull+up into one invocation (`--pull always` does both). `--remove-orph
 
 The inline `health-check` job emits `outputs.status=healthy` / `failed` (semantic). The notify job's status-branching logic compares against `success` / `failure`. Without normalization, every successful deploy renders as a red "Failed" embed in Discord — every job runs green, but the message is wrong.
 
-Fixed in `6b3cf2b` via a `case` statement that maps `healthy → success` and `failed → failure` at the top of the notify job's status computation. If you copy `deploy-local.yml` for a per-repo file (option 2 of the runs-on strategy), keep that normalization block intact. The pipeline-status icon block downstream consumes the normalized `$health_status`, so fixing once fixes both.
+Fixed in `6b3cf2b` via a `case` statement that maps `healthy → success` and `failed → failure` at the top of the notify job's status computation. If you copy `deploy.yml` for a per-repo file (option 2 of the runs-on strategy), keep that normalization block intact. The pipeline-status icon block downstream consumes the normalized `$health_status`, so fixing once fixes both.
 
 ### One-shot containers (exit 0) must not fail the health gate
 
 Stacks like `yas` use `service_completed_successfully` to gate workers/api on a one-shot migration container (alembic, etc.). After `up --wait` settles, that container is in state `exited` with exit code `0` — a *success*, not a failure.
 
-The inline health-check job in `deploy-local.yml` accounts for this in its `unhealthy` jq selector:
+The inline health-check job in `deploy.yml` accounts for this in its `unhealthy` jq selector:
 ```jq
 [.[] | select(
   .Health == "unhealthy"
@@ -146,7 +146,7 @@ The inline health-check job in `deploy-local.yml` accounts for this in its `unhe
 ```
 Note `docker compose ps -a` (with `-a`) — without it, exited containers don't appear, which masks both the false-positive *and* the ability to spot a real one-shot failure post-hoc.
 
-**SSH-path equivalent fixes:** `e9d37e4` (logic), `3684dd6` (parsing). The second is a sharp edge worth knowing if anyone rewrites the gate: Go-template `--format` strings like `'{{.Service}}\t{{.Health}}\t{{.ExitCode}}'` silently drop trailing fields when an intermediate field is empty (e.g. `.Health=""` for containers without a healthcheck), leaving downstream values unparseable in `bash` reads. Use `--format json | jq -r '[…] | @tsv'` instead — JSON enforces a fixed schema. The deploy-local.yml inline gate already operates on parsed JSON via `jq`, so it's not vulnerable today, but don't "simplify" it to Go templates.
+**SSH-path equivalent fixes:** `e9d37e4` (logic), `3684dd6` (parsing). The second is a sharp edge worth knowing if anyone rewrites the gate: Go-template `--format` strings like `'{{.Service}}\t{{.Health}}\t{{.ExitCode}}'` silently drop trailing fields when an intermediate field is empty (e.g. `.Health=""` for containers without a healthcheck), leaving downstream values unparseable in `bash` reads. Use `--format json | jq -r '[…] | @tsv'` instead — JSON enforces a fixed schema. The `deploy.yml` inline gate already operates on parsed JSON via `jq`, so it's not vulnerable today, but don't "simplify" it to Go templates.
 
 ### Private container registries need a `registry-login` job
 
@@ -235,12 +235,12 @@ Without it, CI lint blocks PRs with "label X is unknown."
 
 ## Caller-side patterns that worked
 
-### Two-stage rollout per repo
+### Two-stage rollout per repo (historical, used during the SSH→self-hosted migration)
 
-1. **Add `deploy-local.yml` to the caller** (workflow_dispatch only). Smoke-test it.
-2. **Replace `deploy.yml`'s `uses:`** to point at the new reusable workflow. Delete the `deploy-local.yml` pilot file.
+1. **Add a `deploy-self-hosted.yml` to the caller** (workflow_dispatch only) calling the new reusable workflow. Smoke-test it.
+2. **Replace the existing SSH-based `deploy.yml`'s `uses:`** to point at the new reusable workflow. Delete the pilot file.
 
-Don't try to replace `deploy.yml` in one shot — leaves no manual escape hatch if something breaks.
+Don't try to replace the SSH-based `deploy.yml` in one shot — leaves no manual escape hatch if something breaks. (For future *new* hosts, this two-stage isn't needed: just write the caller `deploy.yml` to point at the reusable workflow directly.)
 
 ### Concurrency group convention
 
@@ -252,7 +252,7 @@ Always full 40-char SHA on the `uses:` line — Renovate's GitHub Actions dataso
 
 ### Inputs that don't carry over
 
-The old SSH `deploy.yml` had `args:` and `health-check-command-timeout:` inputs. `deploy-local.yml` doesn't expose equivalents — the matrix per-stack approach handles timing differently. **Drop these inputs** from the new caller; don't thread dead values.
+The old SSH-based reusable workflow had `args:` and `health-check-command-timeout:` inputs. The current `deploy.yml` doesn't expose equivalents — the per-stack loop handles timing differently. **Drop these inputs** from the caller; don't thread dead values.
 
 ---
 
@@ -263,7 +263,7 @@ We chose **option 1: parameterize via input.** Verified working on actions/runne
 **Implementation pattern:**
 
 ```yaml
-# In deploy-local.yml
+# In deploy.yml (the reusable workflow)
 on:
   workflow_call:
     inputs:

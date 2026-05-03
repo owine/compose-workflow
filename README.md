@@ -42,7 +42,7 @@ jobs:
       # plus event-context inputs (see compose-lint.yml for the full list)
 ```
 
-### `deploy-local.yml` — self-hosted deploy
+### `deploy.yml` — self-hosted deploy
 
 5-job pipeline: prepare → deploy → health-check → rollback → notify. Runs on `[self-hosted, <runner-label>]`.
 
@@ -65,7 +65,7 @@ concurrency:
 jobs:
   deploy:
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    uses: owine/compose-workflow/.github/workflows/deploy-local.yml@<sha>
+    uses: owine/compose-workflow/.github/workflows/deploy.yml@<sha>
     secrets: inherit
     with:
       runner-label: piwine                  # or piwine-office, zendc
@@ -91,7 +91,7 @@ Optional inputs: `live-dockge-path` (when `has-dockge: true`), `auto-detect-crit
 │   ├── actionlint.yaml           # declares the runner-label
 │   └── workflows/
 │       ├── lint.yml              # calls compose-lint.yml
-│       └── deploy.yml            # calls deploy-local.yml
+│       └── deploy.yml            # calls compose-workflow's deploy.yml
 ├── stack1/compose.yaml
 ├── stack2/compose.yaml
 └── ...
@@ -110,7 +110,7 @@ Calling repos need exactly **one** secret:
 
 - `OP_SERVICE_ACCOUNT_TOKEN` — 1Password service account token. Used by both lint (GitGuardian API key) and deploy (env-file resolution + multi-registry credentials + Discord webhook).
 
-The previously-required `SSH_USER` / `SSH_HOST` secrets are no longer used by `deploy-local.yml` and can be deleted from caller repos.
+The previously-required `SSH_USER` / `SSH_HOST` secrets are no longer used by `deploy.yml` and can be deleted from caller repos.
 
 ### 1Password references
 
@@ -130,7 +130,7 @@ The runner host needs `docker`, `jq`, `timeout` (coreutils), `gh`, and `op` (1Pa
 
 ### Healthcheck requirements for `--wait`
 
-`deploy-local.yml` invokes `docker compose up --wait`, which only verifies services that have healthchecks defined. Services without healthchecks start but don't gate the deploy. See CLAUDE.md for healthcheck patterns.
+`deploy.yml` invokes `docker compose up --wait`, which only verifies services that have healthchecks defined. Services without healthchecks start but don't gate the deploy. See CLAUDE.md for healthcheck patterns.
 
 One-shot containers (e.g. migration sidecars gated via `service_completed_successfully`) end up `exited` with code 0 — the health-check job recognizes this as success.
 
@@ -139,7 +139,7 @@ One-shot containers (e.g. migration sidecars gated via `service_completed_succes
 ```bash
 # Lint workflow files
 actionlint .github/workflows/compose-lint.yml \
-           .github/workflows/deploy-local.yml \
+           .github/workflows/deploy.yml \
            .github/workflows/workflow-lint.yml
 yamllint --strict .github/workflows/*.yml
 

@@ -30,7 +30,7 @@ Three reusable workflows live in `.github/workflows/`:
   - `target-repository`, `target-ref` — Checkout coordinates
   - `discord-user-id` — 1Password reference to Discord user ID for failure mentions
 
-#### 2. Deploy Workflow (`deploy-local.yml`)
+#### 2. Deploy Workflow (`deploy.yml`)
 - **Purpose**: Deploys to caller repo's host via a self-hosted runner that lives on the host itself
 - **Runs on**: `[self-hosted, <runner-label>]` (e.g. `[self-hosted, piwine]`)
 - **5 jobs** (consolidated 2026-04-30 from a prior 11-job structure — single-runner concurrency=1 means matrices serialize anyway):
@@ -64,7 +64,7 @@ A prior attempt (~2026-04-27) used `tailscale/github-action` to dial *into* host
 
 Calling repositories need exactly **one** secret:
 
-- `OP_SERVICE_ACCOUNT_TOKEN` — 1Password service account token. Used by both `compose-lint.yml` (for GitGuardian's API key) and `deploy-local.yml` (for `op run` env-file resolution + multi-registry credentials + Discord webhook).
+- `OP_SERVICE_ACCOUNT_TOKEN` — 1Password service account token. Used by both `compose-lint.yml` (for GitGuardian's API key) and `deploy.yml` (for `op run` env-file resolution + multi-registry credentials + Discord webhook).
 
 The previously-required `SSH_USER` / `SSH_HOST` secrets are no longer used and can be deleted from caller repos.
 
@@ -79,7 +79,7 @@ Calling repos must have:
 │   ├── actionlint.yaml           # declares the runner-label (`piwine`, etc.)
 │   └── workflows/
 │       ├── lint.yml              # calls compose-lint.yml
-│       └── deploy.yml            # calls deploy-local.yml
+│       └── deploy.yml            # calls compose-workflow's deploy.yml
 ├── stack1/
 │   └── compose.yaml
 ├── stack2/
@@ -97,7 +97,7 @@ self-hosted-runner:
 
 ### Self-hosted runner host requirements
 
-For `deploy-local.yml` to function, the host must have:
+For `deploy.yml` to function, the host must have:
 
 | Tool | Why |
 |---|---|
@@ -111,7 +111,7 @@ Plus a `deploy` user running the GitHub Actions runner as a systemd service, in 
 
 ### Healthcheck Requirements for --wait Flag
 
-`deploy-local.yml` invokes `docker compose up --wait`, which only verifies services that have healthchecks defined. Services without healthchecks will start but won't gate the deploy. Patterns:
+`deploy.yml` invokes `docker compose up --wait`, which only verifies services that have healthchecks defined. Services without healthchecks will start but won't gate the deploy. Patterns:
 
 ```yaml
 # HTTP/Web Services
@@ -184,21 +184,21 @@ Used by `compose-lint.yml`:
 
 ### `scripts/deployment/`
 
-Used by `deploy-local.yml`. The deploy/health/rollback logic is **inlined as workflow steps**, so this directory is small:
+Used by `deploy.yml`. The deploy/health/rollback logic is **inlined as workflow steps**, so this directory is small:
 
 - **`lib/common.sh`** — colored logging, `validate_stack_name` / `validate_sha` / `validate_op_reference`, GitHub Actions output helpers
 - **`detect-stack-changes.sh`** — three-method detection (git diff, tree comparison, discovery analysis) for removed/existing/new stacks. Runs locally on the runner against the workspace checkout (which has full history + GitHub creds), then the workflow uses the classifications to drive teardown / sequential deploy. Cleanup of removed stacks happens in the workflow's `Teardown removed stacks` step, not in this script.
 - **`detect-critical-stacks.sh`** — scans for `com.compose.tier: infrastructure` labels, emits JSON array
 - **`build-pr-comment.sh`** — builds the deploy-status PR comment body (used by the notify job's PR-comment step)
 
-The previously-existing `deploy-stacks.sh`, `health-check.sh`, `rollback-stacks.sh`, `cleanup-stack.sh`, and `lib/ssh-helpers.sh` were removed when `deploy-local.yml` replaced the SSH-based `deploy.yml` — their logic now lives directly in the workflow file.
+The previously-existing `deploy-stacks.sh`, `health-check.sh`, `rollback-stacks.sh`, `cleanup-stack.sh`, and `lib/ssh-helpers.sh` were removed when the SSH-based reusable workflow was retired in favor of the inline-step approach now in `deploy.yml` — their logic lives directly in the workflow file.
 
 ## Development Commands
 
 ```bash
 # Lint workflow files
 actionlint .github/workflows/compose-lint.yml \
-           .github/workflows/deploy-local.yml \
+           .github/workflows/deploy.yml \
            .github/workflows/workflow-lint.yml
 yamllint --strict .github/workflows/*.yml
 
@@ -268,7 +268,7 @@ docker compose -f stack/compose.yaml config
 
 1. Run `actionlint` and `yamllint --strict` on the modified workflow file
 2. For bash logic changes, run `shellcheck` on the affected script
-3. For deploy-local.yml changes, callers will pick up the new SHA via Renovate auto-bumps. Breaking changes (new required input) need a coordinated push: bump every caller's pin in the same minute to avoid a window of broken deploys
+3. For deploy.yml changes, callers will pick up the new SHA via Renovate auto-bumps. Breaking changes (new required input) need a coordinated push: bump every caller's pin in the same minute to avoid a window of broken deploys
 4. Update CLAUDE.md and README.md when behavior changes
 
 ### Adding a new self-hosted host
@@ -281,7 +281,7 @@ Follow `docs/superpowers/runbooks/self-hosted-runner-migration.md`. Highlights:
 
 ### Renovate
 
-- GitHub Actions dependencies (including the SHA pin on `uses: owine/compose-workflow/.github/workflows/deploy-local.yml@<sha>`) are auto-bumped
+- GitHub Actions dependencies (including the SHA pin on `uses: owine/compose-workflow/.github/workflows/deploy.yml@<sha>`) are auto-bumped
 - Major version bumps are grouped separately for review
 
 ## Repository Structure
@@ -291,7 +291,7 @@ Follow `docs/superpowers/runbooks/self-hosted-runner-migration.md`. Highlights:
 │   ├── actionlint.yaml           # self-hosted runner labels
 │   └── workflows/
 │       ├── compose-lint.yml      # reusable lint workflow
-│       ├── deploy-local.yml      # reusable deploy workflow (self-hosted)
+│       ├── deploy.yml      # reusable deploy workflow (self-hosted)
 │       └── workflow-lint.yml     # reusable workflow-file lint
 ├── scripts/
 │   ├── linting/
@@ -356,7 +356,7 @@ Per-registry login is non-fatal (`continue-on-error: true`). Cached creds in the
 ssh <admin>@<host> 'sudo -iu deploy cat ~/.docker/config.json | jq .auths'
 ```
 
-Verify the relevant registry has `auth: <base64>`. If missing, check the 1P references in `deploy-local.yml`'s registry-login steps and the service account's permissions.
+Verify the relevant registry has `auth: <base64>`. If missing, check the 1P references in `deploy.yml`'s registry-login steps and the service account's permissions.
 
 ### Health check fails but containers look fine manually
 

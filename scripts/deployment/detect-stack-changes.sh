@@ -7,12 +7,13 @@
 #          --removed-files '[]' \
 #          --live-repo-path <path>
 #
-# This script runs detection commands locally (no SSH). All git/filesystem ops
-# execute against $LIVE_REPO_PATH on the runner host.
+# All git/filesystem ops execute locally against $LIVE_REPO_PATH on the
+# runner host.
 #
-# Cleanup of removed stacks is the *workflow's* responsibility — deploy-local.yml
-# has a dedicated `Teardown removed stacks` step that uses the has_removed_stacks
-# output. This script only emits classifications, it does not execute teardown.
+# Cleanup of removed stacks is the *workflow's* responsibility — deploy.yml
+# has a dedicated `Teardown removed stacks` step that uses the
+# has_removed_stacks output. This script only emits classifications, it does
+# not execute teardown.
 
 set -euo pipefail
 
@@ -48,10 +49,9 @@ if [[ -z "$LIVE_REPO_PATH" ]]; then
   exit 1
 fi
 
-# run_local: dispatches a bash script body (stdin) to local bash with
-# LIVE_REPO_PATH propagated as an env var. Replaces the prior run_remote
-# helper that supported SSH dispatch (removed when all repos cut over to
-# self-hosted runners — git/fs operations now happen on the runner directly).
+# run_local: dispatches a bash script body (stdin) with LIVE_REPO_PATH
+# propagated as an env var, so heredoc bodies can reference "$LIVE_REPO_PATH"
+# without the parent needing to interpolate it.
 run_local() {
   if [[ $# -gt 0 ]]; then
     LIVE_REPO_PATH="$LIVE_REPO_PATH" bash -s "$@"
