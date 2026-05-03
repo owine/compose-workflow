@@ -8,121 +8,110 @@ This repository contains **reusable GitHub Actions workflows** that provide cent
 
 ### Repository Purpose
 
-**compose-workflow** serves as a centralized workflow hub providing reusable CI/CD workflows for Docker Compose deployments across multiple repositories.
+**compose-workflow** serves as a centralized workflow hub providing reusable CI/CD workflows for Docker Compose deployments across multiple repositories. As of 2026-05-02, all three caller repos (`docker-piwine`, `docker-piwine-office`, `docker-zendc`) deploy via **self-hosted GitHub Actions runners** that live on the deployment hosts themselves — there is no longer any SSH-from-CI deploy path.
 
 ### Workflow Architecture
 
-This repository provides two main reusable workflows:
+Three reusable workflows live in `.github/workflows/`:
 
-#### 1. Compose Lint Workflow (`/.github/workflows/compose-lint.yml`)
+#### 1. Compose Lint Workflow (`compose-lint.yml`)
 - **Purpose**: Validates Docker Compose files and detects secrets
-- **Features**: 
+- **Features**:
   - GitGuardian scanning for secret detection (push events only)
   - YAML linting with yamllint
   - Docker Compose validation
   - Parallel execution of all validation tasks
   - Discord notifications with detailed status
-- **Key Input Parameters**: 
-  - `stacks`: JSON array of stack names to lint
-  - `webhook-url`: 1Password reference to Discord webhook
-  - `repo-name`: Repository name for notifications
-  - `target-repository`: Target repository to checkout
-  - `target-ref`: Git reference to checkout (default: main)
-  - `discord-user-id`: 1Password reference to Discord user ID for failure mentions
-  - Various GitHub event parameters for context
+- **Runs on**: GitHub-hosted Ubuntu runners (no host access required for lint)
+- **Key inputs**:
+  - `stacks` — JSON array of stack names to lint
+  - `webhook-url` — 1Password reference to Discord webhook
+  - `repo-name` — Repository name for notifications
+  - `target-repository`, `target-ref` — Checkout coordinates
+  - `discord-user-id` — 1Password reference to Discord user ID for failure mentions
 
-#### 2. Deploy Workflow (`/.github/workflows/deploy.yml`)
-- **Purpose**: Handles deployment, health checks, rollback, and cleanup with comprehensive monitoring
-- **Features**:
-  - Input validation and sanitization for security
-  - Enhanced error handling with retry logic and exponential backoff
-  - Parallel stack deployment with detailed logging
-  - Stack-specific health checking with accurate service counts
-  - Automatic rollback on failure with SHA tracking
-  - Docker image cleanup after successful deployment
-  - SSH connection optimization with multiplexing
-  - Tailscale integration with cached state
-  - Rich Discord notifications with deployment metrics
-  - **Enhanced Stack Removal Detection**: Three-method detection system
-    - Git diff: Commit comparison (existing)
-    - Tree comparison: Filesystem vs commit tree (catches undeployed removals)
-    - Discovery analysis: tj-actions/changed-files validation
-  - Union-based aggregation with fail-safe error handling
-- **Key Input Parameters**:
-  - `stacks`: JSON array of stack names to deploy
-  - `webhook-url`: 1Password reference to Discord webhook  
-  - `repo-name`: Repository name for notifications
-  - `target-ref`: Git reference to deploy (SHA or branch/tag)
-  - `has-dockge`: Boolean for Dockge deployment
-  - `force-deploy`: Force deployment even if at target commit
-  - `args`: Additional docker compose up arguments
-  - `auto-detect-critical`: Auto-detect critical stacks from compose labels (default: true)
-  - `critical-services`: Manual JSON array of critical stacks (when auto-detect is false)
-  - `discord-user-id`: 1Password reference to Discord user ID for failure mentions
-  - Configurable timeouts: `health-check-command-timeout`, `git-fetch-timeout`, `git-checkout-timeout`, `image-pull-timeout`, `service-startup-timeout`, `validation-env-timeout`, `validation-syntax-timeout`
-  - `failed-container-log-lines`: Lines to capture from failed containers (default: 50)
+#### 2. Deploy Workflow (`deploy-local.yml`)
+- **Purpose**: Deploys to caller repo's host via a self-hosted runner that lives on the host itself
+- **Runs on**: `[self-hosted, <runner-label>]` (e.g. `[self-hosted, piwine]`)
+- **5 jobs** (consolidated 2026-04-30 from a prior 11-job structure — single-runner concurrency=1 means matrices serialize anyway):
+  1. **`prepare`** — discover stacks, capture previous SHA, classify removed/existing/new, detect critical stacks
+  2. **`deploy`** — skip-gate, teardown removed, update tree from workspace (no `git fetch` from origin needed; runner has no GitHub creds), 1P configure, multi-registry login (ghcr/dockerhub/gitlab/gitlab-zenterprise), dockge (optional), existing stacks, new stacks, cleanup-on-failure, summary outputs
+  3. **`health-check`** — validate critical stacks via inline `docker compose ps -a` parsing (no separate script). Skips one-shot exit-0 containers (e.g. migration sidecars gated via `service_completed_successfully`)
+  4. **`rollback`** — `git reset --hard <previous_sha>` + redeploy if `deploy` or `health-check` failed
+  5. **`notify`** — Discord webhook with status, pipeline icon line, and PR comment posting (when invoked from a PR-triggering chain)
+- **Key inputs**:
+  - `runner-label` — e.g. `piwine`, `piwine-office`, `zendc`. Combined with implicit `self-hosted`
+  - `live-repo-path` — absolute path on the runner host (typically `/opt/compose`)
+  - `live-dockge-path` — absolute path to dockge tree (when `has-dockge: true`)
+  - `repo-name`, `webhook-url`, `discord-user-id`, `target-ref`
+  - `has-dockge` — boolean (`true` for piwine/piwine-office, `false` for zendc)
+  - `force-deploy` — skip the "already at target SHA" gate
+  - `auto-detect-critical` — read `com.compose.tier: infrastructure` labels (default: true)
+  - `critical-services` — manual JSON array (when auto-detect is false)
+  - `image-pull-timeout`, `service-startup-timeout` — bound long pulls/waits
+  - `failed-container-log-lines` — diagnostic log tail size on failure (default: 50)
 
-### Recent Improvements
+#### 3. Workflow Lint (`workflow-lint.yml`)
+- **Purpose**: yamllint + actionlint for the workflow files themselves
 
-1. **Input Validation & Sanitization**: Comprehensive validation of all workflow inputs to prevent injection attacks
-2. **Enhanced Error Handling**: Retry logic with exponential backoff for network operations
-3. **Local Testing Capabilities**: Scripts for testing workflows locally (`scripts/testing/`)
-4. **Enhanced Health Checks**: Dynamic retry logic with stack-specific service counting
-5. **Caching Strategies**: Optimized caching for Tailscale state and deployment tools
-6. **SSH Optimization**: Connection multiplexing and retry mechanisms
-7. **Parallel Execution**: All lint jobs (GitGuardian, YAML lint) run concurrently
-8. **Stack Removal Detection**: Automatic cleanup of removed stacks with fail-safe operation
-9. **Dockge Integration**: Dockge deployment consolidated into deploy-stacks.sh, runs after git checkout to ensure compose.env is current
+### Why this design
 
-### Benefits of Centralization
-
-1. **Reduced Duplication**: Single workflow definitions shared across repositories
-2. **Consistent Behavior**: Standardized deployment patterns and error handling  
-3. **Centralized Maintenance**: Updates apply to all environments simultaneously
-4. **Enhanced Reliability**: Automatic rollback, health checking, comprehensive monitoring
-5. **Security Integration**: GitGuardian scanning, 1Password secret management, Tailscale networking
-6. **Performance Optimization**: Parallel execution, caching, SSH multiplexing
+A prior attempt (~2026-04-27) used `tailscale/github-action` to dial *into* hosts from GitHub-hosted runners and SSH from there. Sudo friction with the Tailscale action and SSH-key juggling led to the rewrite: put the runner *on* the host as a `deploy` user (member of `docker` and the admin's group, via `safe.directory` for the admin-owned `/opt/compose` tree). Eliminates the entire SSH-key/Tailscale/sudo-rule class of issues, and removes all network round trips during a deploy except registry pulls and 1P calls.
 
 ## Workflow Configuration
 
 ### Required Secrets
 
-Calling repositories must have the following secrets configured:
+Calling repositories need exactly **one** secret:
 
-- `OP_SERVICE_ACCOUNT_TOKEN` - 1Password service account token for secret management
-- `SSH_USER` - SSH username for deployment server
-- `SSH_HOST` - SSH hostname for deployment server
+- `OP_SERVICE_ACCOUNT_TOKEN` — 1Password service account token. Used by both `compose-lint.yml` (for GitGuardian's API key) and `deploy-local.yml` (for `op run` env-file resolution + multi-registry credentials + Discord webhook).
 
-### Permissions Note for Private Repositories
-
-**Important**: Private repositories have limitations with certain GitHub Actions permissions. Container security scanning features have been removed from the lint workflow as private repositories cannot use the `security-events: write` permission required for SARIF uploads.
-
-For private repositories, the workflows focus on:
-- GitGuardian secret detection
-- YAML syntax validation
-- Docker Compose configuration validation
-- Deployment automation with health checks
+The previously-required `SSH_USER` / `SSH_HOST` secrets are no longer used and can be deleted from caller repos.
 
 ### Repository Structure Requirements
 
-For the workflows to function properly, calling repositories must have:
+Calling repos must have:
 
 ```
-├── .yamllint                    # yamllint configuration
-├── compose.env                  # Environment file with 1Password references
+├── .yamllint                     # yamllint configuration
+├── compose.env                   # env file with op:// references
+├── .github/
+│   ├── actionlint.yaml           # declares the runner-label (`piwine`, etc.)
+│   └── workflows/
+│       ├── lint.yml              # calls compose-lint.yml
+│       └── deploy.yml            # calls deploy-local.yml
 ├── stack1/
-│   └── compose.yaml            # Docker Compose file
+│   └── compose.yaml
 ├── stack2/
-│   └── compose.yaml            # Docker Compose file
-└── stack3/
-    └── compose.yaml            # Docker Compose file
+│   └── compose.yaml
+└── ...
 ```
+
+`actionlint.yaml` is mandatory — without it, CI lint blocks PRs with "label X is unknown" once a workflow uses `runs-on: [self-hosted, <label>]`:
+
+```yaml
+self-hosted-runner:
+  labels:
+    - <runner-label>
+```
+
+### Self-hosted runner host requirements
+
+For `deploy-local.yml` to function, the host must have:
+
+| Tool | Why |
+|---|---|
+| `docker` | Compose ops |
+| `jq` | JSON parsing in workflow steps |
+| `timeout` (coreutils) | Bound long pulls/waits |
+| `gh` | Commit message lookups in notify job |
+| `op` (1Password CLI) | env-file resolution at deploy time |
+
+Plus a `deploy` user running the GitHub Actions runner as a systemd service, in the `docker` group and the admin's group, with `safe.directory` configured for the live tree. See `docs/superpowers/runbooks/self-hosted-runner-migration.md` for the full host-prep playbook (path ownership pattern, setgid, `umask 002` for both admin and runner users).
 
 ### Healthcheck Requirements for --wait Flag
 
-For the `--wait` flag to function properly, all services should have healthcheck definitions in their compose.yaml files:
-
-**Example healthcheck patterns:**
+`deploy-local.yml` invokes `docker compose up --wait`, which only verifies services that have healthchecks defined. Services without healthchecks will start but won't gate the deploy. Patterns:
 
 ```yaml
 # HTTP/Web Services
@@ -133,472 +122,256 @@ healthcheck:
   start_period: 60s
   retries: 3
 
-# Database Services (PostgreSQL)
+# Database (PostgreSQL)
 healthcheck:
   test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
   interval: 5s
   timeout: 5s
   retries: 5
-
-# Process-based Services
-healthcheck:
-  test: ["CMD", "pgrep", "process-name"]
-  interval: 60s
-  timeout: 5s
-  start_period: 30s
-  retries: 3
 ```
 
-Services without healthcheck definitions will start but won't be verified by `--wait`.
+### One-shot containers must exit 0
+
+Services gated via `service_completed_successfully` (alembic migrations, db seeds, etc.) end up in state `exited` after `up --wait` settles. The health-check job's jq selector treats `exited + ExitCode=0` as success, not failure — so one-shot completion gates do not trip the rollback path. If you add a one-shot, ensure it can actually exit zero in the happy case.
 
 ### Discord Webhook Configuration
 
-Webhook URLs should be stored in 1Password with references like:
-- `op://Docker/discord-github-notifications/webhook_url`
+Webhook URLs are stored in 1Password and referenced at workflow-call time:
 
-Example Discord notification configuration:
 ```yaml
-webhook-url: "op://Docker/discord-github-notifications/environment_webhook_url"
+webhook-url: "op://Docker/discord-github-notifications/<env>_webhook_url"
 ```
 
-### Modular Linting Scripts
+The notify job uses `1password/load-secrets-action` to resolve the reference, sends via `sarisia/actions-status-discord`, and unloads at the end.
 
-The lint workflow uses modular bash scripts in `scripts/linting/` for all validation operations:
+### Critical Stack Auto-Detection
 
-#### Library Files (`scripts/linting/lib/`)
-- **env-helpers.sh** - Environment file generation for validation
-  - `create_temp_env()` - Creates temporary .env files with realistic placeholders
-  - Eliminates environment variable warnings during Docker Compose validation
-- **common.sh** - Logging and utilities
-  - Colored logging functions (`log_info`, `log_success`, `log_error`, `log_warning`)
-  - Validation functions (`validate_stack_name`, `require_var`)
-  - Formatting helpers (`format_list`, `print_separator`, `print_subseparator`)
-  - GitHub Actions output helpers (`set_github_output`)
+The deploy workflow auto-detects critical stacks by scanning each stack's `compose.yaml` for labels on any service:
 
-#### Linting Scripts
-- **validate-stack.sh** - Stack validation (~161 lines)
-  - Parallel execution of YAML linting and Docker Compose validation
-  - Comprehensive error reporting with fix suggestions
-  - Temporary file management and cleanup
-  - Exit code-based failure detection
+```yaml
+services:
+  traefik:
+    labels:
+      com.compose.tier: infrastructure   # marks the *stack* as critical
+      # OR
+      com.compose.critical: true
+```
 
-- **lint-summary.sh** - Summary generation (~247 lines)
-  - Aggregates results from GitGuardian, actionlint, and stack validation
-  - Reproduces validation errors with detailed context
-  - Generates comprehensive final status report
-  - Determines overall workflow success/failure
+The `prepare` job's `detect-critical-stacks.sh` builds a JSON array of stacks containing such labels; `health-check` uses it to decide which stacks gate the rollback. To override:
 
-#### Script Benefits
-- **Modularity**: Each script has a single, well-defined purpose
-- **Reusability**: Scripts can be called from other workflows or locally
-- **Testability**: Scripts can be tested independently of the workflow
-- **Maintainability**: Easier to update and debug than inline heredocs
-- **Code Deduplication**: Eliminates 80 lines of duplicated create_temp_env function
-- **Workflow Reduction**: compose-lint.yml reduced from 666 → 308 lines (54% reduction)
+```yaml
+with:
+  auto-detect-critical: false
+  critical-services: '["stack1", "stack2"]'
+```
 
-### Modular Deployment Scripts
+Examples of stacks typically marked critical:
+- **Reverse proxies** (`swag`, `traefik`) — all external access depends on them
+- **Container management** (`portainer`, `dockge`) — needed for manual intervention if other stacks fail
+- **Authentication** (`authelia`) — SSO gateway
+- **Monitoring** (`dozzle`, `beszel`, `uptime-kuma`) — operational visibility
 
-The deploy workflow uses modular bash scripts in `scripts/deployment/` for all major operations:
+## Modular Scripts
 
-#### Library Files (`scripts/deployment/lib/`)
-- **ssh-helpers.sh** - SSH retry with consistent logging and operation context (~119 lines)
-  - `ssh_retry()` - SSH-specific retry with error code handling and context logging
-  - `_get_operation_context()` - Safe operation label extraction using allowlist
-  - Sources `common.sh` for consistent `log_*` output formatting
-  - Security: Only outputs hardcoded operation labels, never command content
-- **common.sh** - Logging, validation, and utilities (~94 lines)
-  - Colored logging functions (`log_info`, `log_success`, `log_error`, `log_warning`)
-  - Input validation (`validate_stack_name`, `validate_sha`, `validate_op_reference`)
-  - GitHub Actions output helpers (`set_github_output`)
-  - Utility functions (`format_list`, `require_var`)
+### `scripts/linting/`
 
-#### Deployment Scripts
+Used by `compose-lint.yml`:
 
-- **deploy-stacks.sh** - Stack deployment orchestration (~505 lines)
-  - Git checkout to update server repository (including compose.env)
-  - Optional Dockge deployment via `--has-dockge` flag (runs after git checkout, before stacks)
-  - Parallel stack deployment with background processes
-  - Exit code file-based error detection
-  - Comprehensive logging with stack-specific output
-  - Git operations with configurable timeouts
-  - Image pull and service startup with retry logic
-  - **Docker Compose --wait integration for atomic health verification**
-  - Pre-deployment validation for all stacks
+- **`lib/env-helpers.sh`** — `create_temp_env()` generates temporary .env files with placeholders, eliminating env warnings during compose validation
+- **`lib/common.sh`** — colored logging, `validate_stack_name`, GitHub Actions output helpers
+- **`validate-stack.sh`** — parallel YAML lint + `docker compose config` per stack
+- **`lint-summary.sh`** — aggregates GitGuardian, actionlint, and stack-validation results into a final status report
 
-- **rollback-stacks.sh** - Rollback automation (~562 lines)
-  - SHA validation and git operations
-  - Dynamic stack discovery from previous commit
-  - Parallel rollback execution with PID tracking
-  - Critical service failure detection
-  - Comprehensive error reporting
-  - **Note**: Dockge is not rolled back (management UI only needs forward deployment)
+### `scripts/deployment/`
 
-- **health-check.sh** - Service health verification (~694 lines)
-  - Stack-specific service counting with accurate compose file detection
-  - Dynamic retry logic based on critical service failures
-  - Comprehensive health status reporting (healthy/degraded/failed stacks)
-  - Docker health status parsing (healthy/starting/unhealthy containers)
-  - Dockge health integration when enabled
-  - Escaped parameter handling to prevent shell glob expansion
+Used by `deploy-local.yml`. The deploy/health/rollback logic is **inlined as workflow steps**, so this directory is small:
 
-- **detect-stack-changes.sh** - Stack change detection for removed/existing/new stacks (~498 lines)
-  - Three-category detection: removed, existing, and new stacks
-  - Multi-method detection per category (git diff, tree comparison, discovery analysis)
-  - Union-based aggregation with fail-safe error handling
-  - Automatic cleanup of removed stacks
-  - Enables sequential deployment: existing stacks first, then new stacks
+- **`lib/common.sh`** — colored logging, `validate_stack_name` / `validate_sha` / `validate_op_reference`, GitHub Actions output helpers
+- **`detect-stack-changes.sh`** — three-method detection (git diff, tree comparison, discovery analysis) for removed/existing/new stacks. Runs locally on the runner against the workspace checkout (which has full history + GitHub creds), then the workflow uses the classifications to drive teardown / sequential deploy. Cleanup of removed stacks happens in the workflow's `Teardown removed stacks` step, not in this script.
+- **`detect-critical-stacks.sh`** — scans for `com.compose.tier: infrastructure` labels, emits JSON array
+- **`build-pr-comment.sh`** — builds the deploy-status PR comment body (used by the notify job's PR-comment step)
 
-- **detect-critical-stacks.sh** - Critical stack auto-detection (~106 lines)
-  - Scans compose.yaml files for `com.compose.tier: infrastructure` labels
-  - Builds JSON array of critical stacks for health check and rollback
-  - Enables auto-detection without manual critical-services configuration
-
-- **cleanup-stack.sh** - Individual stack cleanup (~88 lines)
-  - Single stack removal helper
-  - 1Password integration for environment variables
-  - Graceful handling of missing stacks
-
-#### Script Benefits
-- **Modularity**: Each script has a single, well-defined purpose
-- **Reusability**: Scripts can be called from other workflows or locally
-- **Testability**: Scripts can be tested independently of the workflow
-- **Maintainability**: Easier to update and debug than inline heredocs
-- **Expression Limits**: Eliminated GitHub Actions 21,000 character heredoc limit issues
+The previously-existing `deploy-stacks.sh`, `health-check.sh`, `rollback-stacks.sh`, `cleanup-stack.sh`, and `lib/ssh-helpers.sh` were removed when `deploy-local.yml` replaced the SSH-based `deploy.yml` — their logic now lives directly in the workflow file.
 
 ## Development Commands
 
-### Workflow Development
-
 ```bash
-# Test workflow syntax
-actionlint .github/workflows/compose-lint.yml
-actionlint .github/workflows/workflow-lint.yml
-actionlint .github/workflows/deploy.yml
+# Lint workflow files
+actionlint .github/workflows/compose-lint.yml \
+           .github/workflows/deploy-local.yml \
+           .github/workflows/workflow-lint.yml
+yamllint --strict .github/workflows/*.yml
 
-# Validate workflow YAML formatting
-yamllint --strict .github/workflows/compose-lint.yml
-yamllint --strict .github/workflows/workflow-lint.yml
-yamllint --strict .github/workflows/deploy.yml
+# Lint deployment scripts
+shellcheck scripts/deployment/*.sh scripts/linting/*.sh
 
 # Test workflows locally
 ./scripts/testing/test-workflow.sh
 ./scripts/testing/validate-compose.sh
 ```
 
-### Testing Workflows
-
-The repository includes testing scripts in `scripts/testing/`:
-- `test-workflow.sh` - Test workflow inputs and validation
-- `validate-compose.sh` - Validate Docker Compose files
-
-### Deployment Validation
+### Validating compose files in a caller repo
 
 ```bash
-# Validate Docker Compose configurations in calling repositories
 yamllint --strict --config-file .yamllint stack/compose.yaml
 docker compose -f stack/compose.yaml config
 ```
 
 ## Workflow Features
 
-### Lint Pipeline Features
+### Lint Pipeline
 
-The compose lint workflow (`compose-lint.yml`) provides:
+- Parallel GitGuardian + YAML lint
+- GitGuardian secret detection on push events (1Password-backed API key)
+- yamllint formatting validation
+- `docker compose config` syntax validation
+- Matrix strategy: each stack tested independently
+- Discord notifications
 
-1. **Parallel Execution** - GitGuardian and YAML linting run simultaneously
-2. **GitGuardian Scanning** - Secret detection with 1Password integration (push events only)
-3. **YAML Linting** - Validates compose file formatting using yamllint  
-4. **Docker Compose Config** - Validates syntax and configuration
-5. **Matrix Strategy** - Tests each stack independently
-6. **Discord Notifications** - Reports results with detailed status information
-7. **Multi-repository Support** - Can checkout and lint any target repository
+### Deploy Pipeline
 
-### Deploy Pipeline Features
-
-The deploy workflow (`deploy.yml`) provides:
-
-1. **Input Validation** - Comprehensive validation of all inputs for security
-2. **Smart Deployment** - Skips if already at target commit (unless forced)
-3. **Retry Mechanisms** - Automatic retry with exponential backoff for SSH operations
-4. **Parallel Stack Deployment** - Deploy all stacks concurrently with detailed logging
-5. **Native Health Verification** - Uses Docker Compose v5 `--wait` flag for atomic service health verification
-6. **Comprehensive Health Reporting** - Post-deployment health-check.sh provides detailed metrics and diagnostics
-7. **Automatic Rollback** - Roll back to previous commit on failure
-8. **Docker Image Cleanup** - Remove unused images after successful deployment
-9. **SSH Optimization** - Connection multiplexing for better performance
-10. **Caching** - Optimized caching for Tailscale and deployment tools
-11. **Rich Discord Notifications** - Comprehensive deployment status with health metrics
-12. **Enhanced Stack Detection** - Categorize stacks as removed/existing/new; sequential deployment of existing then new stacks
-13. **Critical Stack Auto-Detection** - Automatically detect critical infrastructure stacks from compose file labels
-
-### Critical Stack Detection
-
-The deploy workflow can automatically detect critical stacks that should trigger early deployment failure if they become unhealthy. This eliminates the need to manually maintain a list of critical stacks in each repository's workflow configuration.
-
-#### Label Convention
-
-Mark stacks as critical by adding labels to any service in the stack's `compose.yaml`:
-
-```yaml
-services:
-  traefik:
-    image: traefik:v3.2@sha256:...
-    labels:
-      # Mark this stack as critical infrastructure
-      com.compose.tier: infrastructure
-      # OR use explicit critical flag
-      com.compose.critical: true
-      # ... other labels
-```
-
-**Supported Labels:**
-- `com.compose.tier: infrastructure` - Marks stack as infrastructure tier (recommended)
-- `com.compose.critical: true` - Explicit critical flag (alternative)
-
-#### Usage in Workflows
-
-Auto-detection is **enabled by default** in all deployments:
-
-```yaml
-jobs:
-  deploy:
-    uses: owine/compose-workflow/.github/workflows/deploy.yml@main
-    secrets: inherit
-    with:
-      stacks: '["swag", "portainer", "dozzle", "services"]'
-      # auto-detect-critical: true  ← Default behavior (can omit)
-```
-
-To use manual critical services list instead:
-
-```yaml
-with:
-  stacks: '["stack1", "stack2", "stack3"]'
-  auto-detect-critical: false
-  critical-services: '["stack1", "stack2"]'  # Manual override
-```
-
-**How auto-detection works:**
-1. Detection step runs before deployment (automatic)
-2. Scans each stack's `compose.yaml` for `com.compose.tier: infrastructure` labels
-3. Builds JSON array of critical stacks
-4. Passes to health check and rollback steps
-5. Deployment fails fast if any critical stack is unhealthy
-
-**Label Convention:**
-Use `com.compose.tier: infrastructure` on individual services (not entire stacks):
-- Syntax: `com.compose.tier: infrastructure` (colon syntax for YAML keys)
-- Alternative: `- com.compose.tier=infrastructure` (equals syntax for arrays)
-
-**Examples of critical services:**
-- **Reverse Proxies**: `swag`, `traefik` - All external access depends on these
-- **Container Management**: `portainer`, `dockge` - Required for manual intervention
-- **Authentication**: `authelia` - SSO gateway for protected services
-- **Monitoring**: `dozzle`, `beszel`, `uptime-kuma`, `smokeping` - Operational visibility
-- **Critical Apps**: `librarymanager` - Mission-critical applications
+- **Smart deployment** — skips if `/opt/compose` HEAD already matches target SHA (override with `force-deploy`)
+- **Per-stack failure isolation** — `set +e` + `failed=()` array within the deploy loop matches the prior matrix's `fail-fast: false`
+- **Per-stack timeout** — `timeout $SERVICE_STARTUP_TIMEOUT` inside each loop iteration (not step-level — that would apply to the whole loop)
+- **Native health verification** — `docker compose up --wait` for atomic readiness
+- **Multi-registry auth** — single `1password/load-secrets-action` step pulls all four registry credential pairs, four `docker/login-action` steps with `logout: false` and `continue-on-error: true` so a single misconfigured registry doesn't block deploys that may not pull from it
+- **Sequential existing-then-new** — new stacks only deploy if existing stacks succeeded
+- **Failure diagnostics** — on stack failure or health failure, dumps `docker compose ps -a`, `docker inspect` of `.State.Health.Log` (probe history with exit codes + stdout), and `docker compose logs --tail N` scoped to the failing service
+- **Automatic rollback** — `git reset --hard <previous_sha>` + redeploy if deploy or health-check failed
+- **Discord notifications** — pipeline-status icon line, removed-stacks list, commit link, user mention on failure
 
 ## Security Integration
 
 ### Secret Management
 
-The workflows integrate with 1Password for secure secret management:
-
-- All secrets use 1Password references (`op://Vault/Item/field`)  
+- All secrets use 1Password references (`op://Vault/Item/field`)
 - GitGuardian scanning prevents accidental secret commits
-- Service account tokens provide CI/CD access to secrets
-- Secrets are loaded at runtime, never stored in repositories
+- 1Password service account token provides CI/CD access
+- Secrets resolve at runtime via `op run --env-file=…` and `1password/load-secrets-action`
+- Multi-registry credentials (ghcr/dockerhub/gitlab/gitlab-zenterprise) cached in the runner host's `~/.docker/config.json` via `docker/login-action` with `logout: false`
+
+### Network model
+
+- **No inbound network access required for deploys** — the runner is on the host. CI never connects *to* the host; the host pulls jobs *from* GitHub.
+- **Outbound network** — runner → GitHub Actions API, runner → image registries, runner → 1Password, runner → Discord webhook
+- **No Tailscale dependency** — the prior SSH-based path required Tailscale for zero-trust networking; the self-hosted runner approach makes this unnecessary
 
 ### Input Security
 
-- Comprehensive input validation prevents injection attacks
-- Stack names validated against safe character sets
-- Target refs validated for proper format
+- Stack names validated against `^[a-zA-Z0-9._-]+$` before use in compose calls
+- Target refs validated as 40-char hex SHAs
 - Webhook URLs validated for 1Password format
-- Repository names sanitized
-
-### Network Security
-
-- **Tailscale Integration** - Secure zero-trust networking for deployment connections
-- **SSH Key Management** - Secure SSH connections with retry logic
-- **1Password Integration** - Centralized secret management with vault isolation
-- **Connection Multiplexing** - Optimized SSH connections with ControlMaster
-
-## Cache Configuration
-
-### Tailscale Cache
-- **Key**: `tailscale-${{ runner.os }}-${{ github.repository_owner }}-${{ github.run_number }}`
-- **Paths**: `~/.cache/tailscale`, `/var/lib/tailscale`
-- **Restore Keys**: Hierarchical fallback for cache hits
-
-### Deployment Tools Cache
-- **Key**: `deploy-tools-${{ runner.os }}-v1`
-- **Paths**: `~/.cache/pip`, `~/.cache/docker`, `~/.ssh`
-- **Version**: Simple version-based key for reliability
 
 ## Workflow Maintenance
 
 ### Updating Workflows
 
-When updating the reusable workflows in this repository:
+1. Run `actionlint` and `yamllint --strict` on the modified workflow file
+2. For bash logic changes, run `shellcheck` on the affected script
+3. For deploy-local.yml changes, callers will pick up the new SHA via Renovate auto-bumps. Breaking changes (new required input) need a coordinated push: bump every caller's pin in the same minute to avoid a window of broken deploys
+4. Update CLAUDE.md and README.md when behavior changes
 
-1. **Test workflow syntax** - Use `actionlint` to validate workflow files
-2. **Run local tests** - Use testing scripts in `scripts/testing/`
-3. **Update documentation** - Reflect changes in `README.md` and `CLAUDE.md`
-4. **Version workflows** - Consider using tags for major workflow changes
-5. **Test with target repositories** - Verify changes work across calling repositories
+### Adding a new self-hosted host
 
-### Version Management
+Follow `docs/superpowers/runbooks/self-hosted-runner-migration.md`. Highlights:
+- Pick a unique runner label (e.g. `zendc`)
+- Add the label to **both** `compose-workflow/.github/actionlint.yaml` and the caller repo's `.github/actionlint.yaml`
+- Run host prep (deploy user, path ownership pattern, `safe.directory`, umask 002 in admin's rcs)
+- Register the runner as a systemd service running as `deploy`
 
-- Target repositories reference workflows using `@main` for latest features
-- For stability, repositories can pin to specific versions like `@v1.0.0`
-- Breaking changes should be versioned and communicated to calling repositories
+### Renovate
 
-### Adding New Features
-
-When adding new features to the workflows:
-
-1. **Add input parameters** - Define new inputs in workflow files
-2. **Validate inputs** - Add validation logic for security
-3. **Update parameter documentation** - Document new parameters in README.md
-4. **Test thoroughly** - Verify new features work across different repository configurations
-5. **Maintain backward compatibility** - Ensure existing implementations continue to work
+- GitHub Actions dependencies (including the SHA pin on `uses: owine/compose-workflow/.github/workflows/deploy-local.yml@<sha>`) are auto-bumped
+- Major version bumps are grouped separately for review
 
 ## Repository Structure
 
-This repository contains:
-
 ```
 ├── .github/
+│   ├── actionlint.yaml           # self-hosted runner labels
 │   └── workflows/
-│       ├── compose-lint.yml     # Reusable compose lint workflow (~324 lines)
-│       ├── workflow-lint.yml    # Reusable workflow lint (~90 lines)
-│       └── deploy.yml            # Reusable deploy workflow (~970 lines)
+│       ├── compose-lint.yml      # reusable lint workflow
+│       ├── deploy-local.yml      # reusable deploy workflow (self-hosted)
+│       └── workflow-lint.yml     # reusable workflow-file lint
 ├── scripts/
-│   ├── linting/                  # Modular linting scripts
+│   ├── linting/
 │   │   ├── lib/
-│   │   │   ├── env-helpers.sh   # Environment file generation (~62 lines)
-│   │   │   └── common.sh        # Utilities and logging (~75 lines)
-│   │   ├── validate-stack.sh    # Stack validation (~161 lines)
-│   │   ├── lint-summary.sh      # Summary generation (~247 lines)
-│   │   └── .shellcheckrc        # ShellCheck configuration
-│   ├── deployment/               # Modular deployment scripts
+│   │   │   ├── env-helpers.sh    # temp .env generation
+│   │   │   └── common.sh         # logging + helpers
+│   │   ├── validate-stack.sh
+│   │   └── lint-summary.sh
+│   ├── deployment/
 │   │   ├── lib/
-│   │   │   ├── ssh-helpers.sh   # SSH retry with context logging (~119 lines)
-│   │   │   └── common.sh        # Utilities and validation (~94 lines)
-│   │   ├── health-check.sh      # Health verification (~694 lines)
-│   │   ├── deploy-stacks.sh     # Deployment orchestration (~488 lines)
-│   │   ├── detect-stack-changes.sh  # Stack change detection - removed/existing/new (~498 lines)
-│   │   ├── detect-critical-stacks.sh  # Critical stack auto-detection from labels (~106 lines)
-│   │   ├── cleanup-stack.sh     # Individual stack cleanup (~88 lines)
-│   │   ├── rollback-stacks.sh   # Rollback automation (~562 lines)
-│   │   └── .shellcheckrc        # ShellCheck configuration
+│   │   │   └── common.sh         # logging + validation
+│   │   ├── detect-stack-changes.sh
+│   │   ├── detect-critical-stacks.sh
+│   │   └── build-pr-comment.sh
 │   └── testing/
-│       ├── test-workflow.sh     # Workflow testing script
-│       ├── validate-compose.sh  # Compose validation script
-│       └── README.md            # Testing documentation
-├── CLAUDE.md                    # This file - Claude Code guidance
-└── README.md                    # Repository documentation
+│       ├── test-workflow.sh
+│       ├── validate-compose.sh
+│       └── README.md
+├── docs/
+│   └── superpowers/
+│       ├── plans/                # historical plan docs
+│       ├── specs/                # historical design docs
+│       └── runbooks/
+│           └── self-hosted-runner-migration.md
+├── CLAUDE.md
+└── README.md
 ```
 
-### Dependency Management
+## Troubleshooting
 
-The repository uses Renovate for automated dependency updates:
-- GitHub Actions are automatically updated with minor/patch versions
-- Major version updates are grouped separately for review
+### Runner offline
 
-## Troubleshooting Workflows
-
-### Common Workflow Issues
-
-#### GitGuardian Scanning Failures
-
-**Symptoms**: Lint workflow fails at GitGuardian step
-
-**Solutions**:
-1. Check `OP_SERVICE_ACCOUNT_TOKEN` is configured correctly
-2. Verify GitGuardian API key exists in 1Password vault
-3. Ensure 1Password service account has access to GitGuardian secrets
-
-#### Deployment Connection Issues  
-
-**Symptoms**: Deploy workflow fails to connect to deployment server
-
-**Solutions**:
-1. Verify `SSH_USER` and `SSH_HOST` secrets are configured
-2. Check Tailscale OAuth credentials in 1Password
-3. Ensure deployment server is accessible via Tailscale
-4. Verify SSH key authentication is working
-5. Check SSH retry logic in logs for connection details
-
-#### Discord Notification Failures
-
-**Symptoms**: Workflow completes but no Discord notifications
-
-**Solutions**:
-1. Check webhook URL format in 1Password: `op://Vault/Item/field`
-2. Verify 1Password service account has access to Discord webhook secrets  
-3. Test webhook URL manually
-4. Check Discord channel permissions
-
-#### Health Check Failures
-
-**Symptoms**: Deployment succeeds but health checks fail or show incorrect counts
-
-**Solutions**:
-1. Verify stack-specific compose files are being used (`-f compose.yaml`)
-2. Check health check retry logic settings (attempts and wait times)
-3. Verify services have proper health check configurations
-4. Check Docker Compose service dependencies
-5. Review container logs for startup issues
-6. Ensure health checks are using stack-specific paths
-
-### Workflow Debugging
-
-#### Enable Debug Logging
-
-Add this to workflow calls for detailed logging:
-
-```yaml
-env:
-  ACTIONS_STEP_DEBUG: true
-  ACTIONS_RUNNER_DEBUG: true
+```bash
+gh api repos/owine/<caller-repo>/actions/runners --jq '.runners[] | {name, status}'
 ```
 
-#### Check Workflow Outputs
-
-Monitor workflow outputs for troubleshooting:
-
-```yaml
-- name: Debug Outputs
-  run: |
-    echo "Deploy Status: ${{ needs.deploy.outputs.deploy_status }}"
-    echo "Health Status: ${{ needs.deploy.outputs.health_status }}"
-    echo "Healthy Stacks: ${{ needs.deploy.outputs.healthy_stacks }}"
+If status is `offline`:
+```bash
+ssh <admin>@<host> 'sudo systemctl status actions.runner.owine-<caller-repo>.<host>.service'
+sudo journalctl -u 'actions.runner.owine-*' -n 50
 ```
 
-#### SSH Connection Issues
+Common causes: host reboot without `enabled` on the unit, network blip, expired runner registration.
 
-Check SSH multiplexing and retry logic:
-- Review `/tmp/retry.sh` execution in logs
-- Check SSH ControlMaster configuration
-- Verify connection persistence settings
+### Permission denied during `git reset --hard` in deploy
 
-## Performance Optimization
+Likely the path-ownership pattern broke — usually because the admin user's `umask` reverted to 022 and a new file/dir was created without group-write. One-time repair + permanent fix:
 
-### Parallel Execution
-- GitGuardian scanning and YAML linting run concurrently
-- Stack deployments execute in parallel
-- Matrix strategy for independent stack validation
+```bash
+sudo chmod -R g+w /opt/compose
+sudo find /opt/compose -type d -exec chmod g+s {} +
+echo 'umask 002' | sudo tee -a /home/<admin>/.zshrc /home/<admin>/.bashrc
+```
 
-### Caching Strategy
-- Tailscale state cached per repository owner
-- Deployment tools cached with version key
-- SSH connections multiplexed for reuse
+See the runbook's "umask 002 for the admin user is required (not optional)" section for the full diagnosis.
 
-### Retry Logic
-- SSH operations retry with exponential backoff
-- Health checks use dynamic retry timing
-- Deployment operations have configurable timeouts
+### Registry login failing
+
+Per-registry login is non-fatal (`continue-on-error: true`). Cached creds in the runner's `~/.docker/config.json` from a prior successful run may carry through. If a particular stack fails to pull:
+
+```bash
+ssh <admin>@<host> 'sudo -iu deploy cat ~/.docker/config.json | jq .auths'
+```
+
+Verify the relevant registry has `auth: <base64>`. If missing, check the 1P references in `deploy-local.yml`'s registry-login steps and the service account's permissions.
+
+### Health check fails but containers look fine manually
+
+The selector treats these as unhealthy:
+- `Health == "unhealthy"`
+- `State == "exited" && ExitCode != 0`
+- `Health == "" && State != "running" && State != "exited"`
+
+So a *clean* one-shot exit (`exited`, `ExitCode=0`) is **fine**. A non-zero exit is not. A no-healthcheck running service is fine. A no-healthcheck stopped service is not.
+
+If you see false positives, check the diagnostic dump in the failed run — it shows the exact ps output the selector saw.
+
+### Discord notification has wrong color/title
+
+The notify job normalizes `health-check.outputs.status` (`healthy`/`failed`) to `success`/`failure` for the embed. If you see a green deploy showing as red in Discord, check that the case-statement at the top of `compose status` step is intact — copy/paste of the workflow into a per-repo file is the most common cause of breakage.
 
 # important-instruction-reminders
 Do what has been asked; nothing more, nothing less.

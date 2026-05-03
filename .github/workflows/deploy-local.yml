@@ -156,7 +156,6 @@ jobs:
           INPUT_STACKS: ${{ steps.discover-stacks.outputs.stacks }}
         run: |
           ./.compose-workflow/scripts/deployment/detect-stack-changes.sh \
-            --mode local \
             --current-sha "$PREVIOUS_SHA" \
             --target-ref "$TARGET_REF" \
             --live-repo-path "$DETECTION_TREE" \

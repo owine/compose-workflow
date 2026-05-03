@@ -350,12 +350,21 @@ The original structure was inherited from the GitHub-hosted SSH `deploy.yml` whe
 
 ---
 
-## End-state cleanup
+## End-state cleanup (DONE 2026-05-03)
 
-After all three repos (`piwine-office`, `piwine`, `zendc`) have migrated and baked:
+All three repos migrated and baked. Cleanup completed in a single push session:
 
-- Delete `deploy.yml` (the SSH workflow) from `compose-workflow/.github/workflows/`.
-- Delete the SSH-using scripts that have no remaining callers: `deploy-stacks.sh`, `health-check.sh`, `rollback-stacks.sh`, `cleanup-stack.sh` (verify nothing else calls them first).
-- `detect-stack-changes.sh` keeps both modes — local was added, ssh stays in case any other consumer emerges, but can be simplified to local-only if confirmed unused.
-- Remove `tailscale/github-action` cache config and Tailscale OAuth secret refs from CI.
-- Delete `SSH_USER` / `SSH_HOST` repo secrets across all three repos once nothing references them.
+- ✅ **Deleted** `compose-workflow/.github/workflows/deploy.yml` (the SSH-based reusable workflow). Verified zero callers across all three docker repos before removal.
+- ✅ **Deleted** the SSH-using scripts: `deploy-stacks.sh`, `health-check.sh`, `rollback-stacks.sh`, `cleanup-stack.sh`. Plus `lib/ssh-helpers.sh` which was only sourced by these scripts and the SSH branch of `detect-stack-changes.sh`.
+- ✅ **Simplified** `detect-stack-changes.sh` to local-only. Removed `--mode ssh` branch, `--ssh-user`/`--ssh-host` flags, `run_remote()` SSH dispatch, and the in-script cleanup-of-removed-stacks loop (that responsibility moved to deploy-local.yml's `Teardown removed stacks` step before this cleanup, so it was already redundant). Caller in `deploy-local.yml` updated to drop the now-rejected `--mode local` flag.
+- ✅ **Tailscale references** were removed from CI long before this cleanup (the rewrite to self-hosted runners eliminated Tailscale dependency entirely). Verified no remaining `tailscale/github-action` references in workflows or active docs. Historical mentions in this runbook are intentional context and stay.
+- ✅ **CLAUDE.md and README.md** rewritten to describe the deploy-local.yml-only architecture. Old SSH-multiplexing/Tailscale/SSH_USER+SSH_HOST narrative replaced with self-hosted-runner reality.
+
+### Manual follow-up (one-time, not yet done)
+
+- [ ] `gh secret delete SSH_USER --repo owine/docker-piwine`
+- [ ] `gh secret delete SSH_HOST --repo owine/docker-piwine`
+- [ ] `gh secret delete SSH_USER --repo owine/docker-piwine-office`
+- [ ] `gh secret delete SSH_HOST --repo owine/docker-piwine-office`
+- [ ] `gh secret delete SSH_USER --repo owine/docker-zendc`
+- [ ] `gh secret delete SSH_HOST --repo owine/docker-zendc`

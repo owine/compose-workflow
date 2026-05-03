@@ -1,83 +1,52 @@
 # Compose Workflow
 
-Reusable GitHub Actions workflows for Docker Compose deployments across multiple repositories.
+Reusable GitHub Actions workflows for Docker Compose deployments across multiple repositories. Provides centralized lint and deploy automation with self-hosted-runner-based deployment to the host on which compose stacks live.
 
-## Overview
+## Architecture
 
-This repository provides centralized, reusable workflows for standardizing CI/CD processes across Docker Compose-based applications. The workflows eliminate code duplication while maintaining flexibility for environment-specific configurations.
+As of 2026-05-02, deployment uses **self-hosted GitHub Actions runners that live on the deployment hosts themselves** — there is no SSH-from-CI path. The runner runs as a `deploy` user, in the `docker` group and the admin's group, and pulls jobs from GitHub. Eliminates the SSH-key/Tailscale/sudo-rule class of issues that plagued the prior design.
+
+Three caller repos use this workflow:
+- `docker-piwine` — runner label `piwine`
+- `docker-piwine-office` — runner label `piwine-office`
+- `docker-zendc` — runner label `zendc`
 
 ## Key Features
 
-- 🔒 **Security First**: Input validation, secret scanning, 1Password integration
-- ⚡ **Performance Optimized**: Parallel execution, caching, SSH multiplexing
-- 🔄 **Reliability**: Retry logic, health checks, automatic rollback
-- 📊 **Observability**: Rich Discord notifications, detailed logging
-- 🧪 **Testability**: Local testing scripts, validation tools
+- 🔒 **Security first** — input validation, GitGuardian secret scanning, 1Password integration
+- 🏠 **Self-hosted deploy** — no inbound network access required; runner pulls jobs from GitHub
+- 🔄 **Automatic rollback** — `git reset --hard <previous_sha>` + redeploy on deploy or health failure
+- 🔍 **Failure diagnostics** — on stack failure, dumps `docker compose ps -a`, healthcheck history (`.State.Health.Log`), and scoped service logs
+- 📊 **Discord notifications** — pipeline-status icon line with deploy/health/rollback states, commit link, user mention on failure
+- 🚦 **Critical stack detection** — auto-detects from `com.compose.tier: infrastructure` labels
+- 🔐 **Multi-registry auth** — single 1P round trip + `docker/login-action` per registry (ghcr.io, docker.io, registry.gitlab.com, custom GitLab)
 
 ## Available Workflows
 
-### 1. Compose Lint Workflow (`compose-lint.yml`)
+### `compose-lint.yml` — validation
 
-Performs comprehensive validation of Docker Compose configurations with secret detection.
+Parallel GitGuardian + yamllint + `docker compose config` validation. Runs on GitHub-hosted runners (no host access needed).
 
-**Features:**
-- **Parallel Execution**: All validation tasks run concurrently for speed
-- **GitGuardian Integration**: Scans for leaked secrets (push events only)
-- **YAML Validation**: Ensures proper formatting with yamllint
-- **Docker Compose Validation**: Verifies syntax and configuration
-- **Matrix Strategy**: Tests each stack independently
-- **Multi-Repository Support**: Can validate any target repository
-- **Discord Notifications**: Reports results with detailed status
-
-**Usage:**
 ```yaml
-name: Lint Docker Compose
-on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
-
 jobs:
   lint:
     uses: owine/compose-workflow/.github/workflows/compose-lint.yml@main
     secrets: inherit
     with:
       stacks: '["stack1", "stack2", "stack3"]'
-      webhook-url: "op://Docker/discord-github-notifications/webhook_url"
+      webhook-url: "op://Docker/discord-github-notifications/<env>_webhook_url"
       repo-name: "my-docker-repo"
       target-repository: ${{ github.repository }}
       target-ref: ${{ github.sha }}
-      github-event-before: ${{ github.event.before }}
-      github-event-base: ${{ github.event.base }}
-      github-pull-base-sha: ${{ github.event.pull_request.base.sha }}
-      github-default-branch: ${{ github.event.repository.default_branch }}
-      event-name: ${{ github.event_name }}
       discord-user-id: "op://Docker/discord-github-notifications/user_id"
+      # plus event-context inputs (see compose-lint.yml for the full list)
 ```
 
-### 2. Deploy Workflow (`deploy.yml`)
+### `deploy-local.yml` — self-hosted deploy
 
-Handles production deployments with comprehensive safety features and monitoring.
+5-job pipeline: prepare → deploy → health-check → rollback → notify. Runs on `[self-hosted, <runner-label>]`.
 
-**Features:**
-- **Input Validation**: Comprehensive security validation of all inputs
-- **Smart Deployment**: Skip if already at target (unless forced)
-- **Retry Mechanisms**: Exponential backoff for network operations
-- **Parallel Deployment**: Deploy multiple stacks concurrently
-- **Health Checking**: Stack-specific service monitoring
-- **Automatic Rollback**: Revert on deployment failure
-- **SSH Optimization**: Connection multiplexing for performance
-- **Tailscale Integration**: Secure zero-trust networking
-- **Docker Cleanup**: Remove unused images post-deployment
-- **Rich Notifications**: Detailed Discord deployment reports with user mentions
-- **Critical Stack Detection**: Auto-detect critical infrastructure from compose labels
-- **Configurable Timeouts**: Per-operation timeouts for git, image pull, startup, and validation
-- **Failed Container Logs**: Capture log lines from unhealthy containers for debugging
-
-**Usage:**
 ```yaml
-name: Deploy Docker Compose
 on:
   workflow_run:
     workflows: ["Lint Docker Compose"]
@@ -86,189 +55,146 @@ on:
   workflow_dispatch:
     inputs:
       force-deploy:
-        description: 'Force deployment even if already at target'
-        required: false
         type: boolean
         default: false
 
+concurrency:
+  group: deploy-<repo-label>
+  cancel-in-progress: false
+
 jobs:
   deploy:
-    uses: owine/compose-workflow/.github/workflows/deploy.yml@main
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    uses: owine/compose-workflow/.github/workflows/deploy-local.yml@<sha>
     secrets: inherit
     with:
-      webhook-url: "op://Docker/discord-github-notifications/webhook_url"
-      repo-name: "my-docker-repo"
-      target-ref: ${{ github.sha }}
-      has-dockge: true
-      force-deploy: ${{ inputs.force-deploy || false }}
+      runner-label: piwine                  # or piwine-office, zendc
+      live-repo-path: /opt/compose
+      repo-name: "docker-piwine"
+      webhook-url: "op://Docker/discord-github-notifications/piwine_webhook_url"
       discord-user-id: "op://Docker/discord-github-notifications/user_id"
+      target-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      has-dockge: true                      # false for zendc
+      force-deploy: ${{ inputs.force-deploy || false }}
 ```
+
+Optional inputs: `live-dockge-path` (when `has-dockge: true`), `auto-detect-critical` (default `true`), `critical-services` (manual override), `image-pull-timeout`, `service-startup-timeout`, `failed-container-log-lines`.
 
 ## Required Configuration
 
-### Repository Structure
-
-Calling repositories must follow this structure:
+### Repository structure (caller repo)
 
 ```
-├── .yamllint                    # YAML linting configuration
-├── compose.env                  # Environment file with 1Password references
-├── stack1/
-│   └── compose.yaml            # Docker Compose file
-├── stack2/
-│   └── compose.yaml            # Docker Compose file
-└── stack3/
-    └── compose.yaml            # Docker Compose file
+├── .yamllint                     # yamllint configuration
+├── compose.env                   # env file with op:// references
+├── .github/
+│   ├── actionlint.yaml           # declares the runner-label
+│   └── workflows/
+│       ├── lint.yml              # calls compose-lint.yml
+│       └── deploy.yml            # calls deploy-local.yml
+├── stack1/compose.yaml
+├── stack2/compose.yaml
+└── ...
 ```
 
-### Required Secrets
-
-Configure these secrets in calling repositories:
-
-- `OP_SERVICE_ACCOUNT_TOKEN` - 1Password service account token
-- `SSH_USER` - SSH username for deployment server
-- `SSH_HOST` - SSH hostname/IP for deployment server
-
-### 1Password Configuration
-
-Store sensitive data in 1Password with references like:
+`actionlint.yaml` must declare the runner label or PRs fail with "label X is unknown":
+```yaml
+self-hosted-runner:
+  labels:
+    - piwine     # whichever label this repo's deploy.yml passes as runner-label
 ```
-op://Vault/Item/field
-op://Docker/discord-github-notifications/webhook_url
-op://Docker/tailscale-oauth/client_id
+
+### Required secrets
+
+Calling repos need exactly **one** secret:
+
+- `OP_SERVICE_ACCOUNT_TOKEN` — 1Password service account token. Used by both lint (GitGuardian API key) and deploy (env-file resolution + multi-registry credentials + Discord webhook).
+
+The previously-required `SSH_USER` / `SSH_HOST` secrets are no longer used by `deploy-local.yml` and can be deleted from caller repos.
+
+### 1Password references
+
+```
+op://Docker/discord-github-notifications/<env>_webhook_url
+op://Docker/discord-github-notifications/user_id
+op://Docker/ghcr-pat/{username,pat}
+op://Docker/docker-hub/{username,token}
+op://Docker/gitlab-registry/{username,token}
+op://Docker/gitlab-container-zenterprise/{username,token}
 op://Docker/gitguardian/api_key
 ```
 
+### Self-hosted runner host requirements
+
+The runner host needs `docker`, `jq`, `timeout` (coreutils), `gh`, and `op` (1Password CLI) on the `deploy` user's PATH. Plus a registered runner systemd service running as `deploy`. Full host-prep playbook in [`docs/superpowers/runbooks/self-hosted-runner-migration.md`](docs/superpowers/runbooks/self-hosted-runner-migration.md) — covers path-ownership pattern (admin owns tree, deploy in admin's group via `safe.directory`), setgid + group-write, and the **mandatory umask 002** for both admin and runner users.
+
+### Healthcheck requirements for `--wait`
+
+`deploy-local.yml` invokes `docker compose up --wait`, which only verifies services that have healthchecks defined. Services without healthchecks start but don't gate the deploy. See CLAUDE.md for healthcheck patterns.
+
+One-shot containers (e.g. migration sidecars gated via `service_completed_successfully`) end up `exited` with code 0 — the health-check job recognizes this as success.
+
 ## Testing and Development
 
-### Local Testing
-
-The repository includes testing scripts in `scripts/testing/`:
-
 ```bash
-# Test workflow input validation
-./scripts/testing/test-workflow.sh
+# Lint workflow files
+actionlint .github/workflows/compose-lint.yml \
+           .github/workflows/deploy-local.yml \
+           .github/workflows/workflow-lint.yml
+yamllint --strict .github/workflows/*.yml
 
-# Validate Docker Compose files
+# Lint deployment scripts
+shellcheck scripts/deployment/*.sh scripts/linting/*.sh
+
+# Local testing utilities
+./scripts/testing/test-workflow.sh
 ./scripts/testing/validate-compose.sh
 ```
 
-### Workflow Validation
+## Security
 
-```bash
-# Validate workflow syntax
-actionlint .github/workflows/compose-lint.yml
-actionlint .github/workflows/workflow-lint.yml
-actionlint .github/workflows/deploy.yml
+### Input validation
 
-# Check YAML formatting
-yamllint --strict .github/workflows/*.yml
-```
+- Stack names validated against `^[a-zA-Z0-9._-]+$` before any `docker compose` invocation
+- Target refs validated as 40-char hex SHAs
+- Webhook URLs validated as 1Password references
 
-## Performance Optimizations
+### Secret management
 
-### Parallel Execution
-- All lint validations run concurrently
-- Stack deployments execute in parallel
-- Matrix strategy for independent operations
+- All secrets stored in 1Password (no plaintext in repos or workflow files)
+- `op run --env-file=…` resolves references at deploy time
+- `1password/load-secrets-action` for individual values (registry creds, Discord webhook)
+- Multi-registry creds cached in the runner host's `~/.docker/config.json` via `docker/login-action` with `logout: false`
 
-### Caching Strategy
-- **Tailscale State**: Cached per repository owner and run
-- **Deployment Tools**: Version-based caching for reliability
-- **SSH Connections**: Multiplexed for connection reuse
+### Network model
 
-### Retry Logic
-- SSH operations: 3 attempts with exponential backoff
-- Health checks: 6 attempts with dynamic timing
-- Deployment operations: Configurable timeouts
-
-## Security Features
-
-### Input Validation
-- Stack names validated for safe characters
-- Target refs checked for proper format
-- Webhook URLs verified as 1Password references
-- Repository names sanitized
-- Compose arguments filtered for dangerous patterns
-
-### Secret Management
-- All secrets stored in 1Password
-- Runtime secret loading only
-- GitGuardian scanning prevents leaks
-- Service account token isolation
-
-### Network Security
-- Tailscale zero-trust networking
-- SSH key authentication only
-- Connection multiplexing with ControlMaster
-- Secure webhook communications
+- **No inbound network access** to deployment hosts is required for CI — runners on the host pull jobs from GitHub
+- Outbound: runner → GitHub Actions API, image registries, 1Password, Discord webhook
+- No Tailscale dependency (the prior SSH-based design needed it; the self-hosted approach makes it unnecessary)
 
 ## Troubleshooting
 
-### Common Issues
+| Symptom | First thing to check |
+|---|---|
+| Runner shows `offline` in GitHub | `sudo systemctl status actions.runner.<...>.service` on the host |
+| `git reset --hard` permission denied | `umask 002` missing in admin user's `.zshrc`/`.bashrc` — see runbook |
+| Stack fails with no log lines | Check the failure diagnostic dump in the run — `compose ps -a` + `inspect Health.Log` + scoped `compose logs` should be there |
+| Discord embed wrong color | Verify the `case` statement in notify job's status step still maps `healthy → success` and `failed → failure` |
+| GitGuardian failure | Verify `OP_SERVICE_ACCOUNT_TOKEN` and that the 1P service account has access to the GitGuardian API key |
 
-**GitGuardian Failures**
-- Verify `OP_SERVICE_ACCOUNT_TOKEN` is set
-- Check 1Password vault access
-- Ensure API key exists in vault
+For self-hosted runner setup or migration of a new host, see [the runbook](docs/superpowers/runbooks/self-hosted-runner-migration.md).
 
-**Deployment Connection Issues**
-- Verify SSH secrets are configured
-- Check Tailscale OAuth credentials
-- Ensure server is Tailscale-accessible
-- Review SSH retry logs
+## Version management
 
-**Health Check Problems**
-- Verify stack-specific compose files (`-f compose.yaml`)
-- Check service startup times
-- Review container logs
-- Adjust retry attempts/timing
-
-**Discord Notification Issues**
-- Verify webhook URL format in 1Password
-- Check service account permissions
-- Test webhook manually
-
-### Debug Mode
-
-Enable detailed logging in workflow calls:
-```yaml
-env:
-  ACTIONS_STEP_DEBUG: true
-  ACTIONS_RUNNER_DEBUG: true
-```
-
-## Version Management
-
-- **Latest**: Use `@main` for newest features
-- **Stable**: Pin to tags like `@v1.0.0`
-- **Testing**: Use branch references like `@feature-branch`
+- **Latest**: `@main` for newest features
+- **Pinned**: full 40-char SHA on the `uses:` line — Renovate auto-bumps this on the caller side
 
 ## Contributing
 
-1. Test changes with `actionlint` and local scripts
-2. Update documentation (README.md, CLAUDE.md)
-3. Ensure backward compatibility
-4. Test across multiple repositories
-5. Create PR with detailed description
+1. Run `actionlint`, `yamllint --strict`, and `shellcheck` on changed files
+2. Update CLAUDE.md and README.md when behavior changes
+3. For breaking changes (new required input on a reusable workflow), bump every caller's SHA pin in the same push session — Renovate eventually does this but with a window of broken deploys in between
 
 ## License
 
-This repository is private and for internal use only.
-
-## Support
-
-For issues or questions:
-- Check troubleshooting guide above
-- Review workflow logs for detailed errors
-- Contact repository maintainers
-
-## Recent Updates
-
-- **Input Validation**: Comprehensive security validation
-- **Retry Logic**: Exponential backoff for reliability
-- **Health Checks**: Stack-specific service counting
-- **Caching**: Optimized for performance
-- **Parallel Execution**: All validations run concurrently
-- **SSH Optimization**: Connection multiplexing
-- **Testing Scripts**: Local validation capabilities
+Private repository, internal use only.

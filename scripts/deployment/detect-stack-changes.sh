@@ -1,62 +1,38 @@
 #!/usr/bin/env bash
 # Script Name: detect-stack-changes.sh
 # Purpose: Detect removed, existing, and new Docker Compose stacks using multiple detection methods
-# Usage: ./detect-stack-changes.sh --current-sha abc123 --target-ref main --input-stacks '["stack1"]' --removed-files '[]' --ssh-user user --ssh-host host
+# Usage: ./detect-stack-changes.sh \
+#          --current-sha <sha> --target-ref <ref> \
+#          --input-stacks '["stack1","stack2"]' \
+#          --removed-files '[]' \
+#          --live-repo-path <path>
+#
+# This script runs detection commands locally (no SSH). All git/filesystem ops
+# execute against $LIVE_REPO_PATH on the runner host.
+#
+# Cleanup of removed stacks is the *workflow's* responsibility — deploy-local.yml
+# has a dedicated `Teardown removed stacks` step that uses the has_removed_stacks
+# output. This script only emits classifications, it does not execute teardown.
 
 set -euo pipefail
 
-# Get script directory and source libraries
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/ssh-helpers.sh
 # shellcheck source=lib/common.sh
-source "$SCRIPT_DIR/lib/ssh-helpers.sh"
 source "$SCRIPT_DIR/lib/common.sh"
 
-# Default values
 CURRENT_SHA=""
 TARGET_REF=""
 INPUT_STACKS="[]"
 REMOVED_FILES="[]"
-SSH_USER=""
-SSH_HOST=""
-MODE="ssh"
 LIVE_REPO_PATH="${LIVE_REPO_PATH:-}"
 
-# Parse arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --current-sha)
-      CURRENT_SHA="$2"
-      shift 2
-      ;;
-    --target-ref)
-      TARGET_REF="$2"
-      shift 2
-      ;;
-    --input-stacks)
-      INPUT_STACKS="$2"
-      shift 2
-      ;;
-    --removed-files)
-      REMOVED_FILES="$2"
-      shift 2
-      ;;
-    --ssh-user)
-      SSH_USER="$2"
-      shift 2
-      ;;
-    --ssh-host)
-      SSH_HOST="$2"
-      shift 2
-      ;;
-    --mode)
-      MODE="$2"
-      shift 2
-      ;;
-    --live-repo-path)
-      LIVE_REPO_PATH="$2"
-      shift 2
-      ;;
+    --current-sha)      CURRENT_SHA="$2"; shift 2 ;;
+    --target-ref)       TARGET_REF="$2"; shift 2 ;;
+    --input-stacks)     INPUT_STACKS="$2"; shift 2 ;;
+    --removed-files)    REMOVED_FILES="$2"; shift 2 ;;
+    --live-repo-path)   LIVE_REPO_PATH="$2"; shift 2 ;;
     *)
       log_error "Unknown argument: $1"
       exit 1
@@ -64,70 +40,32 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Validate required arguments
 require_var CURRENT_SHA || exit 1
 require_var TARGET_REF || exit 1
 require_var INPUT_STACKS || exit 1
-
-# Validate mode
-if [[ "$MODE" != "ssh" && "$MODE" != "local" ]]; then
-  log_error "--mode must be 'ssh' or 'local', got: $MODE"
+if [[ -z "$LIVE_REPO_PATH" ]]; then
+  log_error "--live-repo-path (or LIVE_REPO_PATH env) is required"
   exit 1
 fi
 
-if [[ "$MODE" == "ssh" ]]; then
-  require_var SSH_USER || exit 1
-  require_var SSH_HOST || exit 1
-  # Preserve historical default for SSH mode (remote tree path)
-  : "${LIVE_REPO_PATH:=/opt/compose}"
-else
-  # local mode requires LIVE_REPO_PATH
-  if [[ -z "$LIVE_REPO_PATH" ]]; then
-    log_error "--live-repo-path (or LIVE_REPO_PATH env) is required when --mode local"
-    exit 1
-  fi
-fi
-
-# run_remote: dispatches a bash script body (stdin) to either local bash or SSH.
-# Usage: echo "<bash script>" | run_remote arg1 arg2 ...
-# LIVE_REPO_PATH is propagated to the remote/local shell so heredoc bodies can
-# reference "$LIVE_REPO_PATH" agnostic of execution mode.
-#
-# SSH-mode quoting note: positional args are passed through `printf '%q'` and
-# interpolated into the command string given to ssh_retry. Since ssh_retry's
-# command goes through `ssh user@host <space-joined-args>` (which the remote
-# shell re-parses), a single round of `%q` quoting is the correct level for
-# this codebase: all callers pass SHAs, base64-encoded strings, or stack names
-# matching ^[a-zA-Z0-9._-]+$ -- none of which contain whitespace or shell
-# metacharacters. Do not pass user-controlled or unsanitized data through
-# this function.
-run_remote() {
-  if [[ "$MODE" == "local" ]]; then
-    if [[ $# -gt 0 ]]; then
-      LIVE_REPO_PATH="$LIVE_REPO_PATH" bash -s "$@"
-    else
-      LIVE_REPO_PATH="$LIVE_REPO_PATH" bash -s
-    fi
+# run_local: dispatches a bash script body (stdin) to local bash with
+# LIVE_REPO_PATH propagated as an env var. Replaces the prior run_remote
+# helper that supported SSH dispatch (removed when all repos cut over to
+# self-hosted runners — git/fs operations now happen on the runner directly).
+run_local() {
+  if [[ $# -gt 0 ]]; then
+    LIVE_REPO_PATH="$LIVE_REPO_PATH" bash -s "$@"
   else
-    local quoted_path
-    quoted_path=$(printf '%q' "$LIVE_REPO_PATH")
-    local quoted_args=""
-    if [[ $# -gt 0 ]]; then
-      quoted_args=$(printf '%q ' "$@")
-    fi
-    ssh_retry 3 5 "ssh -o \"StrictHostKeyChecking no\" $SSH_USER@$SSH_HOST env LIVE_REPO_PATH=$quoted_path /bin/bash -s $quoted_args"
+    LIVE_REPO_PATH="$LIVE_REPO_PATH" bash -s
   fi
 }
 
-# Parse input stacks JSON to space-delimited list
 INPUT_STACKS_LIST=$(echo "$INPUT_STACKS" | jq -r '.[]' | tr '\n' ' ')
 log_info "Input stacks: $INPUT_STACKS_LIST"
 
-# Skip detection if this is the first deployment
+# First-deployment shortcut: nothing to compare against, all input stacks are new.
 if [ "$CURRENT_SHA" = "unknown" ]; then
   log_info "First deployment detected - all input stacks are new"
-
-  # All input stacks are new, no removed or existing stacks
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
       echo "removed_stacks=[]"
@@ -149,11 +87,8 @@ log_info "Target ref: $TARGET_REF"
 # REMOVED STACK DETECTION
 # ================================================================
 
-# === DETECTION FUNCTION: GIT DIFF (REMOVED) ===
 detect_removed_stacks_gitdiff() {
-  local current_sha="$1"
-  local target_ref="$2"
-
+  local current_sha="$1" target_ref="$2"
   log_info "Running git diff detection for removed stacks..."
 
   local detect_script
@@ -164,7 +99,6 @@ detect_removed_stacks_gitdiff() {
 
   cd "$LIVE_REPO_PATH"
 
-  # Fetch target ref to ensure we have it
   if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
     echo "⚠️ Failed to fetch target ref, trying general fetch..." >&2
     if ! git fetch 2>/dev/null; then
@@ -173,10 +107,8 @@ detect_removed_stacks_gitdiff() {
     fi
   fi
 
-  # Resolve target ref to SHA for comparison
   TARGET_SHA=$(git rev-parse "$TARGET_REF" 2>/dev/null || echo "$TARGET_REF")
 
-  # Validate both SHAs exist
   if ! git cat-file -e "$CURRENT_SHA" 2>/dev/null; then
     echo "::warning::Current SHA $CURRENT_SHA not found in repository (may have been replaced by force-push)" >&2
     exit 1
@@ -187,20 +119,17 @@ detect_removed_stacks_gitdiff() {
     exit 1
   fi
 
-  # Find deleted compose.yaml files between current and target
   git diff --diff-filter=D --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null | \
     grep -E '^[^/]+/compose\.yaml$' | \
     sed 's|/compose\.yaml||' || echo ""
 DETECT_EOF
   )
 
-  echo "$detect_script" | run_remote "$current_sha" "$target_ref"
+  echo "$detect_script" | run_local "$current_sha" "$target_ref"
 }
 
-# === DETECTION FUNCTION: TREE COMPARISON (REMOVED) ===
 detect_removed_stacks_tree() {
   local target_ref="$1"
-
   log_info "Running tree comparison detection for removed stacks..."
 
   local detect_script
@@ -210,7 +139,6 @@ detect_removed_stacks_tree() {
 
   cd "$LIVE_REPO_PATH"
 
-  # Fetch target ref to ensure we have it
   if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
     echo "⚠️ Failed to fetch target ref, trying general fetch..." >&2
     if ! git fetch 2>/dev/null; then
@@ -219,25 +147,17 @@ detect_removed_stacks_tree() {
     fi
   fi
 
-  # Resolve target ref to SHA
   TARGET_SHA=$(git rev-parse "$TARGET_REF" 2>/dev/null || echo "$TARGET_REF")
 
-  # Validate target SHA exists
   if ! git cat-file -e "$TARGET_SHA" 2>/dev/null; then
     echo "::error::Target SHA $TARGET_SHA not found in repository" >&2
     exit 1
   fi
 
-  # Get directories in target commit (one level deep, directories only)
   COMMIT_DIRS=$(git ls-tree --name-only "$TARGET_SHA" 2>/dev/null | sort)
-
-  # Get directories on server filesystem (exclude .git and hidden dirs)
   SERVER_DIRS=$(find "$LIVE_REPO_PATH" -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | sort)
-
-  # Find directories on server but not in commit
   MISSING_IN_COMMIT=$(comm -13 <(echo "$COMMIT_DIRS") <(echo "$SERVER_DIRS"))
 
-  # Filter for directories with compose.yaml files
   for dir in $MISSING_IN_COMMIT; do
     if [ -f "$LIVE_REPO_PATH/$dir/compose.yaml" ]; then
       echo "$dir"
@@ -246,13 +166,11 @@ detect_removed_stacks_tree() {
 DETECT_TREE_EOF
   )
 
-  echo "$detect_script" | run_remote "$target_ref"
+  echo "$detect_script" | run_local "$target_ref"
 }
 
-# === DETECTION FUNCTION: DISCOVERY ANALYSIS (REMOVED) ===
 detect_removed_stacks_discovery() {
   local removed_files_json="$1"
-
   log_info "Running discovery analysis detection for removed stacks..."
 
   # Base64 encode JSON to avoid shell glob expansion issues
@@ -262,28 +180,22 @@ detect_removed_stacks_discovery() {
   local detect_script
   detect_script=$(cat << 'DETECT_DISCOVERY_EOF'
   set -e
-  # Decode base64 JSON
   REMOVED_FILES_JSON=$(echo "$1" | base64 -d)
-
-  # Parse JSON array and filter for compose.yaml deletions
   echo "$REMOVED_FILES_JSON" | jq -r '.[]' 2>/dev/null | \
     grep -E '^[^/]+/compose\.yaml$' | \
     sed 's|/compose\.yaml||' || echo ""
 DETECT_DISCOVERY_EOF
   )
 
-  echo "$detect_script" | run_remote "$removed_files_b64"
+  echo "$detect_script" | run_local "$removed_files_b64"
 }
 
 # ================================================================
 # NEW STACK DETECTION
 # ================================================================
 
-# === DETECTION FUNCTION: GIT DIFF (NEW) ===
 detect_new_stacks_gitdiff() {
-  local current_sha="$1"
-  local target_ref="$2"
-
+  local current_sha="$1" target_ref="$2"
   log_info "Running git diff detection for new stacks..."
 
   local detect_script
@@ -294,7 +206,6 @@ detect_new_stacks_gitdiff() {
 
   cd "$LIVE_REPO_PATH"
 
-  # Fetch target ref to ensure we have it
   if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
     if ! git fetch 2>/dev/null; then
       echo "::error::Failed to fetch repository updates" >&2
@@ -302,10 +213,8 @@ detect_new_stacks_gitdiff() {
     fi
   fi
 
-  # Resolve target ref to SHA for comparison
   TARGET_SHA=$(git rev-parse "$TARGET_REF" 2>/dev/null || echo "$TARGET_REF")
 
-  # Validate both SHAs exist
   if ! git cat-file -e "$CURRENT_SHA" 2>/dev/null; then
     echo "::warning::Current SHA $CURRENT_SHA not found in repository" >&2
     exit 1
@@ -316,20 +225,17 @@ detect_new_stacks_gitdiff() {
     exit 1
   fi
 
-  # Find added compose.yaml files between current and target
   git diff --diff-filter=A --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null | \
     grep -E '^[^/]+/compose\.yaml$' | \
     sed 's|/compose\.yaml||' || echo ""
 DETECT_NEW_EOF
   )
 
-  echo "$detect_script" | run_remote "$current_sha" "$target_ref"
+  echo "$detect_script" | run_local "$current_sha" "$target_ref"
 }
 
-# === DETECTION FUNCTION: TREE COMPARISON (NEW) ===
 detect_new_stacks_tree() {
   local target_ref="$1"
-
   log_info "Running tree comparison detection for new stacks..."
 
   local detect_script
@@ -339,7 +245,6 @@ detect_new_stacks_tree() {
 
   cd "$LIVE_REPO_PATH"
 
-  # Fetch target ref to ensure we have it
   if ! git fetch origin "$TARGET_REF" 2>/dev/null; then
     if ! git fetch 2>/dev/null; then
       echo "::error::Failed to fetch repository updates" >&2
@@ -347,50 +252,40 @@ detect_new_stacks_tree() {
     fi
   fi
 
-  # Resolve target ref to SHA
   TARGET_SHA=$(git rev-parse "$TARGET_REF" 2>/dev/null || echo "$TARGET_REF")
 
-  # Validate target SHA exists
   if ! git cat-file -e "$TARGET_SHA" 2>/dev/null; then
     echo "::error::Target SHA $TARGET_SHA not found in repository" >&2
     exit 1
   fi
 
-  # Get directories in target commit that have compose.yaml
   COMMIT_STACKS=$(git ls-tree --name-only "$TARGET_SHA" 2>/dev/null | while read -r dir; do
     if git cat-file -e "$TARGET_SHA:$dir/compose.yaml" 2>/dev/null; then
       echo "$dir"
     fi
   done | sort)
 
-  # Get directories on server filesystem with compose.yaml
   SERVER_STACKS=$(find "$LIVE_REPO_PATH" -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | while read -r dir; do
     if [ -f "$LIVE_REPO_PATH/$dir/compose.yaml" ]; then
       echo "$dir"
     fi
   done | sort)
 
-  # Find directories in commit but not on server
   comm -23 <(echo "$COMMIT_STACKS") <(echo "$SERVER_STACKS")
 DETECT_NEW_TREE_EOF
   )
 
-  echo "$detect_script" | run_remote "$target_ref"
+  echo "$detect_script" | run_local "$target_ref"
 }
 
-# === DETECTION FUNCTION: INPUT FILTER (NEW) ===
 detect_new_stacks_input() {
   local input_stacks="$1"
-
   log_info "Running input filter detection for new stacks..."
 
-  # Get currently deployed stacks on server
   local detect_script
   detect_script=$(cat << 'DETECT_INPUT_EOF'
   set -e
   cd "$LIVE_REPO_PATH"
-
-  # Get directories with compose.yaml files
   find "$LIVE_REPO_PATH" -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | while read -r dir; do
     if [ -f "$LIVE_REPO_PATH/$dir/compose.yaml" ]; then
       echo "$dir"
@@ -399,9 +294,8 @@ detect_new_stacks_input() {
 DETECT_INPUT_EOF
   )
 
-  DEPLOYED_STACKS=$(echo "$detect_script" | run_remote)
+  DEPLOYED_STACKS=$(echo "$detect_script" | run_local)
 
-  # Filter input stacks - those not in deployed stacks are new
   echo "$input_stacks" | jq -r '.[]' | while read -r stack; do
     if ! echo "$DEPLOYED_STACKS" | grep -q "^${stack}$"; then
       echo "$stack"
@@ -410,36 +304,27 @@ DETECT_INPUT_EOF
 }
 
 # ================================================================
-# AGGREGATION FUNCTIONS
+# AGGREGATION
 # ================================================================
 
 aggregate_stacks() {
-  local method1="$1"
-  local method2="$2"
-  local method3="$3"
-
-  # Concatenate all lists, remove empty lines, sort and deduplicate
+  local method1="$1" method2="$2" method3="$3"
   {
     echo "$method1"
     echo "$method2"
     echo "$method3"
-  } | \
-    grep -v '^$' | \
-    sort -u | \
-    grep -E '^[a-zA-Z0-9_-]+$' || echo ""
+  } | grep -v '^$' | sort -u | grep -E '^[a-zA-Z0-9_-]+$' || echo ""
 }
 
 # ================================================================
-# MAIN EXECUTION
+# MAIN
 # ================================================================
 
 log_info "Running detection methods for all stack categories..."
 
-# Execute removed stack detection
 REMOVED_GITDIFF_EXIT=0
 REMOVED_TREE_EXIT=0
 REMOVED_DISCOVERY_EXIT=0
-
 REMOVED_GITDIFF=$(detect_removed_stacks_gitdiff "$CURRENT_SHA" "$TARGET_REF") || REMOVED_GITDIFF_EXIT=$?
 REMOVED_TREE=$(detect_removed_stacks_tree "$TARGET_REF") || REMOVED_TREE_EXIT=$?
 
@@ -451,21 +336,18 @@ else
   REMOVED_DISCOVERY=$(detect_removed_stacks_discovery "$REMOVED_FILES") || REMOVED_DISCOVERY_EXIT=$?
 fi
 
-# Execute new stack detection
 NEW_GITDIFF_EXIT=0
 NEW_TREE_EXIT=0
 NEW_INPUT_EXIT=0
-
 NEW_GITDIFF=$(detect_new_stacks_gitdiff "$CURRENT_SHA" "$TARGET_REF") || NEW_GITDIFF_EXIT=$?
 NEW_TREE=$(detect_new_stacks_tree "$TARGET_REF") || NEW_TREE_EXIT=$?
 NEW_INPUT=$(detect_new_stacks_input "$INPUT_STACKS") || NEW_INPUT_EXIT=$?
 
-# Fail deployment if any detection method failed (fail-safe)
+# Fail-safe: any detection error aborts the deploy.
 if [ "$REMOVED_GITDIFF_EXIT" -ne 0 ] || [ "$REMOVED_TREE_EXIT" -ne 0 ] || [ "$REMOVED_DISCOVERY_EXIT" -ne 0 ]; then
   log_error "Removed stack detection failed"
   exit 1
 fi
-
 if [ "$NEW_GITDIFF_EXIT" -ne 0 ] || [ "$NEW_TREE_EXIT" -ne 0 ] || [ "$NEW_INPUT_EXIT" -ne 0 ]; then
   log_error "New stack detection failed"
   exit 1
@@ -473,19 +355,16 @@ fi
 
 log_success "All detection methods completed successfully"
 
-# Aggregate results
 log_info "Aggregating results..."
 REMOVED_STACKS=$(aggregate_stacks "$REMOVED_GITDIFF" "$REMOVED_TREE" "$REMOVED_DISCOVERY")
 NEW_STACKS=$(aggregate_stacks "$NEW_GITDIFF" "$NEW_TREE" "$NEW_INPUT")
 
-# Determine existing stacks (input stacks that aren't new)
 EXISTING_STACKS=$(echo "$INPUT_STACKS" | jq -r '.[]' | while read -r stack; do
   if ! echo "$NEW_STACKS" | grep -q "^${stack}$"; then
     echo "$stack"
   fi
 done)
 
-# Debug logging
 echo ""
 log_info "Detection Results:"
 if [ -n "$REMOVED_STACKS" ]; then
@@ -493,13 +372,11 @@ if [ -n "$REMOVED_STACKS" ]; then
 else
   echo "  🗑️  Removed: none"
 fi
-
 if [ -n "$EXISTING_STACKS" ]; then
   echo "  🔄 Existing: $(echo "$EXISTING_STACKS" | tr '\n' ', ' | sed 's/,$//')"
 else
   echo "  🔄 Existing: none"
 fi
-
 if [ -n "$NEW_STACKS" ]; then
   echo "  ✨ New: $(echo "$NEW_STACKS" | tr '\n' ', ' | sed 's/,$//')"
 else
@@ -507,12 +384,10 @@ else
 fi
 echo ""
 
-# Convert to JSON arrays
 REMOVED_JSON=$(if [ -n "$REMOVED_STACKS" ]; then echo "$REMOVED_STACKS" | jq -R -s -c 'split("\n") | map(select(length > 0))'; else echo "[]"; fi)
 EXISTING_JSON=$(if [ -n "$EXISTING_STACKS" ]; then echo "$EXISTING_STACKS" | jq -R -s -c 'split("\n") | map(select(length > 0))'; else echo "[]"; fi)
 NEW_JSON=$(if [ -n "$NEW_STACKS" ]; then echo "$NEW_STACKS" | jq -R -s -c 'split("\n") | map(select(length > 0))'; else echo "[]"; fi)
 
-# Output results
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
     echo "removed_stacks=$REMOVED_JSON"
@@ -522,34 +397,6 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "has_existing_stacks=$([ -n "$EXISTING_STACKS" ] && echo "true" || echo "false")"
     echo "has_new_stacks=$([ -n "$NEW_STACKS" ] && echo "true" || echo "false")"
   } >> "$GITHUB_OUTPUT"
-fi
-
-# Cleanup removed stacks if any
-if [ -n "$REMOVED_STACKS" ]; then
-  log_info "Cleaning up removed stacks..."
-  CLEANUP_FAILED=false
-
-  while IFS= read -r stack; do
-    [ -z "$stack" ] && continue
-
-    log_info "Cleaning up stack: $stack"
-
-    if ! "$SCRIPT_DIR/cleanup-stack.sh" \
-      --stack-name "$stack" \
-      --ssh-user "$SSH_USER" \
-      --ssh-host "$SSH_HOST"; then
-      log_error "Cleanup failed for stack: $stack"
-      CLEANUP_FAILED=true
-      break
-    fi
-  done <<< "$REMOVED_STACKS"
-
-  if [ "$CLEANUP_FAILED" = "true" ]; then
-    log_error "Stack cleanup failed - stopping deployment"
-    exit 1
-  fi
-
-  log_success "All removed stacks cleaned successfully"
 fi
 
 log_success "Stack change detection completed"
