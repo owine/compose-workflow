@@ -66,7 +66,7 @@ Calling repositories need exactly **one** secret:
 
 - `OP_SERVICE_ACCOUNT_TOKEN` — 1Password service account token. Used by both `compose-lint.yml` (for GitGuardian's API key) and `deploy.yml` (for `op run` env-file resolution + multi-registry credentials + Discord webhook).
 
-The previously-required `SSH_USER` / `SSH_HOST` secrets are no longer used and can be deleted from caller repos.
+The previously-required `SSH_USER` / `SSH_HOST` secrets were deleted from all three caller repos on 2026-05-03; only `OP_SERVICE_ACCOUNT_TOKEN` remains.
 
 ### Repository Structure Requirements
 
