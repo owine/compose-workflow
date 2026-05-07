@@ -44,7 +44,6 @@ on:
 
 jobs:
   actionlint:
-    name: Workflow validation
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     steps:
@@ -124,7 +123,6 @@ jobs:
 
 
   lint-summary:
-    name: Lint Summary
     runs-on: ${{ inputs.runner }}
     needs: [actionlint, lint]
     if: always()
@@ -152,7 +150,6 @@ jobs:
             --lint-result "${{ needs.lint.result }}"
 
   results:
-    name: Lint results
     runs-on: ${{ inputs.runner }}
     needs: [actionlint, lint]
     if: always()

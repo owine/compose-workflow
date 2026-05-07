@@ -643,7 +643,6 @@ jobs:
           done
 
   notify:
-    name: Discord Notification
     needs:
       - prepare
       - deploy
