@@ -44,7 +44,6 @@ on:
 
 jobs:
   notify:
-    name: Discord Notification
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     steps:

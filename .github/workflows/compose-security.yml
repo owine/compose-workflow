@@ -65,7 +65,6 @@ on:
 
 jobs:
   gitguardian:
-    name: GitGuardian scan
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     if: ${{ inputs.event-name == 'push' }}
@@ -139,7 +138,6 @@ jobs:
           unset-previous: true
 
   trivy:
-    name: Trivy IaC scan
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     steps:
@@ -185,7 +183,6 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
   results:
-    name: Security results
     runs-on: ${{ inputs.runner }}
     needs: [gitguardian, trivy]
     if: always()
