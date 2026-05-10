@@ -594,13 +594,20 @@ jobs:
           fi
           echo "status=healthy" >> "$GITHUB_OUTPUT"
 
-  prune-images:
-    # Reaps dangling images (untagged layers left behind when a tag is moved to
-    # a new digest, e.g. by Renovate bumps). Runs only after a clean, healthy
-    # deploy where rollback was not needed — keeps the just-replaced images
-    # available on disk in case a manual rollback is required shortly after.
-    # Dangling-only (no -a): tagged previous versions stay, so a git-reset
-    # rollback at the previous SHA still has its referenced images locally.
+  docker-prune:
+    # Reclaims disk on the runner host after a clean deploy. Runs only after
+    # deploy + health-check succeed and rollback was skipped, so manual
+    # rollback can still git-reset and compose up against locally-tagged
+    # previous-version images.
+    #   - Image prune (dangling-only, no -a): reaps untagged layers left when
+    #     a tag is moved to a new digest (e.g. Renovate bumps). Tagged
+    #     previous versions stay on disk for fast rollback.
+    #   - Builder cache prune (>168h): BuildKit cache older than 7 days.
+    #     Rebuilt on next compose up --build; bounded by the until filter so
+    #     recent layer cache stays warm.
+    #   - Network prune: networks not referenced by any container. Compose
+    #     recreates per-stack networks on next up. Safe here because the
+    #     runner is single-concurrency, so no other deploy is mid-flight.
     needs: [deploy, health-check, rollback]
     if: |
       always()
@@ -612,6 +619,12 @@ jobs:
     steps:
       - name: Prune dangling images
         run: docker image prune -f
+
+      - name: Prune builder cache older than 7d
+        run: docker builder prune -f --filter "until=168h"
+
+      - name: Prune unused networks
+        run: docker network prune -f
 
   rollback:
     needs: [prepare, deploy, health-check]
