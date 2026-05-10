@@ -594,6 +594,25 @@ jobs:
           fi
           echo "status=healthy" >> "$GITHUB_OUTPUT"
 
+  prune-images:
+    # Reaps dangling images (untagged layers left behind when a tag is moved to
+    # a new digest, e.g. by Renovate bumps). Runs only after a clean, healthy
+    # deploy where rollback was not needed — keeps the just-replaced images
+    # available on disk in case a manual rollback is required shortly after.
+    # Dangling-only (no -a): tagged previous versions stay, so a git-reset
+    # rollback at the previous SHA still has its referenced images locally.
+    needs: [deploy, health-check, rollback]
+    if: |
+      always()
+      && needs.deploy.result == 'success'
+      && needs.health-check.result == 'success'
+      && needs.rollback.result == 'skipped'
+    runs-on: [self-hosted, "${{ inputs.runner-label }}"]
+    timeout-minutes: 5
+    steps:
+      - name: Prune dangling images
+        run: docker image prune -f
+
   rollback:
     needs: [prepare, deploy, health-check]
     if: |
