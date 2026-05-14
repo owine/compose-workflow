@@ -41,6 +41,11 @@ on:
         required: false
         type: string
         default: 'ubuntu-24.04'
+      platforms:
+        description: "Comma-separated target platforms to verify digest-pinned images publish (e.g. 'linux/arm64/v8' or 'linux/amd64'). Guards against Docker Hub publish-race bugs where an index manifest is pushed before its per-platform children."
+        required: false
+        type: string
+        default: 'linux/amd64'
 
 jobs:
   actionlint:
@@ -104,6 +109,15 @@ jobs:
           ./.compose-workflow/scripts/linting/validate-stack.sh \
             --stack "${{ matrix.stack }}" \
             --yamllint-config .yamllint
+
+      - name: Verify image manifests publish target platform
+        env:
+          STACK: ${{ matrix.stack }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          ./.compose-workflow/scripts/linting/validate-image-platforms.sh \
+            --stack "$STACK" \
+            --platforms "$PLATFORMS"
 
       - name: Report lint status
         if: always()
