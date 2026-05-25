@@ -283,7 +283,7 @@ jobs:
       # logout: false leaves the cached creds in place for downstream steps.
       - name: Login to ghcr.io
         if: steps.skip-gate.outputs.skipped == 'false'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
         continue-on-error: true
         with:
           registry: ghcr.io
@@ -293,7 +293,7 @@ jobs:
 
       - name: Login to docker.io
         if: steps.skip-gate.outputs.skipped == 'false'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
         continue-on-error: true
         with:
           username: ${{ steps.creds.outputs.DOCKERHUB_USERNAME }}
@@ -302,7 +302,7 @@ jobs:
 
       - name: Login to registry.gitlab.com
         if: steps.skip-gate.outputs.skipped == 'false'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
         continue-on-error: true
         with:
           registry: registry.gitlab.com
@@ -312,7 +312,7 @@ jobs:
 
       - name: Login to gitlab-container.zenterprise.org
         if: steps.skip-gate.outputs.skipped == 'false'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
         continue-on-error: true
         with:
           registry: gitlab-container.zenterprise.org
