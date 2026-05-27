@@ -264,9 +264,17 @@ detect_new_stacks_gitdiff() {
     exit 1
   fi
 
-  git diff --diff-filter=A --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null | \
-    grep -E '^[^/]+/compose\.yaml$' | \
-    sed 's|/compose\.yaml||' || echo ""
+  {
+    git diff --diff-filter=A --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null \
+      | grep -E '^[^/]+/compose\.yaml$' | sed 's|/compose\.yaml||' || true
+    git diff --diff-filter=D --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null \
+      | grep -E '^[^/]+/\.disabled$' | sed 's|/\.disabled||' || true
+  } | sort -u | while read -r candidate; do
+    [[ -z "$candidate" ]] && continue
+    if is_effectively_present_at_sha "$TARGET_SHA" "$candidate"; then
+      echo "$candidate"
+    fi
+  done
 DETECT_NEW_EOF
 )"
 
@@ -298,19 +306,17 @@ detect_new_stacks_tree() {
     exit 1
   fi
 
-  COMMIT_STACKS=$(git ls-tree --name-only "$TARGET_SHA" 2>/dev/null | while read -r dir; do
-    if git cat-file -e "$TARGET_SHA:$dir/compose.yaml" 2>/dev/null; then
+  ALL_DIRS=$( {
+    git ls-tree --name-only "$TARGET_SHA" 2>/dev/null
+    find "$LIVE_REPO_PATH" -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \;
+  } | sort -u )
+
+  for dir in $ALL_DIRS; do
+    if is_effectively_present_at_sha "$TARGET_SHA" "$dir" \
+       && ! is_effectively_present_on_disk "$LIVE_REPO_PATH" "$dir"; then
       echo "$dir"
     fi
-  done | sort)
-
-  SERVER_STACKS=$(find "$LIVE_REPO_PATH" -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | while read -r dir; do
-    if [ -f "$LIVE_REPO_PATH/$dir/compose.yaml" ]; then
-      echo "$dir"
-    fi
-  done | sort)
-
-  comm -23 <(echo "$COMMIT_STACKS") <(echo "$SERVER_STACKS")
+  done
 DETECT_NEW_TREE_EOF
 )"
 
