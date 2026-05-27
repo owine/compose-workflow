@@ -16,6 +16,7 @@ set -euo pipefail
 : "${DESCRIPTION:=}"
 : "${PIPELINE:=}"
 : "${REMOVED_LINE:=}"
+: "${DISABLED_LINE:=}"
 
 # Sanitize COMMIT_SUBJECT — it's user-controlled (PR commit message).
 # Strip newlines/CR, truncate to 120 chars, replace backticks (which would break
@@ -53,6 +54,11 @@ fi
 # Removed-stacks line (only when present).
 if [[ -n "$REMOVED_LINE" ]]; then
   printf '%s\n\n' "$REMOVED_LINE"
+fi
+
+# Disabled-stacks line (only when present).
+if [[ -n "$DISABLED_LINE" ]]; then
+  printf '%s\n\n' "$DISABLED_LINE"
 fi
 
 # Pipeline pills — collapsed on success, raw on any failure.
