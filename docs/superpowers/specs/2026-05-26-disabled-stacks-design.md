@@ -52,16 +52,29 @@ This single predicate replaces every "has `compose.yaml`" check inside `scripts/
 
 The disable transition piggybacks on the removed-stack pathway. The teardown step reads compose files from the pre-reset live tree, so it tears down using the still-present `compose.yaml` — the `.disabled` marker does not interfere because teardown happens *before* `git reset --hard` updates the working tree.
 
+**Operational assumption:** The "delete while disabled" row is a no-op because the design assumes the stack was already torn down at the prior disable event. If you push a single commit that goes straight from enabled → absent (skipping the disabled state), the existing "normal delete" row handles it. The pathological case is pushing one commit that disables a stack and a second commit that deletes the directory *before the disable deploy has run* — there, the disable transition gets collapsed into a delete, but the teardown still fires correctly because the live tree's pre-reset state still has `compose.yaml` without `.disabled`, which the removed-tree detector picks up via "live-effective ∖ target-effective."
+
 ### Changes to `detect-stack-changes.sh`
 
 All detector functions are updated to use the effectively-present predicate. The aggregation and JSON-output layers are unchanged.
 
-- **`detect_removed_stacks_gitdiff`** — detect either `compose.yaml` deletion *or* `.disabled` addition between SHAs. Both signal a removed-effectively-present transition. Pattern becomes `'^[^/]+/(compose\.yaml|\.disabled)$'` with diff-filter `D` for compose.yaml and `A` for `.disabled`.
-- **`detect_removed_stacks_tree`** — compute effective-present sets on both sides (target SHA tree and live tree) using `git cat-file -e` for `compose.yaml` and `.disabled`. Removed set = present-in-live ∧ ¬present-in-target.
-- **`detect_removed_stacks_discovery`** — accept either `<stack>/compose.yaml` or `<stack>/.disabled` entries from the changed-files JSON. For `.disabled`, the file must be an *addition* (the changed-files action distinguishes adds from deletes; we filter accordingly).
-- **`detect_new_stacks_gitdiff`** — detect either `compose.yaml` addition *or* `.disabled` deletion between SHAs where the result is effectively-present in the target.
-- **`detect_new_stacks_tree`** — symmetric to removed: present-in-target ∧ ¬present-in-live.
-- **`detect_new_stacks_input`** — input filter already takes the effectively-present discover-stacks output, so this function works unchanged.
+**Critical guard for both directions:** every detector must classify a stack only when the effective-presence state *actually transitioned* between CURRENT and TARGET. Naive pattern matching on file-change diffs is insufficient because two pathological rows from the transition table would otherwise leak into the wrong bucket:
+
+- **Born disabled (absent → disabled)**: a single commit adds both `compose.yaml` and `.disabled`. A naive removed detector keyed on "`.disabled` addition" would flag this for teardown, but the stack was never effectively present in CURRENT and there is nothing to tear down.
+- **Delete while disabled (disabled → absent)**: a naive removed detector keyed on "`compose.yaml` deletion" would flag this, but the stack was already disabled (and therefore already torn down at the prior disable event).
+
+Both cases must be excluded. The fix is to gate every removed candidate on **effectively-present in CURRENT_SHA** and every new candidate on **effectively-present in TARGET_SHA**, evaluated via `git cat-file -e` against the respective tree.
+
+Detector-by-detector changes:
+
+- **`detect_removed_stacks_gitdiff`** — find candidate stack names from diff entries matching `'^[^/]+/(compose\.yaml|\.disabled)$'` (compose.yaml with diff-filter `D`, `.disabled` with diff-filter `A`). For each candidate, emit it only if it was effectively-present in CURRENT_SHA: `git cat-file -e $CURRENT_SHA:<stack>/compose.yaml` succeeds AND `git cat-file -e $CURRENT_SHA:<stack>/.disabled` fails.
+- **`detect_removed_stacks_tree`** — compute the effective-present set on each side. Live side: directory contains `compose.yaml` AND not `.disabled` on the filesystem. Target side: `git cat-file -e $TARGET_SHA:<dir>/compose.yaml` AND not `git cat-file -e $TARGET_SHA:<dir>/.disabled`. Removed set = live-effective ∖ target-effective.
+- **`detect_removed_stacks_discovery`** — accept candidate stack names from changed-files JSON entries matching either `<stack>/compose.yaml` (deletion) or `<stack>/.disabled` (addition). The action distinguishes adds from deletes via the `deleted_files` / `added_files` outputs; the workflow already passes deleted only, so add a second pass for added `.disabled` files. Apply the same effectively-present-in-CURRENT guard before emitting.
+- **`detect_new_stacks_gitdiff`** — find candidates from `compose.yaml` additions (diff-filter `A`) and `.disabled` deletions (diff-filter `D`). Emit only if effectively-present in TARGET_SHA: `git cat-file -e $TARGET_SHA:<stack>/compose.yaml` succeeds AND `git cat-file -e $TARGET_SHA:<stack>/.disabled` fails.
+- **`detect_new_stacks_tree`** — symmetric to removed-tree: target-effective ∖ live-effective.
+- **`detect_new_stacks_input`** — input filter takes the (already disabled-filtered) discover-stacks output, so this function works unchanged.
+
+Workflow inputs: the discovery branch must also receive added-files JSON, not just deleted. Update the `Detect stack changes` step in `deploy.yml` (around line 145) to pass both `deleted_files` and `added_files` outputs from `tj-actions/changed-files`; the script gains a `--added-files` flag mirroring `--removed-files`.
 
 ### Changes to `deploy.yml` `prepare` job
 
@@ -77,7 +90,7 @@ for dir in */; do
 done
 ```
 
-A new `disabled_stacks` job output is emitted from the same step by enumerating directories that contain `.disabled` alongside a `compose.yaml`. This output drives visibility only — no deploy step branches on it.
+A new `disabled_stacks` job output is emitted from the same step as a JSON array (consistent with the existing `removed_stacks` / `existing_stacks` / `new_stacks` outputs), enumerating directories that contain `.disabled` alongside a `compose.yaml`. This output drives visibility only — no deploy step branches on it.
 
 ### Changes to notify and PR comment
 
@@ -86,7 +99,7 @@ A new `disabled_stacks` job output is emitted from the same step by enumerating 
 
 ### Caller-repo workflow: no changes
 
-Lint discovery in caller repos does not filter `.disabled` — disabled stacks continue to receive YAML linting and `docker compose config` validation. This is intentional: keeps the disabled compose file from rotting silently between disable and re-enable.
+Lint discovery in caller repos does not filter `.disabled` — disabled stacks continue to receive YAML linting and `docker compose config` validation. This is intentional: keeps the disabled compose file from rotting silently between disable and re-enable. Future contributors tempted to "fix" the caller-side discovery snippet (e.g. the example in the root `CLAUDE.md`) for consistency with the deploy-side filter should be deterred — the asymmetry is by design.
 
 ## Testing
 
@@ -97,6 +110,8 @@ Extend the existing testing harness under `scripts/testing/` with a fixture cove
 1. Construct a two-SHA scenario in a throwaway git repo (CURRENT_SHA and TARGET_SHA with the appropriate `compose.yaml` / `.disabled` states).
 2. Run `detect-stack-changes.sh` against the scenario.
 3. Assert the resulting `removed_stacks`, `existing_stacks`, `new_stacks` JSON outputs match expected.
+
+The fixture set must explicitly include a **born-disabled** row: a commit that adds both `compose.yaml` and `.disabled` simultaneously, asserted to produce empty removed/existing/new — this catches regressions of the effectively-present-in-CURRENT guard, which is the failure mode where the discovery detector or gitdiff detector would naively flag the `.disabled` addition as a removal. Similarly include a **delete-while-disabled** row to catch the symmetric naive-removal regression.
 
 Also run `shellcheck scripts/deployment/detect-stack-changes.sh` after edits.
 
