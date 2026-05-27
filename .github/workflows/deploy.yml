@@ -749,6 +749,8 @@ jobs:
           HAS_EXISTING: ${{ needs.prepare.outputs.has_existing_stacks }}
           HAS_NEW: ${{ needs.prepare.outputs.has_new_stacks }}
           REMOVED_STACKS: ${{ needs.prepare.outputs.removed_stacks }}
+          HAS_DISABLED: ${{ needs.prepare.outputs.has_disabled_stacks }}
+          DISABLED_STACKS: ${{ needs.prepare.outputs.disabled_stacks }}
           FORCE_DEPLOY: ${{ inputs.force-deploy }}
         run: |
           set -euo pipefail
@@ -861,6 +863,20 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+          # Disabled stacks line
+          disabled_line=""
+          if [[ "$HAS_DISABLED" == "true" ]]; then
+            disabled_names=$(echo "$DISABLED_STACKS" | jq -r '. | join(", ")' 2>/dev/null || echo "")
+            if [[ -n "$disabled_names" ]]; then
+              disabled_line="🛑 **Disabled stacks:** $disabled_names"
+            fi
+          fi
+          {
+            echo "disabled_line<<EOF"
+            echo "$disabled_line"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Load Discord webhook and user ID
         id: op-load-discord
         uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
@@ -881,6 +897,7 @@ jobs:
             ${{ steps.status.outputs.description }}
 
             ${{ steps.status.outputs.removed_line }}
+            ${{ steps.status.outputs.disabled_line }}
 
             ${{ steps.status.outputs.deployment_needed == 'true' && format('**🔄 Pipeline Status**
             {0}', steps.status.outputs.pipeline) || '' }}
@@ -947,6 +964,7 @@ jobs:
           DESCRIPTION: ${{ steps.status.outputs.description }}
           PIPELINE: ${{ steps.status.outputs.pipeline }}
           REMOVED_LINE: ${{ steps.status.outputs.removed_line }}
+          DISABLED_LINE: ${{ steps.status.outputs.disabled_line }}
           COMMIT_SUBJECT: ${{ steps.commit-msg.outputs.message }}
         run: |
           set -euo pipefail
