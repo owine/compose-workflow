@@ -25,11 +25,9 @@ CURRENT_SHA=""
 TARGET_REF=""
 INPUT_STACKS="[]"
 REMOVED_FILES="[]"
-# shellcheck disable=SC2034  # consumed by detect_removed_stacks_discovery in a later task
 ADDED_FILES="[]"
 LIVE_REPO_PATH="${LIVE_REPO_PATH:-}"
 
-# shellcheck disable=SC2034  # ADDED_FILES consumed by detect_removed_stacks_discovery in a later task
 while [[ $# -gt 0 ]]; do
   case $1 in
     --current-sha)      CURRENT_SHA="$2"; shift 2 ;;
@@ -52,6 +50,26 @@ if [[ -z "$LIVE_REPO_PATH" ]]; then
   log_error "--live-repo-path (or LIVE_REPO_PATH env) is required"
   exit 1
 fi
+
+# HELPER_FUNCS: shared bash helpers prepended into each detector's heredoc body.
+# Defined once script-side so the same logic powers all six detectors without
+# duplicating the function bodies inside each heredoc.
+# shellcheck disable=SC2016  # single quotes intentional - body is injected into a subshell heredoc verbatim
+HELPER_FUNCS='
+is_effectively_present_at_sha() {
+  local sha="$1" stack="$2"
+  git cat-file -e "$sha:$stack/compose.yaml" 2>/dev/null || return 1
+  if git cat-file -e "$sha:$stack/.disabled" 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+is_effectively_present_on_disk() {
+  local root="$1" stack="$2"
+  [[ -f "$root/$stack/compose.yaml" ]] || return 1
+  [[ ! -f "$root/$stack/.disabled" ]]
+}
+'
 
 # run_local: dispatches a bash script body (stdin) with LIVE_REPO_PATH
 # propagated as an env var, so heredoc bodies can reference "$LIVE_REPO_PATH"
@@ -96,7 +114,7 @@ detect_removed_stacks_gitdiff() {
   log_info "Running git diff detection for removed stacks..."
 
   local detect_script
-  detect_script=$(cat << 'DETECT_EOF'
+  detect_script="$HELPER_FUNCS"$'\n'"$(cat << 'DETECT_EOF'
   set -e
   CURRENT_SHA="$1"
   TARGET_REF="$2"
@@ -123,11 +141,19 @@ detect_removed_stacks_gitdiff() {
     exit 1
   fi
 
-  git diff --diff-filter=D --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null | \
-    grep -E '^[^/]+/compose\.yaml$' | \
-    sed 's|/compose\.yaml||' || echo ""
+  {
+    git diff --diff-filter=D --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null \
+      | grep -E '^[^/]+/compose\.yaml$' | sed 's|/compose\.yaml||' || true
+    git diff --diff-filter=A --name-only "$CURRENT_SHA" "$TARGET_SHA" 2>/dev/null \
+      | grep -E '^[^/]+/\.disabled$' | sed 's|/\.disabled||' || true
+  } | sort -u | while read -r candidate; do
+    [[ -z "$candidate" ]] && continue
+    if is_effectively_present_at_sha "$CURRENT_SHA" "$candidate"; then
+      echo "$candidate"
+    fi
+  done
 DETECT_EOF
-  )
+)"
 
   echo "$detect_script" | run_local "$current_sha" "$target_ref"
 }
@@ -137,7 +163,7 @@ detect_removed_stacks_tree() {
   log_info "Running tree comparison detection for removed stacks..."
 
   local detect_script
-  detect_script=$(cat << 'DETECT_TREE_EOF'
+  detect_script="$HELPER_FUNCS"$'\n'"$(cat << 'DETECT_TREE_EOF'
   set -e
   TARGET_REF="$1"
 
@@ -158,40 +184,49 @@ detect_removed_stacks_tree() {
     exit 1
   fi
 
-  COMMIT_DIRS=$(git ls-tree --name-only "$TARGET_SHA" 2>/dev/null | sort)
-  SERVER_DIRS=$(find "$LIVE_REPO_PATH" -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \; 2>/dev/null | sort)
-  MISSING_IN_COMMIT=$(comm -13 <(echo "$COMMIT_DIRS") <(echo "$SERVER_DIRS"))
+  ALL_DIRS=$( {
+    git ls-tree --name-only "$TARGET_SHA" 2>/dev/null
+    find "$LIVE_REPO_PATH" -maxdepth 1 -mindepth 1 -type d ! -name '.*' -exec basename {} \;
+  } | sort -u )
 
-  for dir in $MISSING_IN_COMMIT; do
-    if [ -f "$LIVE_REPO_PATH/$dir/compose.yaml" ]; then
+  for dir in $ALL_DIRS; do
+    if is_effectively_present_on_disk "$LIVE_REPO_PATH" "$dir" \
+       && ! is_effectively_present_at_sha "$TARGET_SHA" "$dir"; then
       echo "$dir"
     fi
   done
 DETECT_TREE_EOF
-  )
+)"
 
   echo "$detect_script" | run_local "$target_ref"
 }
 
 detect_removed_stacks_discovery() {
-  local removed_files_json="$1"
+  local removed_files_json="$1" added_files_json="$2" current_sha="$3"
   log_info "Running discovery analysis detection for removed stacks..."
-
-  # Base64 encode JSON to avoid shell glob expansion issues
-  local removed_files_b64
-  removed_files_b64=$(echo -n "$removed_files_json" | base64 -w 0 2>/dev/null || echo -n "$removed_files_json" | base64)
+  local removed_b64 added_b64
+  removed_b64=$(echo -n "$removed_files_json" | base64 -w 0 2>/dev/null || echo -n "$removed_files_json" | base64)
+  added_b64=$(echo -n "$added_files_json" | base64 -w 0 2>/dev/null || echo -n "$added_files_json" | base64)
 
   local detect_script
-  detect_script=$(cat << 'DETECT_DISCOVERY_EOF'
+  detect_script="$HELPER_FUNCS"$'\n'"$(cat << 'DETECT_DISCOVERY_EOF'
   set -e
-  REMOVED_FILES_JSON=$(echo "$1" | base64 -d)
-  echo "$REMOVED_FILES_JSON" | jq -r '.[]' 2>/dev/null | \
-    grep -E '^[^/]+/compose\.yaml$' | \
-    sed 's|/compose\.yaml||' || echo ""
+  CURRENT_SHA="$3"
+  REMOVED_JSON=$(echo "$1" | base64 -d)
+  ADDED_JSON=$(echo "$2" | base64 -d)
+  cd "$LIVE_REPO_PATH"
+  {
+    echo "$REMOVED_JSON" | jq -r '.[]?' | grep -E '^[^/]+/compose\.yaml$' | sed 's|/compose\.yaml||' || true
+    echo "$ADDED_JSON"   | jq -r '.[]?' | grep -E '^[^/]+/\.disabled$'    | sed 's|/\.disabled||'    || true
+  } | sort -u | while read -r candidate; do
+    [[ -z "$candidate" ]] && continue
+    if is_effectively_present_at_sha "$CURRENT_SHA" "$candidate"; then
+      echo "$candidate"
+    fi
+  done
 DETECT_DISCOVERY_EOF
-  )
-
-  echo "$detect_script" | run_local "$removed_files_b64"
+)"
+  echo "$detect_script" | run_local "$removed_b64" "$added_b64" "$current_sha"
 }
 
 # ================================================================
@@ -203,7 +238,7 @@ detect_new_stacks_gitdiff() {
   log_info "Running git diff detection for new stacks..."
 
   local detect_script
-  detect_script=$(cat << 'DETECT_NEW_EOF'
+  detect_script="$HELPER_FUNCS"$'\n'"$(cat << 'DETECT_NEW_EOF'
   set -e
   CURRENT_SHA="$1"
   TARGET_REF="$2"
@@ -233,7 +268,7 @@ detect_new_stacks_gitdiff() {
     grep -E '^[^/]+/compose\.yaml$' | \
     sed 's|/compose\.yaml||' || echo ""
 DETECT_NEW_EOF
-  )
+)"
 
   echo "$detect_script" | run_local "$current_sha" "$target_ref"
 }
@@ -243,7 +278,7 @@ detect_new_stacks_tree() {
   log_info "Running tree comparison detection for new stacks..."
 
   local detect_script
-  detect_script=$(cat << 'DETECT_NEW_TREE_EOF'
+  detect_script="$HELPER_FUNCS"$'\n'"$(cat << 'DETECT_NEW_TREE_EOF'
   set -e
   TARGET_REF="$1"
 
@@ -277,7 +312,7 @@ detect_new_stacks_tree() {
 
   comm -23 <(echo "$COMMIT_STACKS") <(echo "$SERVER_STACKS")
 DETECT_NEW_TREE_EOF
-  )
+)"
 
   echo "$detect_script" | run_local "$target_ref"
 }
@@ -332,13 +367,7 @@ REMOVED_DISCOVERY_EXIT=0
 REMOVED_GITDIFF=$(detect_removed_stacks_gitdiff "$CURRENT_SHA" "$TARGET_REF") || REMOVED_GITDIFF_EXIT=$?
 REMOVED_TREE=$(detect_removed_stacks_tree "$TARGET_REF") || REMOVED_TREE_EXIT=$?
 
-if [ "$REMOVED_FILES" = "[]" ] || [ -z "$REMOVED_FILES" ]; then
-  log_info "No removed files detected - skipping removed discovery analysis"
-  REMOVED_DISCOVERY=""
-  REMOVED_DISCOVERY_EXIT=0
-else
-  REMOVED_DISCOVERY=$(detect_removed_stacks_discovery "$REMOVED_FILES") || REMOVED_DISCOVERY_EXIT=$?
-fi
+REMOVED_DISCOVERY=$(detect_removed_stacks_discovery "$REMOVED_FILES" "$ADDED_FILES" "$CURRENT_SHA") || REMOVED_DISCOVERY_EXIT=$?
 
 NEW_GITDIFF_EXIT=0
 NEW_TREE_EXIT=0
