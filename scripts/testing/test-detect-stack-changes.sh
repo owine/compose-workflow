@@ -7,6 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DETECT_SCRIPT="$REPO_ROOT/scripts/deployment/detect-stack-changes.sh"
 
+TMPROOT=$(mktemp -d -t detect-tests.XXXXXX)
+export TMPROOT
+trap 'rm -rf "$TMPROOT"' EXIT
+
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=scripts/testing/fixtures/transition-cases.sh
 source "$SCRIPT_DIR/fixtures/transition-cases.sh"
@@ -16,9 +20,9 @@ FAIL=0
 FAILURES=()
 
 # build_scenario <workdir> <current_setup_fn> <target_setup_fn>
-# Creates a git repo at <workdir> with two commits. Each setup fn is called
-# with the workdir as CWD and performs file mutations representing one SHA.
-# Returns CURRENT_SHA and TARGET_SHA via globals.
+# Builds a fresh git repo at <workdir> with two commits, echoes
+# "<current_sha> <target_sha>" to stdout. Caller should `read -r` it
+# into local vars via an intermediate variable so `set -e` propagates.
 build_scenario() {
   local workdir="$1" current_fn="$2" target_fn="$3"
   rm -rf "$workdir"
@@ -31,13 +35,13 @@ build_scenario() {
     "$current_fn"
     git add -A
     git commit -q --allow-empty -m "current"
-    CURRENT_SHA=$(git rev-parse HEAD)
+    local current; current=$(git rev-parse HEAD)
     "$target_fn"
     git add -A
     # Allow empty in case target_fn only deletes
     git commit -q --allow-empty -m "target"
-    TARGET_SHA=$(git rev-parse HEAD)
-    echo "$CURRENT_SHA $TARGET_SHA"
+    local target; target=$(git rev-parse HEAD)
+    echo "$current $target"
   )
 }
 
@@ -48,8 +52,9 @@ build_scenario() {
 run_detect() {
   local workdir="$1" current="$2" target="$3" input="$4"
   local removed="${5:-[]}" added="${6:-[]}"
-  local out
-  out=$(mktemp)
+  local out err
+  out=$(mktemp -p "$TMPROOT")
+  err="$out.err"
   GITHUB_OUTPUT="$out" "$DETECT_SCRIPT" \
     --current-sha "$current" \
     --target-ref "$target" \
@@ -57,7 +62,7 @@ run_detect() {
     --input-stacks "$input" \
     --removed-files "$removed" \
     --added-files "$added" \
-    >/dev/null 2>&1 || {
+    >/dev/null 2>"$err" || {
       echo "::detect-script-failed::" >> "$out"
     }
   echo "$out"
@@ -74,6 +79,14 @@ read_output() {
 #        <expected_new_json> <output_file>
 assert_classifications() {
   local name="$1" exp_removed="$2" exp_existing="$3" exp_new="$4" out="$5"
+  if grep -q '^::detect-script-failed::' "$out" 2>/dev/null; then
+    echo "❌ $name (detect script exited non-zero)"
+    if [[ -s "$out.err" ]]; then
+      sed 's/^/   stderr: /' "$out.err" | head -3
+    fi
+    FAIL=$((FAIL+1)); FAILURES+=("$name")
+    return
+  fi
   local got_removed got_existing got_new
   got_removed=$(read_output "$out" removed_stacks)
   got_existing=$(read_output "$out" existing_stacks)
@@ -89,6 +102,9 @@ assert_classifications() {
     echo "   removed:  got=$got_removed  want=$exp_removed"
     echo "   existing: got=$got_existing want=$exp_existing"
     echo "   new:      got=$got_new      want=$exp_new"
+    if [[ -s "$out.err" ]]; then
+      sed 's/^/   stderr: /' "$out.err" | head -3
+    fi
     FAIL=$((FAIL+1))
     FAILURES+=("$name")
   fi
