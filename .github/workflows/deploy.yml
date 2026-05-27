@@ -167,6 +167,7 @@ jobs:
           PREVIOUS_SHA: ${{ steps.previous-sha.outputs.previous_sha }}
           TARGET_REF: ${{ inputs.target-ref }}
           REMOVED_FILES: ${{ steps.changed-files.outputs.deleted_files != '' && steps.changed-files.outputs.deleted_files || '[]' }}
+          ADDED_FILES: ${{ steps.changed-files.outputs.added_files != '' && steps.changed-files.outputs.added_files || '[]' }}
           INPUT_STACKS: ${{ steps.discover-stacks.outputs.stacks }}
         run: |
           ./.compose-workflow/scripts/deployment/detect-stack-changes.sh \
@@ -174,7 +175,8 @@ jobs:
             --target-ref "$TARGET_REF" \
             --live-repo-path "$DETECTION_TREE" \
             --input-stacks "$INPUT_STACKS" \
-            --removed-files "$REMOVED_FILES"
+            --removed-files "$REMOVED_FILES" \
+            --added-files "$ADDED_FILES"
 
       - name: Detect critical stacks
         id: detect-critical
