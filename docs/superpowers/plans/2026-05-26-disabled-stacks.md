@@ -382,7 +382,7 @@ Apply this concatenation pattern to all six detectors.
 
 - [ ] **Step 2: Update `detect_removed_stacks_gitdiff` body**
 
-Replace the existing `git diff --diff-filter=D` line and downstream pipeline with logic that:
+**Preserve the existing preamble inside the heredoc** (the `git fetch`, `TARGET_SHA=$(git rev-parse ...)`, and `git cat-file -e` SHA-existence guards). Replace only the trailing `git diff --diff-filter=D` pipeline at the end of the heredoc body. The new pipeline:
 1. Collects candidates from compose.yaml deletions (diff-filter `D`) AND `.disabled` additions (diff-filter `A`)
 2. For each candidate, emits only if `is_effectively_present_at_sha "$CURRENT_SHA" "$candidate"`
 
@@ -403,7 +403,7 @@ done
 
 - [ ] **Step 3: Update `detect_removed_stacks_tree` body**
 
-The current body computes `MISSING_IN_COMMIT` via filesystem comparison. Replace with:
+**Preserve the existing preamble** (`git fetch`, `TARGET_SHA=$(git rev-parse ...)`, and the `git cat-file -e $TARGET_SHA` existence guard). The current body computes `MISSING_IN_COMMIT` via filesystem comparison after that preamble — replace only the comparison logic with:
 
 ```bash
 # All directories that ever appeared at root in either tree or live filesystem.
@@ -497,7 +497,7 @@ Symmetric to Task 3. After this task all 8 fixtures should pass.
 
 - [ ] **Step 1: Update `detect_new_stacks_gitdiff` body**
 
-Replace the single `git diff --diff-filter=A` invocation with combined candidate collection + guard:
+**Preserve the existing preamble** (`git fetch`, `TARGET_SHA=$(git rev-parse ...)`, SHA-existence guards for both CURRENT and TARGET). Replace only the trailing `git diff --diff-filter=A` invocation with combined candidate collection + guard:
 
 ```bash
 {
@@ -515,7 +515,7 @@ done
 
 - [ ] **Step 2: Update `detect_new_stacks_tree` body**
 
-Replace `COMMIT_STACKS` / `SERVER_STACKS` / `comm -23` logic with:
+**Preserve the existing preamble** (`git fetch`, `TARGET_SHA`, SHA-existence guard). Replace only the `COMMIT_STACKS` / `SERVER_STACKS` / `comm -23` logic with:
 
 ```bash
 ALL_DIRS=$( {
