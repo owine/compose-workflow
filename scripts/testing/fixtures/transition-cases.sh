@@ -3,8 +3,10 @@
 # Each function: builds scenario, runs script, asserts expected classification.
 
 case_normal_add() {
-  local wd; wd=$(mktemp -d)
-  read -r current target <<<"$(build_scenario "$wd" _setup_empty _add_foo_enabled)"
+  local wd; wd=$(mktemp -d -p "$TMPROOT")
+  local shas; shas=$(build_scenario "$wd" _setup_empty _add_foo_enabled)
+  local current target
+  read -r current target <<<"$shas"
   local out; out=$(run_detect "$wd" "$current" "$target" '["foo"]' '[]' '["foo/compose.yaml"]')
   assert_classifications "normal_add" '[]' '[]' '["foo"]' "$out"
 }
@@ -14,8 +16,10 @@ _setup_empty() { :; }
 _add_foo_enabled() { mkdir -p foo; echo 'services: {a: {image: nginx}}' > foo/compose.yaml; }
 
 case_normal_delete() {
-  local wd; wd=$(mktemp -d)
-  read -r current target <<<"$(build_scenario "$wd" _add_foo_enabled _delete_foo)"
+  local wd; wd=$(mktemp -d -p "$TMPROOT")
+  local shas; shas=$(build_scenario "$wd" _add_foo_enabled _delete_foo)
+  local current target
+  read -r current target <<<"$shas"
   local out; out=$(run_detect "$wd" "$current" "$target" '[]' '["foo/compose.yaml"]' '[]')
   assert_classifications "normal_delete" '["foo"]' '[]' '[]' "$out"
 }
@@ -23,8 +27,10 @@ case_normal_delete() {
 _delete_foo() { rm -rf foo; }
 
 case_normal_update() {
-  local wd; wd=$(mktemp -d)
-  read -r current target <<<"$(build_scenario "$wd" _add_foo_enabled _modify_foo)"
+  local wd; wd=$(mktemp -d -p "$TMPROOT")
+  local shas; shas=$(build_scenario "$wd" _add_foo_enabled _modify_foo)
+  local current target
+  read -r current target <<<"$shas"
   local out; out=$(run_detect "$wd" "$current" "$target" '["foo"]' '[]' '[]')
   assert_classifications "normal_update" '[]' '["foo"]' '[]' "$out"
 }
@@ -32,8 +38,10 @@ case_normal_update() {
 _modify_foo() { echo 'services: {a: {image: nginx:1.27}}' > foo/compose.yaml; }
 
 case_disable() {
-  local wd; wd=$(mktemp -d)
-  read -r current target <<<"$(build_scenario "$wd" _add_foo_enabled _disable_foo)"
+  local wd; wd=$(mktemp -d -p "$TMPROOT")
+  local shas; shas=$(build_scenario "$wd" _add_foo_enabled _disable_foo)
+  local current target
+  read -r current target <<<"$shas"
   # Input stacks excludes foo because the discover step (workflow-side) filters
   # .disabled-bearing dirs. Simulate that here.
   local out; out=$(run_detect "$wd" "$current" "$target" '[]' '[]' '["foo/.disabled"]')
@@ -43,8 +51,10 @@ case_disable() {
 _disable_foo() { touch foo/.disabled; }
 
 case_re_enable() {
-  local wd; wd=$(mktemp -d)
-  read -r current target <<<"$(build_scenario "$wd" _add_foo_disabled _enable_foo)"
+  local wd; wd=$(mktemp -d -p "$TMPROOT")
+  local shas; shas=$(build_scenario "$wd" _add_foo_disabled _enable_foo)
+  local current target
+  read -r current target <<<"$shas"
   local out; out=$(run_detect "$wd" "$current" "$target" '["foo"]' '["foo/.disabled"]' '[]')
   assert_classifications "re_enable" '[]' '[]' '["foo"]' "$out"
 }
@@ -56,8 +66,10 @@ _add_foo_disabled() {
 _enable_foo() { rm foo/.disabled; }
 
 case_stay_disabled() {
-  local wd; wd=$(mktemp -d)
-  read -r current target <<<"$(build_scenario "$wd" _add_foo_disabled _noop)"
+  local wd; wd=$(mktemp -d -p "$TMPROOT")
+  local shas; shas=$(build_scenario "$wd" _add_foo_disabled _noop)
+  local current target
+  read -r current target <<<"$shas"
   local out; out=$(run_detect "$wd" "$current" "$target" '[]' '[]' '[]')
   assert_classifications "stay_disabled" '[]' '[]' '[]' "$out"
 }
@@ -65,16 +77,20 @@ case_stay_disabled() {
 _noop() { :; }
 
 case_born_disabled() {
-  local wd; wd=$(mktemp -d)
-  read -r current target <<<"$(build_scenario "$wd" _setup_empty _add_foo_disabled)"
+  local wd; wd=$(mktemp -d -p "$TMPROOT")
+  local shas; shas=$(build_scenario "$wd" _setup_empty _add_foo_disabled)
+  local current target
+  read -r current target <<<"$shas"
   # Both files appear as added; this is the regression case for the guard.
   local out; out=$(run_detect "$wd" "$current" "$target" '[]' '[]' '["foo/compose.yaml","foo/.disabled"]')
   assert_classifications "born_disabled" '[]' '[]' '[]' "$out"
 }
 
 case_delete_while_disabled() {
-  local wd; wd=$(mktemp -d)
-  read -r current target <<<"$(build_scenario "$wd" _add_foo_disabled _delete_foo)"
+  local wd; wd=$(mktemp -d -p "$TMPROOT")
+  local shas; shas=$(build_scenario "$wd" _add_foo_disabled _delete_foo)
+  local current target
+  read -r current target <<<"$shas"
   local out; out=$(run_detect "$wd" "$current" "$target" '[]' '["foo/compose.yaml","foo/.disabled"]' '[]')
   assert_classifications "delete_while_disabled" '[]' '[]' '[]' "$out"
 }
