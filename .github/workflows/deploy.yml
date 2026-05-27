@@ -75,6 +75,8 @@ jobs:
       has_removed_stacks: ${{ steps.detect-changes.outputs.has_removed_stacks }}
       has_existing_stacks: ${{ steps.detect-changes.outputs.has_existing_stacks }}
       has_new_stacks: ${{ steps.detect-changes.outputs.has_new_stacks }}
+      disabled_stacks: ${{ steps.discover-stacks.outputs.disabled_stacks }}
+      has_disabled_stacks: ${{ steps.discover-stacks.outputs.has_disabled_stacks }}
       critical_stacks: ${{ steps.detect-critical.outputs.critical_stacks }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -127,20 +129,32 @@ jobs:
         run: |
           set -euo pipefail
           cd "$DETECTION_TREE"
-          stacks=()
+          active=()
+          disabled=()
           for dir in */; do
             dir_name=$(basename "$dir")
             if [[ -f "$dir/compose.yml" || -f "$dir/compose.yaml" ]]; then
-              stacks+=("\"$dir_name\"")
+              if [[ -f "$dir/.disabled" ]]; then
+                disabled+=("\"$dir_name\"")
+              else
+                active+=("\"$dir_name\"")
+              fi
             fi
           done
-          if [ ${#stacks[@]} -eq 0 ]; then
+          if [ ${#active[@]} -eq 0 ] && [ ${#disabled[@]} -eq 0 ]; then
             echo "::error::No Docker Compose stacks found in repository"
             exit 1
           fi
-          stack_json="[$(IFS=,; echo "${stacks[*]}")]"
-          echo "stacks=$stack_json" >> "$GITHUB_OUTPUT"
-          echo "✅ Discovered stacks: $stack_json"
+          active_json="[$(IFS=,; echo "${active[*]}")]"
+          disabled_json="[$(IFS=,; echo "${disabled[*]}")]"
+          has_disabled=$([ ${#disabled[@]} -gt 0 ] && echo true || echo false)
+          {
+            echo "stacks=$active_json"
+            echo "disabled_stacks=$disabled_json"
+            echo "has_disabled_stacks=$has_disabled"
+          } >> "$GITHUB_OUTPUT"
+          echo "✅ Active stacks: $active_json"
+          echo "🛑 Disabled stacks: $disabled_json"
 
       - name: Detect stack changes
         id: detect-changes
