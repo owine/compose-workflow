@@ -25,14 +25,18 @@ CURRENT_SHA=""
 TARGET_REF=""
 INPUT_STACKS="[]"
 REMOVED_FILES="[]"
+# shellcheck disable=SC2034  # consumed by detect_removed_stacks_discovery in a later task
+ADDED_FILES="[]"
 LIVE_REPO_PATH="${LIVE_REPO_PATH:-}"
 
+# shellcheck disable=SC2034  # ADDED_FILES consumed by detect_removed_stacks_discovery in a later task
 while [[ $# -gt 0 ]]; do
   case $1 in
     --current-sha)      CURRENT_SHA="$2"; shift 2 ;;
     --target-ref)       TARGET_REF="$2"; shift 2 ;;
     --input-stacks)     INPUT_STACKS="$2"; shift 2 ;;
     --removed-files)    REMOVED_FILES="$2"; shift 2 ;;
+    --added-files)      ADDED_FILES="$2"; shift 2 ;;
     --live-repo-path)   LIVE_REPO_PATH="$2"; shift 2 ;;
     *)
       log_error "Unknown argument: $1"
