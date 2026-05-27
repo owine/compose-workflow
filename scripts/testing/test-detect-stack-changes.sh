@@ -7,7 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DETECT_SCRIPT="$REPO_ROOT/scripts/deployment/detect-stack-changes.sh"
 
-# shellcheck source=fixtures/transition-cases.sh
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=scripts/testing/fixtures/transition-cases.sh
 source "$SCRIPT_DIR/fixtures/transition-cases.sh"
 
 PASS=0
@@ -29,7 +30,7 @@ build_scenario() {
     git config user.name "Test"
     "$current_fn"
     git add -A
-    git commit -q -m "current"
+    git commit -q --allow-empty -m "current"
     CURRENT_SHA=$(git rev-parse HEAD)
     "$target_fn"
     git add -A
@@ -65,7 +66,8 @@ run_detect() {
 # Read a GITHUB_OUTPUT-format key
 read_output() {
   local file="$1" key="$2"
-  grep "^${key}=" "$file" | head -1 | cut -d= -f2-
+  # Tolerate missing key: grep returns 1 with pipefail otherwise kills caller.
+  grep "^${key}=" "$file" 2>/dev/null | head -1 | cut -d= -f2- || true
 }
 
 # assert <case_name> <expected_removed_json> <expected_existing_json> \
