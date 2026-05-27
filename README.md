@@ -134,6 +134,75 @@ The runner host needs `docker`, `jq`, `timeout` (coreutils), `gh`, and `op` (1Pa
 
 One-shot containers (e.g. migration sidecars gated via `service_completed_successfully`) end up `exited` with code 0 — the health-check job recognizes this as success.
 
+## Disabling stacks and services
+
+Two mechanisms cover different scopes. Both rely on `docker compose up --wait --remove-orphans` (which `deploy.yml` already uses on every stack invocation) to tear down whatever is no longer present.
+
+### Disabling a whole stack: `.disabled` marker file
+
+Touch `<stack>/.disabled` alongside the stack's `compose.yaml` to disable it:
+
+```bash
+touch silo/.disabled
+git add silo/.disabled
+git commit -m "disable silo"
+git push
+```
+
+On the next deploy:
+
+- The `Discover stacks` step excludes the directory from active stacks and emits it on the `disabled_stacks` output.
+- The change-detection script reclassifies the stack as **removed** (effectively-present-in-CURRENT, not effectively-present-in-TARGET).
+- The `Teardown removed stacks` step runs `docker compose down` against the still-present `compose.yaml` in the live tree.
+- Discord embed and PR comment surface a `🛑 **Disabled stacks:**` line alongside the existing `🗑️ **Removed stacks:**` line.
+
+The stack directory and its `compose.yaml` stay in the repo — only the running containers go away. Re-enable with `git rm <stack>/.disabled`; the next deploy classifies it as a new stack and runs `up --wait`.
+
+Lint coverage is unaffected: caller-repo lint workflows do not filter `.disabled`, so YAML and `compose config` validation continue to run on disabled stacks. This keeps the file from rotting silently between disable and re-enable.
+
+**Detection rules in detail.** A stack is "effectively present" at a given SHA iff `compose.yaml` exists *and* `.disabled` does not. The change-detection script applies an effectively-present-in-CURRENT guard on removed-stack detectors and an effectively-present-in-TARGET guard on new-stack detectors. This correctly handles edge cases:
+
+| Transition | Action |
+|---|---|
+| Enabled → disabled | `docker compose down` (teardown path) |
+| Disabled → enabled | `docker compose up --wait` (new-stack path) |
+| Stay disabled | no-op |
+| Born disabled (added with `.disabled` already present) | no-op |
+| Delete while disabled | no-op (already torn down at disable time) |
+
+Design spec: [`docs/superpowers/specs/2026-05-26-disabled-stacks-design.md`](docs/superpowers/specs/2026-05-26-disabled-stacks-design.md).
+
+### Disabling individual services: comment them out
+
+Compose itself has no first-class "disable one service" mechanism, but `up --wait --remove-orphans` treats any service no longer present in the compose model as an orphan and removes it on the next deploy. The simplest way to remove a service: comment out its block in `compose.yaml`.
+
+```yaml
+services:
+  primary:
+    image: ghcr.io/example/app:1.2.3
+    # ...
+
+  # postgres:
+  #   image: postgres:16
+  #   restart: unless-stopped
+  #   # ... rest of service definition
+```
+
+On the next deploy:
+
+- `up --wait --remove-orphans` brings down any containers belonging to the commented-out service.
+- The stack itself stays "existing" (its directory and `compose.yaml` are still present), so it isn't reclassified.
+
+Re-enable by uncommenting and pushing; `up --wait` recreates the service.
+
+**Why not Compose profiles?** `profiles:` keeps the service definition active in YAML, so Renovate continues opening image-bump PRs for a service nobody is running. Commenting out freezes the service at its current image and stops the bump churn. Use profiles only when you expect a short-term disable and want the image to stay current.
+
+**Caveats of commenting:**
+
+- Larger diffs (the entire service block goes from active to commented). You've already accepted this as the tradeoff for simplicity.
+- The commented YAML is no longer parsed, so if the surrounding compose structure drifts (new networks, renamed volumes), re-enabling may require a touch-up.
+- Service-specific named volumes/networks declared at the top level are *not* removed by `--remove-orphans` (it only removes containers). Manual cleanup with `docker volume rm` / `docker network rm` if you want the storage gone.
+
 ## Testing and Development
 
 ```bash
