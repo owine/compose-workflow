@@ -173,13 +173,12 @@ Examples of stacks typically marked critical:
 
 ### Disabling stacks and services
 
-Two mechanisms with different scopes — full operational details in [README.md](README.md#disabling-stacks-and-services).
+Two mechanisms with different scopes. Full operational walkthrough lives in [README.md](README.md#disabling-stacks-and-services); only the AI-relevant gotchas appear here.
 
-**Whole stack:** touch `<stack>/.disabled` alongside `compose.yaml`. The `Discover stacks` step excludes the directory from active stacks; `detect-stack-changes.sh` reclassifies the disable transition as a removed stack via the effectively-present predicate (`compose.yaml` exists ∧ `.disabled` does not). The `Teardown removed stacks` step runs `docker compose down` against the still-present compose file in the live tree. Discord/PR comment surface a `🛑 **Disabled stacks:**` line. Re-enable with `git rm <stack>/.disabled`.
+- **Stack-level:** a `<stack>/.disabled` marker file. The `Discover stacks` step in `deploy.yml` and the detectors in `detect-stack-changes.sh` both have special-case handling that depends on the "effectively present" predicate (`compose.yaml` exists ∧ `.disabled` does not). Don't change either without re-running the test harness at `scripts/testing/test-detect-stack-changes.sh` — it covers all 8 transition rows including the regression-prone born-disabled and delete-while-disabled cases.
+- **Service-level:** commenting out the service block in `compose.yaml`. No workflow code is involved — `docker compose up --wait --remove-orphans` (already on every `up` call in `deploy.yml`) handles the teardown.
 
-**Individual service:** comment out the service block in the compose file. `docker compose up --wait --remove-orphans` (which the deploy uses on every stack) removes the now-missing service's containers. The stack itself stays "existing." Prefer commenting over `profiles:` for indefinite disables — profiles keeps Renovate bumping image references for a service nobody runs.
-
-**Detection details (effectively-present predicate):** the change-detection script applies an effectively-present-in-CURRENT guard on removed-stack detectors and an effectively-present-in-TARGET guard on new-stack detectors. This correctly excludes the pathological born-disabled (added with `.disabled` present from the start) and delete-while-disabled rows so they don't trigger spurious teardowns. Test harness covering all 8 transition rows lives at `scripts/testing/test-detect-stack-changes.sh`. Design spec: `docs/superpowers/specs/2026-05-26-disabled-stacks-design.md`.
+Design spec: `docs/superpowers/specs/2026-05-26-disabled-stacks-design.md`.
 
 ## Modular Scripts
 
