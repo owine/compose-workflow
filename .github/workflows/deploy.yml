@@ -273,14 +273,14 @@ jobs:
 
       - name: Configure 1Password Service Account
         if: steps.skip-gate.outputs.skipped == 'false'
-        uses: 1password/load-secrets-action/configure@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
+        uses: 1password/load-secrets-action/configure@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load registry credentials
         id: creds
         if: steps.skip-gate.outputs.skipped == 'false'
-        uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
+        uses: 1password/load-secrets-action@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
         with:
           unset-previous: true
         env:
@@ -717,7 +717,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
+        uses: 1password/load-secrets-action/configure@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
@@ -879,7 +879,7 @@ jobs:
 
       - name: Load Discord webhook and user ID
         id: op-load-discord
-        uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
+        uses: 1password/load-secrets-action@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
         with:
           unset-previous: true
         env:
@@ -980,6 +980,6 @@ jobs:
           fi
 
       - name: Unload Discord webhook
-        uses: 1password/load-secrets-action@92467eb28f72e8255933372f1e0707c567ce2259  # v4.0.0
+        uses: 1password/load-secrets-action@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
         with:
           unset-previous: true
