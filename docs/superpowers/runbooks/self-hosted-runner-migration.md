@@ -1,12 +1,13 @@
 # Self-Hosted Runner Migration Runbook
 
-> **Status: migration COMPLETE as of 2026-05-03.** All three docker repos run on self-hosted runners. The SSH-based `deploy.yml`, its supporting scripts, the `tailscale/github-action` cache, and the `SSH_USER`/`SSH_HOST` repo secrets have all been removed. The reusable workflow (originally introduced as `deploy-local.yml`) has been renamed back to `deploy.yml`. **This runbook now serves two purposes:** (1) reference for adding *new* self-hosted hosts in the future, and (2) historical record of how the migration unfolded — kept verbatim because the incidents documented here (umask 002 lesson, Renovate races, ghcr pull-timeout misdiagnosis, etc.) are reusable lessons.
+> **Status: migration COMPLETE as of 2026-05-03.** All three docker repos run on self-hosted runners. The SSH-based `deploy.yml`, its supporting scripts, the `tailscale/github-action` cache, and the `SSH_USER`/`SSH_HOST` repo secrets have all been removed. The reusable workflow (originally introduced as `deploy-local.yml`) has been renamed back to `deploy.yml`. **This runbook is now a historical record** of how the original migration unfolded — kept verbatim because the incidents documented here (umask 002 lesson, Renovate races, ghcr pull-timeout misdiagnosis, etc.) are reusable lessons. **For the step-by-step procedure to add a *new* host, use the generic [`adding-a-new-host.md`](adding-a-new-host.md) runbook** (distilled from this doc plus the 2026-06-14 `docker-oracleamd` onboarding); refer back here for the *why* behind each step.
 
 | Repo | Migrated | Runner label | Admin user | Has dockge? |
 |---|---|---|---|---|
 | `docker-piwine-office` | 2026-04-29 (pilot) | `piwine-office` | `owine` | yes |
 | `docker-piwine` | 2026-04-30 | `piwine` | `owine` | yes |
 | `docker-zendc` | 2026-05-02 | `zendc` | `seed` | no |
+| `docker-oracleamd` | 2026-06-14 (new host, post-migration) | `oracleamd` | `owine` | no |
 
 **Spec:** `docs/superpowers/specs/2026-04-29-self-hosted-deploy-runner-pilot-design.md`
 **Original plan:** `docs/superpowers/plans/2026-04-29-self-hosted-deploy-runner-pilot.md`
