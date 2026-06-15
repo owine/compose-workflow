@@ -89,11 +89,26 @@ already does for the existing fleet, so new items in that vault are covered).
 
 ## Phase D — Host prep
 
-Admin (`<admin>`) needs passwordless sudo. Required tools **on the host** for the
-self-hosted jobs: `docker`, `jq`, `timeout` (coreutils), `op`. **`gh` is NOT
-required** — the only `gh` usage is the `notify` job, which runs on a
-GitHub-hosted `ubuntu-24.04` runner, not the self-hosted host. (This corrects the
-older migration runbook's tool table.)
+Admin (`<admin>`) needs passwordless sudo. Host tooling, by class:
+
+- **Required** (deploy fails without): `docker` (+ compose plugin), `git`, `jq`,
+  `op`, `timeout`, plus standard coreutils (`grep`/`sed`/`awk`/`sort`/`comm`/`diff`/
+  `find`/`mktemp`/`xargs`).
+- **Bootstrap only**: `curl`, `tar` (download + extract the runner).
+- **Recommended** (NOT invoked by the deploy workflow, but install for fleet parity
+  + on-host troubleshooting): `gh`. The only `gh` usage in `deploy.yml` is the
+  `notify` job, which runs GitHub-hosted — but every host carries `gh` for
+  `gh api repos/<repo>/actions/runners`, journal lookups, etc. (This corrects the
+  older migration runbook's table, which listed `gh` as flatly "required".)
+- **Provided by the runner — do NOT install on the host**: Node.js. JS actions
+  (`actions/checkout`, `changed-files`, the 1Password / docker-login actions) run
+  on the Node bundled in `actions-runner/externals/`; a system `node` is not a
+  host dependency.
+
+Verify:
+```bash
+sudo -u deploy bash -lc 'for t in docker git jq op timeout gh; do command -v $t >/dev/null || echo MISSING:$t; done'
+```
 
 ```bash
 # deploy user (runs the runner), in docker group
