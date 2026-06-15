@@ -6,10 +6,12 @@ Reusable GitHub Actions workflows for Docker Compose deployments across multiple
 
 As of 2026-05-02, deployment uses **self-hosted GitHub Actions runners that live on the deployment hosts themselves** — there is no SSH-from-CI path. The runner runs as a `deploy` user, in the `docker` group and the admin's group, and pulls jobs from GitHub. Eliminates the SSH-key/Tailscale/sudo-rule class of issues that plagued the prior design.
 
-Three caller repos use this workflow:
+Four caller repos use this workflow:
 - `docker-piwine` — runner label `piwine`
 - `docker-piwine-office` — runner label `piwine-office`
 - `docker-zendc` — runner label `zendc`
+
+Adding another? See [`docs/superpowers/runbooks/adding-a-new-host.md`](docs/superpowers/runbooks/adding-a-new-host.md).
 
 ## Key Features
 
@@ -68,13 +70,11 @@ jobs:
     uses: owine/compose-workflow/.github/workflows/deploy.yml@<sha>
     secrets: inherit
     with:
-      runner-label: piwine                  # or piwine-office, zendc
       live-repo-path: /opt/compose
       repo-name: "docker-piwine"
       webhook-url: "op://Docker/discord-github-notifications/piwine_webhook_url"
       discord-user-id: "op://Docker/discord-github-notifications/user_id"
       target-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      has-dockge: true                      # false for zendc
       force-deploy: ${{ inputs.force-deploy || false }}
 ```
 
