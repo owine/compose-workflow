@@ -375,6 +375,7 @@ jobs:
                 [[ -z "$service" ]] && continue
                 echo "── ❌ $service (container=$name state=$state health=${health:-none} exit=$exit_code) ──"
                 docker inspect --format '{{if .State.Health}}healthcheck history:{{"\n"}}{{range $i,$h := .State.Health.Log}}  [#{{$i}}] exit={{$h.ExitCode}} start={{$h.Start}}{{"\n"}}    {{$h.Output}}{{"\n"}}{{end}}{{else}}(no healthcheck defined){{end}}' "$name" 2>/dev/null || true
+                echo "── container logs: $service (last $lines lines) ──"
                 op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail "$lines" --no-color "$service" 2>&1 || true
               done <<< "$rows"
             fi
@@ -452,6 +453,7 @@ jobs:
                 [[ -z "$service" ]] && continue
                 echo "── ❌ $service (container=$name state=$state health=${health:-none} exit=$exit_code) ──"
                 docker inspect --format '{{if .State.Health}}healthcheck history:{{"\n"}}{{range $i,$h := .State.Health.Log}}  [#{{$i}}] exit={{$h.ExitCode}} start={{$h.Start}}{{"\n"}}    {{$h.Output}}{{"\n"}}{{end}}{{else}}(no healthcheck defined){{end}}' "$name" 2>/dev/null || true
+                echo "── container logs: $service (last $lines lines) ──"
                 op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail "$lines" --no-color "$service" 2>&1 || true
               done <<< "$rows"
             fi
@@ -579,6 +581,7 @@ jobs:
                 [[ -z "$service" ]] && continue
                 echo "── ❌ $service (container=$name state=$state health=${health:-none} exit=$exit_code) ──"
                 docker inspect --format '{{if .State.Health}}healthcheck history:{{"\n"}}{{range $i,$h := .State.Health.Log}}  [#{{$i}}] exit={{$h.ExitCode}} start={{$h.Start}}{{"\n"}}    {{$h.Output}}{{"\n"}}{{end}}{{else}}(no healthcheck defined){{end}}' "$name" 2>/dev/null || true
+                echo "── container logs: $service (last $lines lines) ──"
                 op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose logs --tail "$lines" --no-color "$service" 2>&1 || true
               done <<< "$rows"
             fi
