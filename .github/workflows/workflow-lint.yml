@@ -36,11 +36,11 @@ jobs:
         run: |
           echo "🐚 Validating shell scripts..."
 
-          # Find all shell scripts in scripts/deployment
-          SCRIPTS=$(find scripts/deployment -name "*.sh" -type f | sort)
+          # Find all shell scripts under scripts/ (deployment + linting + testing)
+          SCRIPTS=$(find scripts -name "*.sh" -type f | sort)
 
           if [ -z "$SCRIPTS" ]; then
-            echo "⚠️  No shell scripts found in scripts/deployment/"
+            echo "⚠️  No shell scripts found in scripts/"
             exit 0
           fi
 
