@@ -4,11 +4,11 @@ on:
   workflow_call:
     outputs:
       gitguardian-result:
-        description: "Result of GitGuardian scan job (success/failure/skipped)"
-        value: ${{ jobs.results.outputs.gitguardian-result }}
+        description: "Result of GitGuardian scan (success/failure/skipped)"
+        value: ${{ jobs.security.outputs.gitguardian-result }}
       trivy-result:
-        description: "Result of Trivy IaC scan job (success/failure/skipped)"
-        value: ${{ jobs.results.outputs.trivy-result }}
+        description: "Result of Trivy IaC scan (success/failure/skipped)"
+        value: ${{ jobs.security.outputs.trivy-result }}
     inputs:
       webhook-url:
         description: "1Password reference to Discord webhook URL"
@@ -64,17 +64,23 @@ on:
         default: 'ubuntu-24.04'
 
 jobs:
-  gitguardian:
+  # Single job: GitGuardian (push-only) + Trivy run as steps on ONE runner.
+  # Previously these were two parallel jobs plus a third 'results' job whose
+  # only purpose was to echo the two job results into outputs — three runners
+  # for what one runner does. A single shared checkout also replaces two.
+  security:
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 10
-    if: ${{ inputs.event-name == 'push' }}
+    timeout-minutes: 15
+    outputs:
+      gitguardian-result: ${{ steps.results.outputs.gitguardian-result }}
+      trivy-result: ${{ steps.results.outputs.trivy-result }}
     steps:
       - name: Checkout target repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           repository: ${{ inputs.target-repository }}
           ref: ${{ inputs.target-ref }}
-          fetch-depth: 0  # fetch all history so multiple commits can be scanned
+          fetch-depth: 0  # full history so GitGuardian can scan multiple commits
 
       - name: Display version information
         run: |
@@ -83,32 +89,30 @@ jobs:
           echo "Reusable workflow: ${{ github.workflow_ref }}"
           echo "Target repository: ${{ inputs.target-repository }}"
           echo "Target ref: ${{ inputs.target-ref }}"
+          echo "Event: ${{ inputs.event-name }}"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
-          echo ""
-          echo "ℹ️  Reusable workflow SHA shown in 'Uses:' line above"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+      # --- GitGuardian (push events only) ---------------------------------
       - name: Configure 1Password Service Account
+        if: inputs.event-name == 'push'
         uses: 1password/load-secrets-action/configure@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load GitGuardian credentials
         id: op-load-secret
+        if: inputs.event-name == 'push'
         uses: 1password/load-secrets-action@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
         with:
           unset-previous: true
         env:
           GITGUARDIAN_API_KEY: "op://Docker/gitguardian/api_key"
 
-      - name: GitGuardian scan
-        run: |
-          echo ""
-          echo "🔒 Starting GitGuardian security scanning..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-
       - name: Run GitGuardian scan
+        id: gitguardian
+        if: inputs.event-name == 'push'
+        continue-on-error: true
         uses: GitGuardian/ggshield-action@ad41d391f42450e9e6bb34961e3b1cf73398f250 # v1.51.0
         env:
           GITHUB_PUSH_BEFORE_SHA: ${{ inputs.github-event-before }}
@@ -117,49 +121,16 @@ jobs:
           GITHUB_DEFAULT_BRANCH: ${{ inputs.github-default-branch }}
           GITGUARDIAN_API_KEY: ${{ steps.op-load-secret.outputs.GITGUARDIAN_API_KEY }}
 
-      - name: GitGuardian scan complete
-        if: always()
-        run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          if [[ "${{ job.status }}" == "success" ]]; then
-            echo "🎉 GITGUARDIAN SECURITY SCAN: PASSED"
-            echo "   No secrets or security policy violations detected"
-          else
-            echo "💥 GITGUARDIAN SECURITY SCAN: FAILED"
-            echo "   Security issues detected - review output above for details"
-            echo "   Common issues: hardcoded secrets, API keys, passwords in code"
-          fi
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
       - name: Unload GitGuardian credentials
+        if: always() && inputs.event-name == 'push'
         uses: 1password/load-secrets-action@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
         with:
           unset-previous: true
 
-  trivy:
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 10
-    steps:
-      - name: Checkout target repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          repository: ${{ inputs.target-repository }}
-          ref: ${{ inputs.target-ref }}
-
-      - name: Display version information
-        run: |
-          echo "📋 Workflow Version Information"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Reusable workflow: ${{ github.workflow_ref }}"
-          echo "Target repository: ${{ inputs.target-repository }}"
-          echo "Target ref: ${{ inputs.target-ref }}"
-          echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
-          echo ""
-          echo "ℹ️  Reusable workflow SHA shown in 'Uses:' line above"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
+      # --- Trivy IaC scan (all events) -----------------------------------
       - name: Run Trivy IaC scan
+        id: trivy
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
@@ -168,34 +139,25 @@ jobs:
           severity: HIGH,CRITICAL
           format: table
 
-      - name: Trivy scan complete
+      - name: Collect results and gate
+        id: results
         if: always()
-        run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          if [[ "${{ job.status }}" == "success" ]]; then
-            echo "🎉 TRIVY IAC SCAN: PASSED"
-            echo "   No HIGH or CRITICAL misconfigurations detected"
-          else
-            echo "💥 TRIVY IAC SCAN: FAILED"
-            echo "   IaC misconfigurations detected - review output above for details"
-          fi
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-  results:
-    runs-on: ${{ inputs.runner }}
-    needs: [gitguardian, trivy]
-    if: always()
-    timeout-minutes: 1
-    outputs:
-      gitguardian-result: ${{ steps.collect.outputs.gitguardian-result }}
-      trivy-result: ${{ steps.collect.outputs.trivy-result }}
-    steps:
-      - name: Collect job results
-        id: collect
         env:
-          GITGUARDIAN_RESULT: ${{ needs.gitguardian.result }}
-          TRIVY_RESULT: ${{ needs.trivy.result }}
+          GITGUARDIAN_OUTCOME: ${{ steps.gitguardian.outcome }}
+          TRIVY_OUTCOME: ${{ steps.trivy.outcome }}
         run: |
-          echo "gitguardian-result=$GITGUARDIAN_RESULT" >> "$GITHUB_OUTPUT"
-          echo "trivy-result=$TRIVY_RESULT" >> "$GITHUB_OUTPUT"
+          # steps.<id>.outcome is success/failure/skipped — on non-push events
+          # the gitguardian step is skipped, yielding 'skipped' exactly as the
+          # old gitguardian job did. compose-notify treats skipped as passing.
+          echo "gitguardian-result=$GITGUARDIAN_OUTCOME" >> "$GITHUB_OUTPUT"
+          echo "trivy-result=$TRIVY_OUTCOME" >> "$GITHUB_OUTPUT"
+
+          echo "🔒 GitGuardian: $GITGUARDIAN_OUTCOME"
+          echo "🛡️  Trivy IaC:   $TRIVY_OUTCOME"
+
+          # Outputs written above before we fail, so results still propagate.
+          if [[ "$GITGUARDIAN_OUTCOME" == "failure" || "$TRIVY_OUTCOME" == "failure" ]]; then
+            echo "::error::Security scan failed (gitguardian=$GITGUARDIAN_OUTCOME, trivy=$TRIVY_OUTCOME)"
+            exit 1
+          fi
+          echo "🎉 Security scans passed"
