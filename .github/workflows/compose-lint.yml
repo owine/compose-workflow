@@ -4,11 +4,11 @@ on:
   workflow_call:
     outputs:
       actionlint-result:
-        description: "Result of actionlint job (success/failure/skipped)"
-        value: ${{ jobs.results.outputs.actionlint-result }}
+        description: "Result of actionlint validation (success/failure/skipped)"
+        value: ${{ jobs.lint.outputs.actionlint-result }}
       lint-result:
-        description: "Result of lint matrix job (success/failure/skipped)"
-        value: ${{ jobs.results.outputs.lint-result }}
+        description: "Result of stack lint validation (success/failure/skipped)"
+        value: ${{ jobs.lint.outputs.lint-result }}
     inputs:
       stacks:
         description: "JSON array of stack names to lint"
@@ -48,37 +48,17 @@ on:
         default: 'linux/amd64'
 
 jobs:
-  actionlint:
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 5
-    steps:
-      - name: Checkout target repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          repository: ${{ inputs.target-repository }}
-          ref: ${{ inputs.target-ref }}
-
-      - name: Display version information
-        run: |
-          echo "📋 Workflow Version Information"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Target repository: ${{ inputs.target-repository }}"
-          echo "Target ref: ${{ inputs.target-ref }}"
-          echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
-          echo ""
-          echo "ℹ️  Reusable workflow SHA shown in 'Uses:' line above"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-      - name: Run actionlint
-        uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2.1.2
-
+  # Single job: actionlint + all stack validations run on ONE runner.
+  # Previously a matrix spun up a separate runner per stack (plus standalone
+  # actionlint/lint-summary/results jobs); that wasted runner startup time for
+  # what are two fast shell scripts. The loop below replicates the matrix's
+  # fail-fast:false behaviour with a failed=() array.
   lint:
-    strategy:
-      matrix:
-        stack: ${{ fromJson(inputs.stacks) }}
-      fail-fast: false
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 5
+    timeout-minutes: 15
+    outputs:
+      actionlint-result: ${{ steps.results.outputs.actionlint-result }}
+      lint-result: ${{ steps.results.outputs.lint-result }}
     steps:
       - name: Checkout target repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
@@ -100,83 +80,102 @@ jobs:
           echo "Reusable workflow: ${{ github.workflow_ref }}"
           echo "Target repository: ${{ inputs.target-repository }}"
           echo "Target ref: ${{ inputs.target-ref }}"
-          echo "Stack: ${{ matrix.stack }}"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      - name: Run stack validation
-        run: |
-          ./.compose-workflow/scripts/linting/validate-stack.sh \
-            --stack "${{ matrix.stack }}" \
-            --yamllint-config .yamllint
+      - name: Run actionlint
+        id: actionlint
+        uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2.1.2
+        continue-on-error: true
 
-      - name: Verify image manifests publish target platform
+      - name: Validate stacks
+        id: stacks
+        continue-on-error: true
         env:
-          STACK: ${{ matrix.stack }}
+          STACKS: ${{ inputs.stacks }}
           PLATFORMS: ${{ inputs.platforms }}
         run: |
-          ./.compose-workflow/scripts/linting/validate-image-platforms.sh \
-            --stack "$STACK" \
-            --platforms "$PLATFORMS"
+          set -uo pipefail
 
-      - name: Report lint status
-        if: always()
-        run: |
-          echo "📊 Final Status for Stack: ${{ matrix.stack }}"
-          echo ""
-          if [[ "${{ job.status }}" == "success" ]]; then
-            echo "🎉 STACK VALIDATION: PASSED"
-            echo "   Stack '${{ matrix.stack }}' passed all validation checks"
-            echo "   ✅ YAML linting (yamllint)"
-            echo "   ✅ Docker Compose validation (docker compose config)"
-          else
-            echo "💥 STACK VALIDATION: FAILED"
-            echo "   Stack '${{ matrix.stack }}' has validation issues"
-            echo "   See detailed error output above for resolution steps"
+          mapfile -t stack_list < <(jq -r '.[]' <<< "$STACKS")
+          if [[ ${#stack_list[@]} -eq 0 ]]; then
+            echo "ℹ️  No stacks to validate"
+            exit 0
           fi
 
+          echo "📁 Validating ${#stack_list[@]} stack(s): ${stack_list[*]}"
 
-  lint-summary:
-    runs-on: ${{ inputs.runner }}
-    needs: [actionlint, lint]
-    if: always()
-    timeout-minutes: 5
-    steps:
-      - name: Checkout target repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          repository: ${{ inputs.target-repository }}
-          ref: ${{ inputs.target-ref }}
+          # fail-fast:false — keep validating every stack, collect the failures.
+          failed=()
+          for stack in "${stack_list[@]}"; do
+            echo ""
+            echo "════════════════════════════════════════════════════════════════"
+            echo "▶ Stack: $stack"
+            echo "════════════════════════════════════════════════════════════════"
+            stack_ok=true
 
-      - name: Checkout compose-workflow for linting scripts
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          repository: owine/compose-workflow
-          ref: main
-          path: .compose-workflow
+            if ! ./.compose-workflow/scripts/linting/validate-stack.sh \
+                --stack "$stack" \
+                --yamllint-config .yamllint; then
+              stack_ok=false
+            fi
 
-      - name: 📊 Generate detailed summary with error reproduction
-        run: |
-          ./.compose-workflow/scripts/linting/lint-summary.sh \
-            --stacks '${{ inputs.stacks }}' \
-            --yamllint-config .yamllint \
-            --actionlint-result "${{ needs.actionlint.result }}" \
-            --lint-result "${{ needs.lint.result }}"
+            if ! ./.compose-workflow/scripts/linting/validate-image-platforms.sh \
+                --stack "$stack" \
+                --platforms "$PLATFORMS"; then
+              stack_ok=false
+            fi
 
-  results:
-    runs-on: ${{ inputs.runner }}
-    needs: [actionlint, lint]
-    if: always()
-    timeout-minutes: 1
-    outputs:
-      actionlint-result: ${{ steps.collect.outputs.actionlint-result }}
-      lint-result: ${{ steps.collect.outputs.lint-result }}
-    steps:
-      - name: Collect job results
-        id: collect
+            if [[ "$stack_ok" != "true" ]]; then
+              failed+=("$stack")
+              echo "💥 Stack '$stack' FAILED validation"
+            else
+              echo "✅ Stack '$stack' passed validation"
+            fi
+          done
+
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          echo "📋 LINT SUMMARY"
+          echo "════════════════════════════════════════════════════════════════"
+          echo "   Total:  ${#stack_list[@]}"
+          echo "   Passed: $(( ${#stack_list[@]} - ${#failed[@]} ))"
+          echo "   Failed: ${#failed[@]}"
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            echo ""
+            echo "💥 Failed stacks:"
+            for s in "${failed[@]}"; do
+              echo "   • $s"
+            done
+            echo ""
+            echo "🛠️  Reproduce locally:"
+            echo "   yamllint --strict --config-file .yamllint <stack>/compose.yaml"
+            echo "   docker compose -f <stack>/compose.yaml config"
+            exit 1
+          fi
+          echo ""
+          echo "🎉 All stacks passed validation"
+
+      - name: Collect results and gate
+        id: results
+        if: always()
         env:
-          ACTIONLINT_RESULT: ${{ needs.actionlint.result }}
-          LINT_RESULT: ${{ needs.lint.result }}
+          ACTIONLINT_OUTCOME: ${{ steps.actionlint.outcome }}
+          STACKS_OUTCOME: ${{ steps.stacks.outcome }}
         run: |
-          echo "actionlint-result=$ACTIONLINT_RESULT" >> "$GITHUB_OUTPUT"
-          echo "lint-result=$LINT_RESULT" >> "$GITHUB_OUTPUT"
+          # Expose step outcomes as job outputs for the caller's notify job.
+          # steps.<id>.outcome is one of success/failure/skipped/cancelled,
+          # matching the success|skipped contract compose-notify.yml expects.
+          echo "actionlint-result=$ACTIONLINT_OUTCOME" >> "$GITHUB_OUTPUT"
+          echo "lint-result=$STACKS_OUTCOME" >> "$GITHUB_OUTPUT"
+
+          echo "⚙️  Workflow validation (actionlint): $ACTIONLINT_OUTCOME"
+          echo "📋 Stack validation:                 $STACKS_OUTCOME"
+
+          # Outputs are written above (and captured) before we fail the job, so
+          # the gate failing still propagates results to downstream needs jobs.
+          if [[ "$ACTIONLINT_OUTCOME" != "success" || "$STACKS_OUTCOME" != "success" ]]; then
+            echo "::error::Lint failed (actionlint=$ACTIONLINT_OUTCOME, stacks=$STACKS_OUTCOME)"
+            exit 1
+          fi
+          echo "🎉 All lint checks passed"

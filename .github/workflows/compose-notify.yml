@@ -120,7 +120,7 @@ jobs:
             • Review stack validation errors in workflow logs
             • Fix YAML formatting and Docker Compose syntax
             • Test locally: `yamllint --strict stack/compose.yaml`
-            • Check the **Lint Summary** job for detailed errors' || '' }}
+            • Check the **Lint** job logs for detailed errors' || '' }}
 
             ${{ steps.status.outputs.result == 'success' && '🚀 **Ready for deployment**' || '⚠️ **Deployment blocked until issues resolved**' }}
           color: ${{ steps.status.outputs.result == 'success' && 0x28a745 || inputs.gitguardian-result == 'failure' && 0xdc3545 || 0xfd7e14 }}
