@@ -8,9 +8,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  yamllint:
+  # Single job: yamllint + actionlint + shellcheck run as steps on ONE runner.
+  # Previously three separate jobs each booted a runner and did its own
+  # checkout to run a single seconds-long command — runner startup dwarfed the
+  # work. Each step uses continue-on-error so all three always run (no
+  # fail-fast), then a final gate fails the job if any did.
+  lint:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
@@ -20,33 +25,10 @@ jobs:
         continue-on-error: true
         run: yamllint --strict --config-file .yamllint .
 
-      - name: Report results
-        if: always()
-        run: |
-          if [ "${{ steps.yamllint.outcome }}" = "success" ]; then
-            echo "✅ All YAML files are properly formatted"
-          else
-            echo "❌ YAML formatting issues found"
-            echo "Please fix the issues above or update .yamllint configuration if needed"
-            exit 1
-          fi
-
-  actionlint:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-
       - name: Run actionlint
+        id: actionlint
+        continue-on-error: true
         uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2.1.2
-
-  shellcheck:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: Run shellcheck on deployment scripts
         id: shellcheck
@@ -67,7 +49,6 @@ jobs:
           echo "$SCRIPTS" | sed 's/^/  • /'
           echo ""
 
-          # Run shellcheck on all scripts
           FAILED=0
           for script in $SCRIPTS; do
             if ! shellcheck "$script"; then
@@ -77,14 +58,29 @@ jobs:
 
           exit $FAILED
 
-      - name: Report results
+      - name: Report results and gate
         if: always()
+        env:
+          YAMLLINT_OUTCOME: ${{ steps.yamllint.outcome }}
+          ACTIONLINT_OUTCOME: ${{ steps.actionlint.outcome }}
+          SHELLCHECK_OUTCOME: ${{ steps.shellcheck.outcome }}
         run: |
-          if [ "${{ steps.shellcheck.outcome }}" = "success" ]; then
-            echo "✅ All shell scripts follow best practices"
-          else
-            echo "❌ Shell script issues found"
-            echo "Please fix the issues above"
-            echo "Test locally: shellcheck scripts/deployment/**/*.sh"
+          echo "📝 yamllint:   $YAMLLINT_OUTCOME"
+          echo "⚙️  actionlint: $ACTIONLINT_OUTCOME"
+          echo "🐚 shellcheck: $SHELLCHECK_OUTCOME"
+          echo ""
+
+          fail=0
+          [[ "$YAMLLINT_OUTCOME" == "failure" ]] && { echo "❌ YAML formatting issues found"; fail=1; }
+          [[ "$ACTIONLINT_OUTCOME" == "failure" ]] && { echo "❌ Workflow (actionlint) issues found"; fail=1; }
+          [[ "$SHELLCHECK_OUTCOME" == "failure" ]] && { echo "❌ Shell script issues found"; fail=1; }
+
+          if [[ $fail -eq 1 ]]; then
+            echo ""
+            echo "🛠️  Test locally:"
+            echo "   yamllint --strict --config-file .yamllint ."
+            echo "   actionlint .github/workflows/*.yml"
+            echo "   shellcheck scripts/**/*.sh"
             exit 1
           fi
+          echo "✅ All workflow lint checks passed"
