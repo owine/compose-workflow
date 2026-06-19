@@ -11,8 +11,8 @@ TMPROOT=$(mktemp -d -t detect-tests.XXXXXX)
 export TMPROOT
 trap 'rm -rf "$TMPROOT"' EXIT
 
-# shellcheck source=scripts/testing/fixtures/transition-cases.sh
-# shellcheck disable=SC1091  # fixture sourced via runtime $SCRIPT_DIR; not statically followable in CI
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=fixtures/transition-cases.sh
 source "$SCRIPT_DIR/fixtures/transition-cases.sh"
 
 PASS=0

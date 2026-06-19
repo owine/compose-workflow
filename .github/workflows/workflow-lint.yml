@@ -49,9 +49,12 @@ jobs:
           echo "$SCRIPTS" | sed 's/^/  • /'
           echo ""
 
+          # -x/--external-sources lets shellcheck follow `source`d siblings
+          # (resolved via each script's `# shellcheck source-path=SCRIPTDIR`),
+          # so library/fixture sourcing doesn't trip SC1091.
           FAILED=0
           for script in $SCRIPTS; do
-            if ! shellcheck "$script"; then
+            if ! shellcheck -x "$script"; then
               FAILED=1
             fi
           done
