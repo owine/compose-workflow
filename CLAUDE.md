@@ -234,7 +234,7 @@ docker compose -f stack/compose.yaml config
 - GitGuardian secret detection on push events (1Password-backed API key)
 - yamllint formatting validation
 - `docker compose config` syntax validation
-- Matrix strategy: each stack tested independently
+- Single `lint` job: actionlint runs as a step, then every stack is validated sequentially in one runner (a `failed=()` loop preserves the old matrix's `fail-fast: false` without per-stack runner startup). Posts one `lint / lint` status check.
 - Discord notifications
 
 ### Deploy Pipeline
