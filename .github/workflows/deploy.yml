@@ -852,12 +852,14 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-          # Removed stacks line
+          # Removed stacks line. Leading blank line opens the block; rendered
+          # inline on the description line so the empty case collapses to nothing
+          # instead of leaving a blank gap.
           removed_line=""
           if [[ "$HAS_REMOVED" == "true" ]]; then
             removed_names=$(echo "$REMOVED_STACKS" | jq -r '. | join(", ")' 2>/dev/null || echo "")
             if [[ -n "$removed_names" ]]; then
-              removed_line="🗑️ **Removed stacks:** $removed_names"
+              removed_line=$'\n\n'"🗑️ **Removed stacks:** $removed_names"
             fi
           fi
           {
@@ -866,12 +868,17 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-          # Disabled stacks line
+          # Disabled stacks line. One newline when a removed line already opened
+          # the block with its blank separator, two to open the block itself.
           disabled_line=""
           if [[ "$HAS_DISABLED" == "true" ]]; then
             disabled_names=$(echo "$DISABLED_STACKS" | jq -r '. | join(", ")' 2>/dev/null || echo "")
             if [[ -n "$disabled_names" ]]; then
-              disabled_line="🛑 **Disabled stacks:** $disabled_names"
+              if [[ -n "$removed_line" ]]; then
+                disabled_line=$'\n'"🛑 **Disabled stacks:** $disabled_names"
+              else
+                disabled_line=$'\n\n'"🛑 **Disabled stacks:** $disabled_names"
+              fi
             fi
           fi
           {
@@ -897,15 +904,13 @@ jobs:
           status: ${{ (steps.status.outputs.overall == 'success' || steps.status.outputs.overall == 'no-changes') && 'success' || 'failure' }}
           title: "🚀 ${{ inputs.repo-name }} • ${{ steps.status.outputs.title_suffix }}"
           description: |
-            ${{ steps.status.outputs.description }}
-
-            ${{ steps.status.outputs.removed_line }}
-            ${{ steps.status.outputs.disabled_line }}
-
-            ${{ steps.status.outputs.deployment_needed == 'true' && format('**🔄 Pipeline Status**
+            ${{ steps.status.outputs.description }}${{ steps.status.outputs.removed_line }}${{ steps.status.outputs.disabled_line }}
+            ${{ steps.status.outputs.deployment_needed == 'true' && format('
+            **🔄 Pipeline Status**
             {0}', steps.status.outputs.pipeline) || '' }}
-
-            ${{ github.event_name == 'workflow_dispatch' && '🔧 **Triggered manually**' || format('📝 **Commit:** [`{0}`](https://github.com/{1}/commit/{2}) {3}', steps.commit-msg.outputs.short-sha, github.repository, inputs.target-ref, steps.commit-msg.outputs.message) }}
+            ${{ github.event_name == 'workflow_dispatch' && '
+            🔧 **Triggered manually**' || format('
+            📝 **Commit:** [`{0}`](https://github.com/{1}/commit/{2}) {3}', steps.commit-msg.outputs.short-sha, github.repository, inputs.target-ref, steps.commit-msg.outputs.message) }}
           color: ${{ steps.status.outputs.color }}
           username: "Compose Deploy"
           avatar_url: "https://cdn-icons-png.flaticon.com/512/919/919853.png"
