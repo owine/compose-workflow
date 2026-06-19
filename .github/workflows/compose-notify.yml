@@ -95,27 +95,23 @@ jobs:
 
             **📂 Validated Stacks:** `${{ join(fromJson(inputs.stacks), '`, `') }}`
 
-            ${{ github.event_name == 'pull_request' && '🔀 **Pull Request Validation**' || github.event_name == 'workflow_dispatch' && '🔧 **Manual Validation**' || format('📝 **Push to `{0}`**', github.ref_name) }}
+            ${{ github.event_name == 'pull_request' && '🔀 **Pull Request Validation**' || github.event_name == 'workflow_dispatch' && '🔧 **Manual Validation**' || format('📝 **Push to `{0}`**', github.ref_name) }}${{ inputs.gitguardian-result == 'failure' && '
 
-            ${{ inputs.gitguardian-result == 'failure' && '
             **🛡️ Security Alert:**
             • GitGuardian detected potential secrets
             • Review the **GitGuardian Scan** job for details
-            • Remove exposed secrets before proceeding' || '' }}
+            • Remove exposed secrets before proceeding' || '' }}${{ inputs.trivy-result == 'failure' && '
 
-            ${{ inputs.trivy-result == 'failure' && '
             **🚨 IaC Misconfiguration:**
             • Trivy detected HIGH or CRITICAL misconfigurations
             • Review the **Trivy IaC Scan** job for details
-            • Fix Docker Compose security issues before proceeding' || '' }}
+            • Fix Docker Compose security issues before proceeding' || '' }}${{ inputs.actionlint-result == 'failure' && '
 
-            ${{ inputs.actionlint-result == 'failure' && '
             **⚙️ Workflow Issues:**
             • GitHub Actions workflow validation failed
             • Review the **Workflow Validation** job for details
-            • Test locally: `actionlint .github/workflows/*.yml`' || '' }}
+            • Test locally: `actionlint .github/workflows/*.yml`' || '' }}${{ inputs.lint-result == 'failure' && '
 
-            ${{ inputs.lint-result == 'failure' && '
             **📋 Stack Validation:**
             • Review stack validation errors in workflow logs
             • Fix YAML formatting and Docker Compose syntax
