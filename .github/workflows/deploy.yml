@@ -423,6 +423,30 @@ jobs:
           echo "succeeded=$succeeded" >> "$GITHUB_OUTPUT"
           [[ ${#failed[@]} -eq 0 ]]
 
+      - name: Cleanup failed existing stacks on failure
+        # A `compose up --wait` that gets SIGKILLed by the per-stack `timeout`
+        # mid-recreate can strand a renamed `<shortid>_<service>` container that
+        # still owns the service's fixed container_name. Left in place it blocks
+        # both the next recreate and the rollback job's own `compose up` with
+        # "container name already in use" — a hard failure, not a health one.
+        # `down` removes it (the orphan keeps the compose project + service
+        # labels); rollback redeploys the stack at the previous SHA moments
+        # later. Scoped to the *failed* stacks only — never tear down healthy
+        # existing stacks. Mirrors "Cleanup new stacks on failure" below.
+        if: |
+          always()
+          && steps.deploy-existing.outcome == 'failure'
+        env:
+          FAILED_EXISTING_STACKS: ${{ steps.deploy-existing.outputs.failed_stacks }}
+        run: |
+          set +e
+          for stack in $(echo "$FAILED_EXISTING_STACKS" | jq -r '.[]'); do
+            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::warning::skipping invalid stack: $stack"; continue; }
+            cd "$LIVE_REPO_PATH/$stack" 2>/dev/null || continue
+            echo "🧹 Tearing down failed existing stack $stack to clear recreate orphans"
+            op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- docker compose down || true
+          done
+
       - name: Deploy new stacks
         id: deploy-new
         # Only attempt new stacks if existing stacks succeeded (preserves the
