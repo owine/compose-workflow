@@ -707,14 +707,33 @@ jobs:
         run: git -C "$LIVE_REPO_PATH" reset --hard "$PREVIOUS_SHA"
 
       - name: Redeploy stacks at previous SHA
+        # Only the stacks this deploy actually touched need reverting:
+        #   - existing: roll their config back to the previous SHA
+        #   - removed:  deleted this deploy (torn down already), so they
+        #               reappear after the reset and must be brought back up
+        # `new` stacks were torn down above and no longer exist post-reset, and
+        # untouched stacks are byte-identical before/after the reset — skipping
+        # them avoids needlessly recreating the whole fleet on a single-stack
+        # failure. No `--pull always`/`--build`: roll back onto the
+        # locally-tagged previous images (kept on disk by the docker-prune
+        # policy) so rollback is fast and doesn't depend on a registry being
+        # reachable mid-incident; compose still builds on demand if an image is
+        # genuinely missing.
+        env:
+          EXISTING_STACKS: ${{ needs.prepare.outputs.existing_stacks || '[]' }}
+          REMOVED_STACKS: ${{ needs.prepare.outputs.removed_stacks || '[]' }}
         run: |
           set -euo pipefail
-          for stack_dir in "$LIVE_REPO_PATH"/*/; do
+          stacks=$(jq -rn --argjson a "$EXISTING_STACKS" --argjson b "$REMOVED_STACKS" \
+            '($a + $b) | unique | .[]')
+          for stack in $stacks; do
+            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::warning::skipping invalid stack: $stack"; continue; }
+            stack_dir="$LIVE_REPO_PATH/$stack"
             [[ -f "$stack_dir/compose.yaml" || -f "$stack_dir/compose.yml" ]] || continue
             cd "$stack_dir"
             op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-              docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans \
-              || echo "::warning::rollback up failed for $stack_dir"
+              docker compose up -d --quiet-pull --wait --remove-orphans \
+              || echo "::warning::rollback up failed for $stack"
           done
 
   notify:
