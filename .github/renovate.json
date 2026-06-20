@@ -3,7 +3,8 @@
   "extends": [
     "config:best-practices",
     "security:openssf-scorecard",
-    ":semanticPrefixFixDepsChoreOthers"
+    ":semanticPrefixFixDepsChoreOthers",
+    "customManagers:githubActionsVersions"
   ],
   "labels": [
     "dependencies"
