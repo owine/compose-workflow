@@ -33,12 +33,28 @@
       "minimumReleaseAge": "1 hour"
     },
     {
-      "groupName": "Major dependencies",
-      "groupSlug": "all-deps-major",
+      "groupName": "Major GitHub Actions",
+      "groupSlug": "all-deps-major-actions",
+      "matchManagers": [
+        "github-actions"
+      ],
       "matchUpdateTypes": [
         "major"
       ],
       "automerge": true,
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "groupName": "Major Docker images",
+      "groupSlug": "all-deps-major-docker",
+      "matchManagers": [
+        "docker-compose",
+        "dockerfile"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "automerge": false,
       "minimumReleaseAge": "3 days"
     }
   ]

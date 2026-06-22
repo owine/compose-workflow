@@ -288,7 +288,7 @@ Follow `docs/superpowers/runbooks/adding-a-new-host.md` (the generic step-by-ste
 ### Renovate
 
 - GitHub Actions dependencies (including the SHA pin on `uses: owine/compose-workflow/.github/workflows/deploy.yml@<sha>`) are auto-bumped
-- Major version bumps are grouped separately for review
+- Major version bumps are grouped separately by manager: GitHub Actions majors auto-merge after a 3-day soak; Docker image majors are grouped for manual review (`automerge: false`)
 
 ## Repository Structure
 
