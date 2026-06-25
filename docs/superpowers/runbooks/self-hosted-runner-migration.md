@@ -1,5 +1,6 @@
 # Self-Hosted Runner Migration Runbook
 
+> **Status: migration COMPLETE as of 2026-05-03.** All three docker repos run on self-hosted runners. The SSH-based `deploy.yml`, its supporting scripts, the `tailscale/github-action` cache, and the `SSH_USER`/`SSH_HOST` repo secrets have all been removed. The reusable workflow (originally introduced as `deploy-local.yml`) has been renamed back to `deploy.yml`. **This runbook is now a historical record** of how the original migration unfolded — kept verbatim because the incidents documented here (umask 002 lesson, Renovate races, ghcr pull-timeout misdiagnosis, etc.) are reusable lessons. **For the step-by-step procedure to add a *new* host, use the generic [`adding-a-new-host.md`](adding-a-new-host.md) runbook** (distilled from this doc); refer back here for the *why* behind each step.
 
 | Repo | Migrated | Runner label | Admin user | Has dockge? |
 |---|---|---|---|---|

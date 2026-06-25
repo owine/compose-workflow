@@ -1,7 +1,7 @@
 # Adding a New Self-Hosted Host
 
 Generic, reusable procedure for bringing a new Docker-Compose node onto the
-onboarding (2026-06-14), which is the most recent end-to-end run.
+self-hosted-runner deploy system.
 
 For the *history* of the original SSH→self-hosted migration and the incident
 lessons behind these steps (umask 002, Renovate races, ghcr pull-timeout
@@ -13,11 +13,15 @@ misdiagnosis, etc.), see [`self-hosted-runner-migration.md`](self-hosted-runner-
 
 Pick these before starting and substitute throughout:
 
-|---|---|---|
-| `<admin>` | human admin / SSH user on the host | `owine` |
-| `<arch>` | `linux/amd64` or `linux/arm64/v8` (lint) + `x64`/`arm64` (runner tarball) | `linux/amd64` / `x64` |
-| `<has-dockge>` | `true` for Pi-style, `false` for datacenter/cloud | `false` |
-| `<webhook>` | Discord webhook 1P ref | `op://Docker/discord-github-notifications/piwine_webhook_url` |
+| Placeholder | Meaning |
+|---|---|
+| `<node>` | short node name / repo suffix |
+| `<repo>` | caller repo |
+| `<label>` | runner label (unique per host) |
+| `<admin>` | human admin / SSH user on the host |
+| `<arch>` | `linux/amd64` or `linux/arm64/v8` (lint) + `x64`/`arm64` (runner tarball) |
+| `<has-dockge>` | `true` for Pi-style, `false` for datacenter/cloud |
+| `<webhook>` | Discord webhook 1P ref |
 
 ---
 

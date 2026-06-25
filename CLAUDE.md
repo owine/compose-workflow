@@ -8,6 +8,7 @@ This repository contains **reusable GitHub Actions workflows** that provide cent
 
 ### Repository Purpose
 
+**compose-workflow** serves as a centralized workflow hub providing reusable CI/CD workflows for Docker Compose deployments across multiple repositories. All caller repos (`docker-piwine`, `docker-piwine-office`, `docker-zendc`) deploy via **self-hosted GitHub Actions runners** that live on the deployment hosts themselves — there is no longer any SSH-from-CI deploy path. (Migrated to self-hosted runners 2026-05-02; to add another host see [`docs/superpowers/runbooks/adding-a-new-host.md`](docs/superpowers/runbooks/adding-a-new-host.md).)
 
 ### Workflow Architecture
 
@@ -39,9 +40,11 @@ Three reusable workflows live in `.github/workflows/`:
   4. **`rollback`** — `git reset --hard <previous_sha>` + redeploy if `deploy` or `health-check` failed
   5. **`notify`** — Discord webhook with status, pipeline icon line, and PR comment posting (when invoked from a PR-triggering chain)
 - **Key inputs**:
+  - `runner-label` — e.g. `piwine`, `piwine-office`, `zendc`. Combined with implicit `self-hosted`
   - `live-repo-path` — absolute path on the runner host (typically `/opt/compose`)
   - `live-dockge-path` — absolute path to dockge tree (when `has-dockge: true`)
   - `repo-name`, `webhook-url`, `discord-user-id`, `target-ref`
+  - `has-dockge` — boolean (`true` for piwine/piwine-office, `false` for zendc)
   - `force-deploy` — skip the "already at target SHA" gate
   - `auto-detect-critical` — read `com.compose.tier: infrastructure` labels (default: true)
   - `critical-services` — manual JSON array (when auto-detect is false)
