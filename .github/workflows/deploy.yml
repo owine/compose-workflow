@@ -235,15 +235,14 @@ jobs:
         if: |
           steps.skip-gate.outputs.skipped == 'false'
           && env.HAS_REMOVED == 'true'
-        # NB: `down` is intentionally NOT wrapped in `op run`. This step runs
-        # pre-reset, so it reads the *previous* compose.env — which may still
-        # reference a 1Password item that's since been archived (e.g. the same
-        # commit that removes a stack also drops its now-orphaned vars). `op run`
-        # resolves the whole env-file up front and aborts on any dead ref, which
-        # would skip the teardown entirely and strand the removed stack's
-        # containers. `down` identifies resources by compose project label and
-        # needs no resolved secrets, so run it directly. Same rationale applies
-        # to every `down`/`ps`/`logs` call in this workflow — only `up` needs op run.
+        # `down`/`ps`/`logs` here (and throughout this workflow) intentionally
+        # skip `op run` — only `up` needs resolved secrets. Two reasons:
+        #  1. This step runs pre-reset, so it reads the *previous* compose.env;
+        #     if that still references a since-archived 1P item (e.g. a stack
+        #     removal that also drops its now-orphaned vars), `op run` aborts on
+        #     the dead ref and the teardown never runs, stranding the containers.
+        #  2. `down` targets by compose project label (default: the stack dir
+        #     name, same as `up`); callers set no COMPOSE_* vars, so no secrets.
         run: |
           set -euo pipefail
           for stack in $(echo "$REMOVED_STACKS" | jq -r '.[]'); do
