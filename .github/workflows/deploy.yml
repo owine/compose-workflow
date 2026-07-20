@@ -79,12 +79,12 @@ jobs:
       has_disabled_stacks: ${{ steps.discover-stacks.outputs.has_disabled_stacks }}
       critical_stacks: ${{ steps.detect-critical.outputs.critical_stacks }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ inputs.target-ref }}
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: owine/compose-workflow
           ref: main
@@ -265,7 +265,7 @@ jobs:
       # actions/checkout authenticates via GITHUB_TOKEN; the deploy user has no
       # GitHub credentials, so we fetch into the workspace and then sync the
       # live tree from the local workspace (no network auth required).
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         if: steps.skip-gate.outputs.skipped == 'false'
         with:
           fetch-depth: 0
@@ -764,7 +764,7 @@ jobs:
           (needs.prepare.outputs.has_removed_stacks == 'true' ||
            needs.prepare.outputs.has_existing_stacks == 'true' ||
            needs.prepare.outputs.has_new_stacks == 'true')
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: owine/compose-workflow
           sparse-checkout: scripts/deployment
