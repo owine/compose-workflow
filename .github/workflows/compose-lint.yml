@@ -68,6 +68,7 @@ jobs:
         with:
           repository: ${{ inputs.target-repository }}
           ref: ${{ inputs.target-ref }}
+          fetch-depth: 0  # full history so changed-files can diff the Renovate config
 
       - name: Checkout compose-workflow for linting scripts
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -159,19 +160,43 @@ jobs:
           echo ""
           echo "🎉 All stacks passed validation"
 
+      # Only spin up Node + run the (npx-installs-renovate, network-bound)
+      # validator when the Renovate config itself changed. changed-files reads
+      # the caller's inherited event context to pick the diff base (push → before
+      # SHA, PR → merge base), so no extra inputs are threaded from callers.
+      # Paths mirror validate-renovate.sh's DEFAULT_CONFIG_LOCATIONS.
+      - name: Detect Renovate config changes
+        id: renovate-changed
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
+        with:
+          files: |
+            renovate.json
+            renovate.json5
+            .github/renovate.json
+            .github/renovate.json5
+            .gitlab/renovate.json
+            .gitlab/renovate.json5
+            .renovaterc
+            .renovaterc.json
+            .renovaterc.json5
+
       # Pin Node to the runtime renovate@latest declares in engines (^24.11.0) so
       # the validator runs on a compatible runtime instead of the runner's
       # default Node — too-old Node warns (EBADENGINE) and can crash at runtime.
       # NODE_VERSION (job env, above) is exact-pinned and bumped by Renovate via
       # the customManagers:githubActionsVersions preset; node versioning keeps it
       # on the current LTS line and proposes the next LTS major as its own PR.
+      # Gated (with the validate step) on a Renovate-config change; workflow_dispatch
+      # always validates since a manual lint implies wanting the full check.
       - name: Set up Node.js for Renovate validator
+        if: steps.renovate-changed.outputs.any_changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Validate Renovate config
         id: renovate
+        if: steps.renovate-changed.outputs.any_changed == 'true' || github.event_name == 'workflow_dispatch'
         continue-on-error: true
         env:
           # github.token (from the private consumer repo) can read the PUBLIC
@@ -201,7 +226,8 @@ jobs:
 
           # Outputs are written above (and captured) before we fail the job, so
           # the gate failing still propagates results to downstream needs jobs.
-          if [[ "$ACTIONLINT_OUTCOME" != "success" || "$STACKS_OUTCOME" != "success" || "$RENOVATE_OUTCOME" != "success" ]]; then
+          # 'skipped' renovate == config unchanged (step gated off) — treat as pass.
+          if [[ "$ACTIONLINT_OUTCOME" != "success" || "$STACKS_OUTCOME" != "success" || ( "$RENOVATE_OUTCOME" != "success" && "$RENOVATE_OUTCOME" != "skipped" ) ]]; then
             echo "::error::Lint failed (actionlint=$ACTIONLINT_OUTCOME, stacks=$STACKS_OUTCOME, renovate=$RENOVATE_OUTCOME)"
             exit 1
           fi
