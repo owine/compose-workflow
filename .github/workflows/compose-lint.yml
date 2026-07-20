@@ -64,14 +64,14 @@ jobs:
       lint-result: ${{ steps.results.outputs.lint-result }}
     steps:
       - name: Checkout target repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: ${{ inputs.target-repository }}
           ref: ${{ inputs.target-ref }}
           fetch-depth: 0  # full history so changed-files can diff the Renovate config
 
       - name: Checkout compose-workflow for linting scripts
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: owine/compose-workflow
           ref: main
