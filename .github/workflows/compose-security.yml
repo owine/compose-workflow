@@ -96,14 +96,14 @@ jobs:
       # --- GitGuardian (push events only) ---------------------------------
       - name: Configure 1Password Service Account
         if: inputs.event-name == 'push'
-        uses: 1password/load-secrets-action/configure@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
+        uses: 1password/load-secrets-action/configure@eb2efd0703da22a93c467f2d1ffbb6826c11e19c  # v4.1.1
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load GitGuardian credentials
         id: op-load-secret
         if: inputs.event-name == 'push'
-        uses: 1password/load-secrets-action@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
+        uses: 1password/load-secrets-action@eb2efd0703da22a93c467f2d1ffbb6826c11e19c  # v4.1.1
         with:
           unset-previous: true
         env:
@@ -123,7 +123,7 @@ jobs:
 
       - name: Unload GitGuardian credentials
         if: always() && inputs.event-name == 'push'
-        uses: 1password/load-secrets-action@3a12b0ab99d9cd590a3e9b5a90ea017210ed9556  # v4.0.1
+        uses: 1password/load-secrets-action@eb2efd0703da22a93c467f2d1ffbb6826c11e19c  # v4.1.1
         with:
           unset-previous: true
 
