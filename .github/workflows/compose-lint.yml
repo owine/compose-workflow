@@ -70,11 +70,16 @@ jobs:
           ref: ${{ inputs.target-ref }}
           fetch-depth: 0  # full history so changed-files can diff the Renovate config
 
+      # Pin the scripts to the SAME commit as this workflow file.
+      # `ref: main` floated the scripts independently of the caller's SHA pin,
+      # so a script change shipped to every caller instantly while the workflow
+      # YAML stayed pinned — a split brain that can leave a script calling on
+      # steps its workflow does not yet have.
       - name: Checkout compose-workflow for linting scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: owine/compose-workflow
-          ref: main
+          ref: ${{ job.workflow_sha }}
           path: .compose-workflow
 
       - name: Display version information

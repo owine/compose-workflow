@@ -84,10 +84,14 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.target-ref }}
 
+      # Pin the deployment scripts to the SAME commit as this workflow file —
+      # see the matching note in compose-lint.yml. This matters more here:
+      # with `ref: main` the caller's SHA pin governed only the workflow YAML,
+      # so a script change reached every deployment host immediately.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: owine/compose-workflow
-          ref: main
+          ref: ${{ job.workflow_sha }}
           path: .compose-workflow
 
       - name: Capture previous deployment SHA from live tree

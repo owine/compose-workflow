@@ -25,10 +25,18 @@ jobs:
         continue-on-error: true
         run: yamllint --strict --config-file .yamllint .
 
+      # actionlint's bundled context schema predates the `job` context's
+      # workflow_* properties, so it flags `job.workflow_sha` as undefined.
+      # The property is real and is how a reusable workflow checks out its own
+      # source at the caller's pinned SHA; `github.job_workflow_sha` is the
+      # documented alternative but resolves empty in practice
+      # (actions/runner#2417). Drop the ignore once actionlint updates.
       - name: Run actionlint
         id: actionlint
         continue-on-error: true
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+        with:
+          flags: '-ignore "property .workflow_sha. is not defined"'
 
       - name: Run shellcheck on deployment scripts
         id: shellcheck
