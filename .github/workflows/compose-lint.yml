@@ -92,6 +92,67 @@ jobs:
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
         continue-on-error: true
 
+      - name: Configure 1Password Service Account
+        uses: 1password/load-secrets-action/configure@e544b780808654ba8ceba5fb2fe2897103d92ff4  # v5.0.0
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Load registry credentials
+        id: creds
+        uses: 1password/load-secrets-action@e544b780808654ba8ceba5fb2fe2897103d92ff4  # v5.0.0
+        with:
+          unset-previous: true
+        env:
+          GHCR_USERNAME: op://Docker/ghcr-pat/username
+          GHCR_TOKEN: op://Docker/ghcr-pat/pat
+          DOCKERHUB_USERNAME: op://Docker/docker-hub/username
+          DOCKERHUB_TOKEN: op://Docker/docker-hub/token
+          GITLAB_USERNAME: op://Docker/gitlab-registry/username
+          GITLAB_TOKEN: op://Docker/gitlab-registry/token
+          ZGITLAB_USERNAME: op://Docker/gitlab-container-zenterprise/username
+          ZGITLAB_TOKEN: op://Docker/gitlab-container-zenterprise/token
+
+      # Registry auth for `docker buildx imagetools inspect` in
+      # validate-image-platforms.sh. Without it, private images (ghcr) 401 and
+      # rate-limited anonymous Hub pulls 429 — both of which the script treats
+      # as "skip", silently hollowing out the platform check.
+      # Per-registry login stays non-fatal so a single misconfigured registry
+      # doesn't block linting stacks that never pull from it.
+      - name: Login to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        continue-on-error: true
+        with:
+          registry: ghcr.io
+          username: ${{ steps.creds.outputs.GHCR_USERNAME }}
+          password: ${{ steps.creds.outputs.GHCR_TOKEN }}
+          logout: false
+
+      - name: Login to docker.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        continue-on-error: true
+        with:
+          username: ${{ steps.creds.outputs.DOCKERHUB_USERNAME }}
+          password: ${{ steps.creds.outputs.DOCKERHUB_TOKEN }}
+          logout: false
+
+      - name: Login to registry.gitlab.com
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        continue-on-error: true
+        with:
+          registry: registry.gitlab.com
+          username: ${{ steps.creds.outputs.GITLAB_USERNAME }}
+          password: ${{ steps.creds.outputs.GITLAB_TOKEN }}
+          logout: false
+
+      - name: Login to gitlab-container.zenterprise.org
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        continue-on-error: true
+        with:
+          registry: gitlab-container.zenterprise.org
+          username: ${{ steps.creds.outputs.ZGITLAB_USERNAME }}
+          password: ${{ steps.creds.outputs.ZGITLAB_TOKEN }}
+          logout: false
+
       - name: Validate stacks
         id: stacks
         continue-on-error: true

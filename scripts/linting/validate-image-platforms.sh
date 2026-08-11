@@ -18,14 +18,18 @@
 #   - Untagged or tag-only refs are skipped (no race risk by digest).
 #   - Single-manifest (non-index) images are skipped with a notice — the
 #     digest is platform-specific by construction.
-#   - imagetools inspect failures (auth/network) warn and skip the image
-#     rather than failing — preserves utility for private registries
-#     without requiring the lint job to authenticate.
+#   - imagetools inspect failures → exit 1. The lint job authenticates to
+#     every registry we pull from (see the login steps in compose-lint.yml),
+#     so a failure here means a real problem — bad digest, deleted image, or
+#     broken credentials — not merely an unauthenticated runner.
+#     Transient-looking failures are retried; definitive ones (auth rejected,
+#     manifest unknown) fail immediately since retrying cannot help.
 #   - Missing target platform in a fetched index → exit 1.
 #
 # Exit codes:
 #   0 - All checked images publish the requested platform(s)
-#   1 - At least one image is missing a requested platform manifest
+#   1 - An image is missing a requested platform manifest, or could not be
+#       inspected at all
 #
 
 set -euo pipefail
@@ -93,6 +97,29 @@ if [[ ${#IMAGES[@]} -eq 0 ]]; then
   exit 0
 fi
 
+# How many times to attempt a transient-looking inspect before giving up.
+INSPECT_ATTEMPTS=3
+
+# Definitive failures cannot succeed on retry: the credential is wrong or the
+# manifest genuinely is not there. Anything else (timeouts, 5xx, connection
+# resets, 429 rate-limits) is treated as transient and retried.
+is_definitive_failure() {
+  local msg="$1"
+  grep -qiE '401 unauthorized|403 forbidden|unauthorized:|denied:|manifest unknown|name unknown|not found' <<< "$msg"
+}
+
+# Human-readable cause for the failure line, so a red check says *why*.
+classify_failure() {
+  local msg="$1"
+  if grep -qiE '401 unauthorized|unauthorized:|403 forbidden|denied:' <<< "$msg"; then
+    echo "registry auth rejected — check the registry login step and its 1Password credentials"
+  elif grep -qiE 'manifest unknown|name unknown|not found' <<< "$msg"; then
+    echo "manifest not found — the pinned digest does not exist in this registry"
+  else
+    echo "registry unreachable after $INSPECT_ATTEMPTS attempts"
+  fi
+}
+
 # Returns 0 if a manifest entry matches the requested platform.
 # Permissive match: an entry without a variant satisfies a request that
 # includes a variant (e.g. an image publishing linux/arm64 satisfies a
@@ -135,11 +162,38 @@ for ref in "${IMAGES[@]}"; do
   echo ""
   echo "📦 $ref"
 
+  # Retry before failing: a transient blip or momentary rate-limit should not
+  # red-flag an otherwise good PR, but a persistent failure is real (bad
+  # digest, deleted image, missing registry creds) and must gate.
+  #
+  # buildx exits 1 for every failure mode — auth, missing manifest, DNS — so
+  # the exit code carries no signal and retries are gated on the message
+  # instead. Definitive errors fail immediately; retrying them cannot change
+  # the outcome and just burns wall-clock.
   raw=""
-  if ! raw=$(docker buildx imagetools inspect --raw "$ref" 2>&1); then
-    log_warning "   ⚠ Unable to inspect (auth/network/registry issue) — skipping."
+  inspect_ok=false
+  for attempt in $(seq 1 "$INSPECT_ATTEMPTS"); do
+    if raw=$(docker buildx imagetools inspect --raw "$ref" 2>&1); then
+      inspect_ok=true
+      break
+    fi
+
+    if is_definitive_failure "$raw"; then
+      echo "   ↷ definitive error — not retrying"
+      break
+    fi
+
+    if [[ "$attempt" -lt "$INSPECT_ATTEMPTS" ]]; then
+      echo "   ↻ inspect attempt $attempt/$INSPECT_ATTEMPTS failed; retrying in $((attempt * 5))s"
+      sleep "$((attempt * 5))"
+    fi
+  done
+
+  if [[ "$inspect_ok" != "true" ]]; then
+    log_error "   ✗ Unable to inspect: $(classify_failure "$raw")"
     echo "      $(head -n1 <<< "$raw")"
-    SKIPPED=$((SKIPPED + 1))
+    OVERALL_RC=1
+    CHECKED=$((CHECKED + 1))
     continue
   fi
 
@@ -189,8 +243,14 @@ if [[ "$OVERALL_RC" -eq 0 ]]; then
 else
   log_error "Image platform check FAILED ($CHECKED checked, $SKIPPED skipped)"
   echo ""
-  echo "🛠  This usually means a registry is mid-publish (manifest index pushed,"
-  echo "    per-platform children not yet pushed). Options:"
+  echo "🛠  If an image could not be inspected at all:"
+  echo "      • auth rejected — check the registry login steps in compose-lint.yml"
+  echo "        and that the 1Password service account can read those items."
+  echo "      • digest not found — the pin references an image that no longer"
+  echo "        exists; re-pin to a digest the registry actually serves."
+  echo ""
+  echo "    If an image was inspected but is missing a platform, a registry is"
+  echo "    likely mid-publish (index pushed, per-platform children not yet):"
   echo "      • Wait and re-run — most public registries finish within an hour."
   echo "      • Revert the offending dependency bump."
   echo "      • Add 'minimumReleaseAge' to .github/renovate.json to delay future bumps."
