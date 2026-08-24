@@ -98,13 +98,13 @@ jobs:
         continue-on-error: true
 
       - name: Configure 1Password Service Account
-        uses: 1password/load-secrets-action/configure@e544b780808654ba8ceba5fb2fe2897103d92ff4  # v5.0.0
+        uses: 1password/load-secrets-action/configure@70062d7a876d3eb6334754fa26efd2fbd90c32f2  # v5.0.1
         with:
           service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 
       - name: Load registry credentials
         id: creds
-        uses: 1password/load-secrets-action@e544b780808654ba8ceba5fb2fe2897103d92ff4  # v5.0.0
+        uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2  # v5.0.1
         with:
           unset-previous: true
         env:
