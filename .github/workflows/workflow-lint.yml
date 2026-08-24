@@ -31,12 +31,18 @@ jobs:
       # source at the caller's pinned SHA; `github.job_workflow_sha` is the
       # documented alternative but resolves empty in practice
       # (actions/runner#2417). Drop the ignore once actionlint updates.
+      #
+      # The pattern must be whitespace- and quote-free: the action splits
+      # `flags` itself with a regex that keeps any quotes as literal
+      # characters instead of stripping them like a shell would, so a
+      # "quoted phrase" reaches actionlint as a regex that can never match.
+      # The `.` wildcards stand in for the spaces and quotes in the message.
       - name: Run actionlint
         id: actionlint
         continue-on-error: true
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
         with:
-          flags: '-ignore "property .workflow_sha. is not defined"'
+          flags: '-ignore property..workflow_sha..is.not.defined'
 
       - name: Run shellcheck on deployment scripts
         id: shellcheck
