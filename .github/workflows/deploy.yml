@@ -78,6 +78,7 @@ jobs:
       disabled_stacks: ${{ steps.discover-stacks.outputs.disabled_stacks }}
       has_disabled_stacks: ${{ steps.discover-stacks.outputs.has_disabled_stacks }}
       critical_stacks: ${{ steps.detect-critical.outputs.critical_stacks }}
+      rollback_scope: ${{ steps.classify-scope.outputs.rollback_scope }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -123,6 +124,10 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           json: true
+          # escape_json defaults to true, which backslash-escapes every quote
+          # and makes the output unparseable by jq. Every consumer here pipes
+          # these outputs into jq, so the escaped form is useless to us.
+          escape_json: false
           sha: ${{ inputs.target-ref }}
           base_sha: ${{ steps.previous-sha.outputs.previous_sha }}
 
@@ -181,6 +186,28 @@ jobs:
             --input-stacks "$INPUT_STACKS" \
             --removed-files "$REMOVED_FILES" \
             --added-files "$ADDED_FILES"
+
+      - name: Classify rollback scope
+        id: classify-scope
+        # Runs after detect-changes because it needs removed_stacks: a removed
+        # stack's directory is gone from the target tree, so discover-stacks
+        # never sees it. Without it in the known-dirs set, every stack deletion
+        # would look like a root-level change and force whole-tree rollback.
+        env:
+          CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files != '' && steps.changed-files.outputs.all_changed_files || '[]' }}
+          ACTIVE_STACKS: ${{ steps.discover-stacks.outputs.stacks }}
+          DISABLED_STACKS: ${{ steps.discover-stacks.outputs.disabled_stacks }}
+          REMOVED_STACKS: ${{ steps.detect-changes.outputs.removed_stacks || '[]' }}
+        run: |
+          set -euo pipefail
+          stack_dirs=$(jq -cn \
+            --argjson a "$ACTIVE_STACKS" \
+            --argjson b "$DISABLED_STACKS" \
+            --argjson c "$REMOVED_STACKS" \
+            '($a + $b + $c) | unique')
+          ./.compose-workflow/scripts/deployment/classify-rollback-scope.sh \
+            --changed-files "$CHANGED_FILES" \
+            --stack-dirs "$stack_dirs"
 
       - name: Detect critical stacks
         id: detect-critical
