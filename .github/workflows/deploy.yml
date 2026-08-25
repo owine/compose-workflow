@@ -982,14 +982,22 @@ jobs:
 
       - name: Redeploy stacks at previous SHA
         if: steps.plan.outputs.mode == 'whole-tree'
-        # Only the stacks this deploy actually touched need reverting:
-        #   - existing: roll their config back to the previous SHA
+        # Which stacks this covers:
+        #   - existing: NOT the changed set. detect-stack-changes.sh computes
+        #               existing_stacks as (all discovered stacks - new stacks),
+        #               so this is effectively the whole fleet on every run.
         #   - removed:  deleted this deploy (torn down already), so they
         #               reappear after the reset and must be brought back up
-        # `new` stacks were torn down above and no longer exist post-reset, and
-        # untouched stacks are byte-identical before/after the reset — skipping
-        # them avoids needlessly recreating the whole fleet on a single-stack
-        # failure. No `--pull always`/`--build`: roll back onto the
+        # `new` stacks were torn down above and no longer exist post-reset.
+        #
+        # The fleet-wide scope is load-bearing, not an oversight: it is what
+        # brings a stack pinned by a prior per-stack rollback back into line
+        # with the tree. Narrowing existing_stacks to the real change set would
+        # let such a stack drift — its containers on the old image while the
+        # tree claims the new one — until it next changed. See the design doc,
+        # "Scoped rollback and image quarantine", section A4.
+        #
+        # No `--pull always`/`--build`: roll back onto the
         # locally-tagged previous images (kept on disk by the docker-prune
         # policy) so rollback is fast and doesn't depend on a registry being
         # reachable mid-incident; compose still builds on demand if an image is
@@ -1006,9 +1014,15 @@ jobs:
             stack_dir="$LIVE_REPO_PATH/$stack"
             [[ -f "$stack_dir/compose.yaml" || -f "$stack_dir/compose.yml" ]] || continue
             cd "$stack_dir"
-            op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+            # `timeout` matches every other `up` in this workflow. Without it a
+            # container stuck in `starting` makes `--wait` block until the job's
+            # timeout-minutes cancels the whole job, stranding every stack after
+            # this one with no further fallback — the exact state a bad image
+            # tends to produce.
+            timeout "$SERVICE_STARTUP_TIMEOUT" \
+              op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
               docker compose up -d --quiet-pull --wait --remove-orphans \
-              || echo "::warning::rollback up failed for $stack"
+              || echo "::warning::rollback up failed for $stack; recover manually with: cd $LIVE_REPO_PATH/$stack && op run --no-masking --env-file=$LIVE_REPO_PATH/compose.env -- docker compose up -d --wait"
           done
 
   notify:
