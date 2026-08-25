@@ -78,6 +78,8 @@ jobs:
       disabled_stacks: ${{ steps.discover-stacks.outputs.disabled_stacks }}
       has_disabled_stacks: ${{ steps.discover-stacks.outputs.has_disabled_stacks }}
       critical_stacks: ${{ steps.detect-critical.outputs.critical_stacks }}
+      rollback_scope: ${{ steps.classify-scope.outputs.rollback_scope }}
+      changed_stacks: ${{ steps.classify-scope.outputs.changed_stacks }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -123,6 +125,10 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           json: true
+          # escape_json defaults to true, which backslash-escapes every quote
+          # and makes the output unparseable by jq. Every consumer here pipes
+          # these outputs into jq, so the escaped form is useless to us.
+          escape_json: false
           sha: ${{ inputs.target-ref }}
           base_sha: ${{ steps.previous-sha.outputs.previous_sha }}
 
@@ -182,6 +188,55 @@ jobs:
             --removed-files "$REMOVED_FILES" \
             --added-files "$ADDED_FILES"
 
+      - name: Classify rollback scope
+        id: classify-scope
+        # Runs after detect-changes because it needs removed_stacks: a removed
+        # stack's directory is gone from the target tree, so discover-stacks
+        # never sees it. Without it in the known-dirs set, every stack deletion
+        # would look like a root-level change and force whole-tree rollback.
+        env:
+          CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files != '' && steps.changed-files.outputs.all_changed_files || '[]' }}
+          ACTIVE_STACKS: ${{ steps.discover-stacks.outputs.stacks }}
+          DISABLED_STACKS: ${{ steps.discover-stacks.outputs.disabled_stacks }}
+          REMOVED_STACKS: ${{ steps.detect-changes.outputs.removed_stacks || '[]' }}
+        run: |
+          set -euo pipefail
+          # `|| echo '[]'` rather than letting jq abort the job: a malformed
+          # upstream list is exactly the case the classifier is built to
+          # survive. `[]` hits its `dirs_count` guard and degrades to
+          # whole-tree — the same disposition the script would pick itself.
+          # Aborting `prepare` instead would skip the deploy entirely.
+          stack_dirs=$(jq -cn \
+            --argjson a "$ACTIVE_STACKS" \
+            --argjson b "$DISABLED_STACKS" \
+            --argjson c "$REMOVED_STACKS" \
+            '($a + $b + $c) | unique' 2>/dev/null || echo '[]')
+
+          # The exact set of stack directories this deploy touched: the first
+          # path segment of every changed file that names a known stack dir.
+          #
+          # This is NOT the same thing as `existing_stacks`. detect-stack-changes.sh
+          # defines existing_stacks as (all discovered stacks - new stacks), so it
+          # names the whole fleet on every run and cannot tell a touched stack from
+          # an untouched one. `rollback` needs the touched set to check that a
+          # culprit is a stack whose directory actually differs between
+          # PREVIOUS_SHA and TARGET_REF — reverting one that does not is a no-op.
+          #
+          # Degrades to `[]` on any malformed input, which makes every non-empty
+          # culprit list fail the membership check in `Resolve rollback plan` and
+          # forces whole-tree. Uncertainty resolves to whole-tree, never per-stack.
+          changed_stacks=$(jq -cn \
+            --argjson f "$CHANGED_FILES" \
+            --argjson d "$stack_dirs" \
+            '[ $f[] | split("/")[0] | select(. as $s | $d | index($s) != null) ] | unique' \
+            2>/dev/null || echo '[]')
+          echo "changed_stacks=$changed_stacks" >> "$GITHUB_OUTPUT"
+          echo "📦 Stack dirs touched by this deploy: $changed_stacks"
+
+          ./.compose-workflow/scripts/deployment/classify-rollback-scope.sh \
+            --changed-files "$CHANGED_FILES" \
+            --stack-dirs "$stack_dirs"
+
       - name: Detect critical stacks
         id: detect-critical
         if: inputs.auto-detect-critical
@@ -228,7 +283,15 @@ jobs:
         run: |
           set -euo pipefail
           CURRENT_SHA=$(git -C "$LIVE_REPO_PATH" rev-parse HEAD)
-          if [[ "$CURRENT_SHA" == "$TARGET_REF" && "$FORCE_DEPLOY" != "true" ]]; then
+          DIRTY="$(git -C "$LIVE_REPO_PATH" status --porcelain)"
+          if [[ -n "$DIRTY" ]]; then
+            # A dirty live tree almost always means a prior per-stack rollback
+            # left a stack pinned at the previous SHA (git checkout <sha> -- dir/
+            # moves the worktree but not HEAD, so the SHA comparison below
+            # cannot see it). Deploy anyway so the reset restores a clean tree.
+            echo "::warning::live tree is dirty (likely a prior per-stack rollback); forcing deploy"
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$CURRENT_SHA" == "$TARGET_REF" && "$FORCE_DEPLOY" != "true" ]]; then
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             echo "ℹ️  Already at $TARGET_REF; skipping deploy phase"
           else
@@ -585,6 +648,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       status: ${{ steps.h.outputs.status }}
+      failed_stacks: ${{ steps.h.outputs.failed_stacks }}
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       CRITICAL_STACKS: ${{ inputs.auto-detect-critical && needs.prepare.outputs.critical_stacks || inputs.critical-services }}
@@ -644,9 +708,15 @@ jobs:
             fi
           done
           if [[ ${#failed[@]} -gt 0 ]]; then
+            # Emit the culprit list BEFORE `exit 1` — a step that exits
+            # non-zero still has its already-written $GITHUB_OUTPUT honoured,
+            # but nothing written after the exit would be.
+            json=$(printf '"%s",' "${failed[@]}" | sed 's/,$//')
+            echo "failed_stacks=[$json]" >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          echo "failed_stacks=[]" >> "$GITHUB_OUTPUT"
           echo "status=healthy" >> "$GITHUB_OUTPUT"
 
   docker-prune:
@@ -689,13 +759,204 @@ jobs:
       && (needs.deploy.result == 'failure' || needs.health-check.result == 'failure')
     runs-on: [self-hosted, "${{ inputs.runner-label }}"]
     timeout-minutes: 15
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      culprits: ${{ steps.plan.outputs.culprits }}
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       PREVIOUS_SHA: ${{ needs.prepare.outputs.previous_sha }}
       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      ROLLBACK_SCOPE: ${{ needs.prepare.outputs.rollback_scope || 'whole-tree' }}
+      DEPLOY_EXISTING_FAILED: ${{ needs.deploy.outputs.existing_failed_stacks || '[]' }}
+      DEPLOY_NEW_FAILED: ${{ needs.deploy.outputs.new_failed_stacks || '[]' }}
+      HEALTH_FAILED: ${{ needs.health-check.outputs.failed_stacks || '[]' }}
+      NEW_STACKS: ${{ needs.prepare.outputs.new_stacks || '[]' }}
+      CHANGED_STACKS: ${{ needs.prepare.outputs.changed_stacks || '[]' }}
+      SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
     steps:
+      - name: Resolve rollback plan
+        id: plan
+        run: |
+          set -euo pipefail
+
+          # Validate each stack list independently. A malformed value means an
+          # upstream output regressed or a `|| '[]'` default failed to apply —
+          # a real bug worth shouting about. But this is the FIRST step of the
+          # recovery job: aborting here skips every rollback step and leaves
+          # production broken. So degrade to the conservative whole-tree path
+          # and raise a ::error:: annotation, which surfaces in the run log and
+          # the step summary without preventing recovery.
+          sanitize() {
+            local name="$1" value="$2"
+            if jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
+                <<<"$value" >/dev/null 2>&1; then
+              printf '%s' "$value"
+              return 0
+            fi
+            echo "::error::$name was not a valid stack array (got: ${value:0:200}); forcing whole-tree rollback" >&2
+            printf '[]'
+            return 1
+          }
+
+          # `var=$(f)` exposes f's exit status, but assignments inside f run in
+          # the command-substitution subshell and would not propagate — so the
+          # degraded flag is set here in the parent from that status.
+          degraded=""
+          a=$(sanitize DEPLOY_EXISTING_FAILED "$DEPLOY_EXISTING_FAILED") || degraded="yes"
+          b=$(sanitize DEPLOY_NEW_FAILED "$DEPLOY_NEW_FAILED") || degraded="yes"
+          c=$(sanitize HEALTH_FAILED "$HEALTH_FAILED") || degraded="yes"
+          # NEW_STACKS is validated here rather than in the per-stack step: if
+          # it is unusable we cannot tell a new stack from an existing one, and
+          # the safe response is to not take the per-stack path at all.
+          sanitize NEW_STACKS "$NEW_STACKS" >/dev/null || degraded="yes"
+
+          culprits=$(jq -cn --argjson a "$a" --argjson b "$b" --argjson c "$c" \
+            '($a + $b + $c) | unique')
+          count=$(jq 'length' <<<"$culprits")
+
+          # Any culprit name that fails the stack-name pattern means an
+          # upstream output is corrupt. Do not act on it — but do not abort
+          # either: the whole-tree path never uses these names (it resets the
+          # tree and iterates prepare's own existing/removed lists, a different
+          # producer), so degrading discards the bad name and still recovers.
+          # Aborting here would leave production broken.
+          # Fed by process substitution, not a pipe, so the loop runs in this
+          # shell and `degraded` propagates.
+          while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            if [[ ! "$name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+              echo "::error::invalid stack name in culprit list: ${name:0:100}; forcing whole-tree rollback" >&2
+              degraded="yes"
+            fi
+          done < <(jq -r '.[]' <<<"$culprits")
+
+          # C1: every culprit must be a stack whose directory this deploy
+          # actually changed. health-check iterates the *critical* stacks, not
+          # the changed ones, so `failed_stacks` can name a stack that is
+          # byte-identical at PREVIOUS_SHA and TARGET_REF — reverting it is a
+          # no-op that leaves the genuinely-changed stack un-rolled-back while
+          # the job reports success. If any culprit is outside the touched set
+          # we cannot tell which stack to scope to, so take the whole tree.
+          #
+          # `all(.[]; …)` is vacuously true over an empty culprit list, so this
+          # never fires on []; the `count > 0` test below already forces
+          # whole-tree in that case.
+          changed_set=$(sanitize CHANGED_STACKS "$CHANGED_STACKS") || degraded="yes"
+          if ! jq -e --argjson c "$changed_set" \
+              'all(.[]; . as $x | $c | index($x) != null)' <<<"$culprits" >/dev/null 2>&1; then
+            echo "::warning::culprit list includes stacks this deploy did not change; forcing whole-tree rollback"
+            degraded="yes"
+          fi
+
+          # Per-stack requires BOTH a stack-confined change set AND a known
+          # culprit. An empty culprit list means the failure was not attributed
+          # to any specific stack (a teardown failure, an infrastructure error,
+          # a timeout before any stack was named) — there is nothing to scope
+          # to, so the whole-tree reset is the only correct response.
+          if [[ -n "$degraded" ]]; then
+            mode="whole-tree"
+          elif [[ "$ROLLBACK_SCOPE" == "per-stack" && "$count" -gt 0 ]]; then
+            mode="per-stack"
+          else
+            mode="whole-tree"
+          fi
+
+          {
+            echo "mode=$mode"
+            echo "culprits=$culprits"
+          } >> "$GITHUB_OUTPUT"
+          echo "🔄 Rollback mode: $mode (culprits: $culprits, scope: $ROLLBACK_SCOPE)"
+
+          if [[ -n "$degraded" ]]; then
+            {
+              echo "## Rollback input degraded"
+              echo "One or more stack lists were malformed; forced a whole-tree"
+              echo "rollback. See the \`::error::\` annotations on the"
+              echo "\`Resolve rollback plan\` step for the offending value."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Roll back failed stacks only
+        if: steps.plan.outputs.mode == 'per-stack'
+        env:
+          CULPRITS: ${{ steps.plan.outputs.culprits }}
+        run: |
+          set -euo pipefail
+          for stack in $(jq -r '.[]' <<<"$CULPRITS"); do
+            # Unreachable by construction: this step only runs when mode is
+            # per-stack, and `Resolve rollback plan` forces whole-tree if any
+            # culprit name fails this same pattern. Kept as defence in depth,
+            # and skipping rather than exiting so a surprise cannot strand the
+            # remaining culprits mid-rollback.
+            [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || {
+              echo "::error::invalid stack name: $stack; skipping"; continue; }
+
+            # Was this stack introduced by the failing deploy? If so it has no
+            # previous state to restore — tear it down and leave it gone, the
+            # same disposition the whole-tree path gives new stacks.
+            if jq -e --arg s "$stack" 'index($s) != null' <<<"$NEW_STACKS" >/dev/null; then
+              echo "🛑 Tearing down failed new stack $stack"
+              if [[ -f "$LIVE_REPO_PATH/$stack/compose.yaml" || -f "$LIVE_REPO_PATH/$stack/compose.yml" ]]; then
+                (cd "$LIVE_REPO_PATH/$stack" && docker compose down) \
+                  || echo "::warning::down failed for $stack"
+              else
+                # Parity with the whole-tree teardown step's annotation: a
+                # missing compose file means containers may still be running
+                # with nothing left to address them by, which an operator needs
+                # to see rather than have silently skipped.
+                echo "::warning::compose file missing for failed new stack $stack"
+              fi
+              continue
+            fi
+
+            echo "⏪ Reverting $stack to $PREVIOUS_SHA"
+            # Partial checkout: only this stack's directory moves back. HEAD
+            # stays at the target SHA and the tree is left dirty. That dirt is
+            # the record of the rollback and must survive for an operator to
+            # inspect, so there is deliberately no cleanup step here — the next
+            # deploy's `git reset --hard $TARGET_REF` clears it.
+            #
+            # That guarantee depends on the deploy job's skip-gate treating a
+            # dirty tree as a reason to deploy. Without that branch a re-run at
+            # the same target-ref short-circuits on the HEAD==TARGET_REF test,
+            # the reset never runs, and the stack stays pinned here forever
+            # while the run reports success. Do not remove it.
+            #
+            # A stack absent at PREVIOUS_SHA makes this an unmatched pathspec,
+            # which exits non-zero and under `set -e` would abort the loop and
+            # strand every remaining culprit. Warn and move on instead.
+            if ! git -C "$LIVE_REPO_PATH" checkout "$PREVIOUS_SHA" -- "$stack/"; then
+              echo "::warning::cannot revert $stack to $PREVIOUS_SHA (not present at that SHA); skipping"
+              continue
+            fi
+
+            [[ -f "$LIVE_REPO_PATH/$stack/compose.yaml" || -f "$LIVE_REPO_PATH/$stack/compose.yml" ]] || {
+              echo "::warning::no compose file for $stack after revert; skipping up"
+              continue
+            }
+
+            # No --pull always and no --build: land on the locally-tagged
+            # previous image kept on disk by the prune policy, so recovery does
+            # not depend on a registry being reachable mid-incident.
+            #
+            # The `op run` wrapper is REQUIRED. Without it every ${VAR} in the
+            # compose file resolves to empty and the stack comes up
+            # misconfigured while reporting success.
+            #
+            # `timeout` matches every deploy-path `up`. Without it a container
+            # stuck in `starting` — exactly what a bad image produces — hangs
+            # `--wait` until the job's timeout-minutes cancels it, stranding
+            # every remaining culprit un-rolled-back with no whole-tree fallback
+            # (a cancelled job takes no fallback path at all).
+            (cd "$LIVE_REPO_PATH/$stack" && \
+              timeout "$SERVICE_STARTUP_TIMEOUT" \
+                op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+                  docker compose up -d --quiet-pull --wait --remove-orphans) \
+              || echo "::warning::per-stack rollback up failed for $stack; recover manually with: cd \"$LIVE_REPO_PATH/$stack\" && op run --no-masking --env-file=\"$LIVE_REPO_PATH/compose.env\" -- docker compose up -d --wait"
+          done
+
       - name: Tear down new stacks (will not exist after reset)
-        if: needs.prepare.outputs.has_new_stacks == 'true'
+        if: steps.plan.outputs.mode == 'whole-tree' && needs.prepare.outputs.has_new_stacks == 'true'
         env:
           NEW_STACKS: ${{ needs.prepare.outputs.new_stacks }}
         run: |
@@ -716,17 +977,27 @@ jobs:
           done
 
       - name: Reset live tree to previous SHA
+        if: steps.plan.outputs.mode == 'whole-tree'
         run: git -C "$LIVE_REPO_PATH" reset --hard "$PREVIOUS_SHA"
 
       - name: Redeploy stacks at previous SHA
-        # Only the stacks this deploy actually touched need reverting:
-        #   - existing: roll their config back to the previous SHA
+        if: steps.plan.outputs.mode == 'whole-tree'
+        # Which stacks this covers:
+        #   - existing: NOT the changed set. detect-stack-changes.sh computes
+        #               existing_stacks as (all discovered stacks - new stacks),
+        #               so this is effectively the whole fleet on every run.
         #   - removed:  deleted this deploy (torn down already), so they
         #               reappear after the reset and must be brought back up
-        # `new` stacks were torn down above and no longer exist post-reset, and
-        # untouched stacks are byte-identical before/after the reset — skipping
-        # them avoids needlessly recreating the whole fleet on a single-stack
-        # failure. No `--pull always`/`--build`: roll back onto the
+        # `new` stacks were torn down above and no longer exist post-reset.
+        #
+        # The fleet-wide scope is load-bearing, not an oversight: it is what
+        # brings a stack pinned by a prior per-stack rollback back into line
+        # with the tree. Narrowing existing_stacks to the real change set would
+        # let such a stack drift — its containers on the old image while the
+        # tree claims the new one — until it next changed. See the design doc,
+        # "Scoped rollback and image quarantine", section A4.
+        #
+        # No `--pull always`/`--build`: roll back onto the
         # locally-tagged previous images (kept on disk by the docker-prune
         # policy) so rollback is fast and doesn't depend on a registry being
         # reachable mid-incident; compose still builds on demand if an image is
@@ -743,9 +1014,15 @@ jobs:
             stack_dir="$LIVE_REPO_PATH/$stack"
             [[ -f "$stack_dir/compose.yaml" || -f "$stack_dir/compose.yml" ]] || continue
             cd "$stack_dir"
-            op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
+            # `timeout` matches every other `up` in this workflow. Without it a
+            # container stuck in `starting` makes `--wait` block until the job's
+            # timeout-minutes cancels the whole job, stranding every stack after
+            # this one with no further fallback — the exact state a bad image
+            # tends to produce.
+            timeout "$SERVICE_STARTUP_TIMEOUT" \
+              op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
               docker compose up -d --quiet-pull --wait --remove-orphans \
-              || echo "::warning::rollback up failed for $stack"
+              || echo "::warning::rollback up failed for $stack; recover manually with: cd \"$LIVE_REPO_PATH/$stack\" && op run --no-masking --env-file=\"$LIVE_REPO_PATH/compose.env\" -- docker compose up -d --wait"
           done
 
   notify:
@@ -810,6 +1087,8 @@ jobs:
           HAS_DISABLED: ${{ needs.prepare.outputs.has_disabled_stacks }}
           DISABLED_STACKS: ${{ needs.prepare.outputs.disabled_stacks }}
           FORCE_DEPLOY: ${{ inputs.force-deploy }}
+          ROLLBACK_MODE: ${{ needs.rollback.outputs.mode }}
+          ROLLBACK_CULPRITS: ${{ needs.rollback.outputs.culprits }}
         run: |
           set -euo pipefail
 
@@ -898,7 +1177,14 @@ jobs:
           rollback_line=""
           if [[ "$rollback_status" != "skipped" ]]; then
             rb_icon="✅"; [[ "$rollback_status" != "success" ]] && rb_icon="❌"
-            rollback_line=" → $rb_icon Rollback"
+            rb_detail=""
+            if [[ "$ROLLBACK_MODE" == "per-stack" ]]; then
+              rb_names=$(jq -r '. | join(", ")' <<<"${ROLLBACK_CULPRITS:-[]}" 2>/dev/null || echo "")
+              rb_detail=" (per-stack: ${rb_names:-unknown})"
+            elif [[ "$ROLLBACK_MODE" == "whole-tree" ]]; then
+              rb_detail=" (whole-tree)"
+            fi
+            rollback_line=" → $rb_icon Rollback$rb_detail"
           fi
           pipeline="$deploy_icon Deploy → $health_icon Health$rollback_line"
           {
