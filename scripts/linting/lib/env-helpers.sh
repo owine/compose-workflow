@@ -42,6 +42,12 @@ create_temp_env() {
       *KEY*|*SECRET*|*TOKEN*|*PASS*)
         echo "${var}=placeholder-secret-value" >> "$temp_env_file"
         ;;
+      # Must precede *URL*|*HOST* so that names like FOO_HOST_IP resolve to an
+      # address rather than a URL. Anchored to the _IP suffix on purpose: a bare
+      # *IP* glob would also swallow unrelated names such as RECIPIENT_EMAIL.
+      *_IP|*_IP_ADDRESS|IP)
+        echo "${var}=127.0.0.1" >> "$temp_env_file"
+        ;;
       *URL*|*HOST*)
         echo "${var}=http://localhost:8080" >> "$temp_env_file"
         ;;
