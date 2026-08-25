@@ -68,6 +68,38 @@ expect_scope "empty stack dirs" \
 expect_scope "prefix collision is not a match" \
   "whole-tree" '["termix-old/compose.yaml"]' "$STACKS"
 
+# Non-string / empty-string elements must not crash the script or silently
+# fall through to the unsafe per-stack side.
+expect_scope "non-string element" \
+  "whole-tree" '[1]' "$STACKS"
+expect_scope "null element" \
+  "whole-tree" '[null]' "$STACKS"
+expect_scope "empty-string element" \
+  "whole-tree" '[""]' "$STACKS"
+expect_scope "nested-array element" \
+  "whole-tree" '[["a"]]' "$STACKS"
+expect_scope "non-string stack dir" \
+  "whole-tree" '["termix/compose.yaml"]' '[1]'
+
+# A trailing flag with no value must not crash the script (defeats the
+# shift-2 default-value bug) — it must fall through to whole-tree, rc=0.
+trailing_flag_case() {
+  local name="trailing flag with no value" out actual rc
+  out=$(mktemp -p "$TMPROOT")
+  rc=0
+  GITHUB_OUTPUT="$out" "$CLASSIFY" --changed-files >/dev/null 2>&1 || rc=$?
+  actual=$(grep '^rollback_scope=' "$out" 2>/dev/null | cut -d= -f2- || echo "<none>")
+  if [[ "$actual" == "whole-tree" && "$rc" -eq 0 ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ $name"
+  else
+    FAIL=$((FAIL + 1))
+    FAILURES+=("$name: expected 'whole-tree' rc=0, got '$actual' rc=$rc")
+    echo "  ❌ $name: expected 'whole-tree' rc=0, got '$actual' rc=$rc"
+  fi
+}
+trailing_flag_case
+
 echo
 echo "Passed: $PASS  Failed: $FAIL"
 if [[ $FAIL -gt 0 ]]; then

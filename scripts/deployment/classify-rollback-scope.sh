@@ -31,8 +31,8 @@ STACK_DIRS="[]"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --changed-files) CHANGED_FILES="${2:-[]}"; shift 2 ;;
-    --stack-dirs)    STACK_DIRS="${2:-[]}"; shift 2 ;;
+    --changed-files) CHANGED_FILES="${2:-}"; shift; [[ $# -gt 0 ]] && shift ;;
+    --stack-dirs)    STACK_DIRS="${2:-}"; shift; [[ $# -gt 0 ]] && shift ;;
     *)
       log_error "Unknown argument: $1"
       exit 1
@@ -51,11 +51,17 @@ emit_whole_tree() {
 }
 
 # Malformed JSON from an upstream step must not crash the deploy; fall back.
-if ! jq -e 'type == "array"' <<<"$CHANGED_FILES" >/dev/null 2>&1; then
-  emit_whole_tree "changed-files was not a JSON array"
+# Every element must be a non-empty string: a non-string element (number,
+# null, nested array) would blow up the split()/index() pipeline below under
+# `set -euo pipefail`, killing the script before any output is written — and
+# an empty-string element would vacuously satisfy the "no paths outside a
+# stack dir" check further down, silently landing on the unsafe per-stack
+# side. Both must be caught here, before they reach the pipeline.
+if ! jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' <<<"$CHANGED_FILES" >/dev/null 2>&1; then
+  emit_whole_tree "changed-files was not an array of non-empty strings"
 fi
-if ! jq -e 'type == "array"' <<<"$STACK_DIRS" >/dev/null 2>&1; then
-  emit_whole_tree "stack-dirs was not a JSON array"
+if ! jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' <<<"$STACK_DIRS" >/dev/null 2>&1; then
+  emit_whole_tree "stack-dirs was not an array of non-empty strings"
 fi
 
 changed_count=$(jq 'length' <<<"$CHANGED_FILES")
@@ -72,8 +78,13 @@ fi
 # member of the stack-dir set. Exact membership (not prefix matching) is what
 # keeps "termix-old/…" from being mistaken for the "termix" stack.
 #
-# A path with no "/" is a root-level file: its first segment is the whole
-# path, which will not match any stack dir, so it correctly forces whole-tree.
+# A path with no "/" is a root-level file, so its first segment is the whole
+# path. If that path happens to be spelled identically to a known stack
+# directory name (e.g. a root-level file literally named "termix"), it WILL
+# match and count as per-stack — this is the same exact first-segment
+# membership rule applied uniformly, not a special case. In practice repo
+# root files (compose.env, README, .github/**) don't collide with stack dir
+# names, but this is not a semantic guarantee.
 outside=$(jq -r --argjson dirs "$STACK_DIRS" '
   [ .[] | select((split("/")[0]) as $seg | ($dirs | index($seg)) == null) ]
   | .[]' <<<"$CHANGED_FILES")
