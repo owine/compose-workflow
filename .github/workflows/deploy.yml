@@ -997,6 +997,8 @@ jobs:
           HAS_DISABLED: ${{ needs.prepare.outputs.has_disabled_stacks }}
           DISABLED_STACKS: ${{ needs.prepare.outputs.disabled_stacks }}
           FORCE_DEPLOY: ${{ inputs.force-deploy }}
+          ROLLBACK_MODE: ${{ needs.rollback.outputs.mode }}
+          ROLLBACK_CULPRITS: ${{ needs.rollback.outputs.culprits }}
         run: |
           set -euo pipefail
 
@@ -1085,7 +1087,14 @@ jobs:
           rollback_line=""
           if [[ "$rollback_status" != "skipped" ]]; then
             rb_icon="✅"; [[ "$rollback_status" != "success" ]] && rb_icon="❌"
-            rollback_line=" → $rb_icon Rollback"
+            rb_detail=""
+            if [[ "$ROLLBACK_MODE" == "per-stack" ]]; then
+              rb_names=$(jq -r '. | join(", ")' <<<"${ROLLBACK_CULPRITS:-[]}" 2>/dev/null || echo "")
+              rb_detail=" (per-stack: ${rb_names:-unknown})"
+            elif [[ "$ROLLBACK_MODE" == "whole-tree" ]]; then
+              rb_detail=" (whole-tree)"
+            fi
+            rollback_line=" → $rb_icon Rollback$rb_detail"
           fi
           pipeline="$deploy_icon Deploy → $health_icon Health$rollback_line"
           {
