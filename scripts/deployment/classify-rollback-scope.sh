@@ -19,6 +19,13 @@
 # 1Password reference) breaks stacks whose own directories never changed.
 #
 # Uncertainty always resolves to whole-tree. Never the reverse.
+#
+# Invocation errors (unknown flag) are distinct from malformed runtime data:
+# an unknown flag means the caller is wired up wrong and exits 1 loudly, so
+# the mistake surfaces immediately instead of quietly deploying with the
+# wrong scope every time. Malformed *data* (bad JSON, non-string elements,
+# a missing value) instead degrades safely to whole-tree, rc=0 — the deploy
+# should not fail just because the classifier couldn't classify.
 
 set -euo pipefail
 
@@ -31,8 +38,21 @@ STACK_DIRS="[]"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --changed-files) CHANGED_FILES="${2:-}"; shift; [[ $# -gt 0 ]] && shift ;;
-    --stack-dirs)    STACK_DIRS="${2:-}"; shift; [[ $# -gt 0 ]] && shift ;;
+    --changed-files)
+      # A missing value — flag at end of argv, or immediately followed by
+      # another flag — leaves this empty, which normalises to [] -> whole-tree.
+      # Never consume the next flag, never `shift 2` past the end. Check $#
+      # (not the value of $2) so an explicit empty-string argument is still
+      # consumed as a value — ${2:-} can't tell "unset" from "set to ''".
+      CHANGED_FILES=""
+      if [[ $# -ge 2 && $2 != --* ]]; then CHANGED_FILES=$2; shift; fi
+      shift
+      ;;
+    --stack-dirs)
+      STACK_DIRS=""
+      if [[ $# -ge 2 && $2 != --* ]]; then STACK_DIRS=$2; shift; fi
+      shift
+      ;;
     *)
       log_error "Unknown argument: $1"
       exit 1
@@ -44,10 +64,27 @@ done
 [[ -z "$CHANGED_FILES" ]] && CHANGED_FILES="[]"
 [[ -z "$STACK_DIRS" ]] && STACK_DIRS="[]"
 
+# emit_whole_tree <reason> [severity]
+# severity defaults to "info" for expected/normal degradations (empty lists,
+# no known stacks, changes outside a stack dir). Pass "warn" for genuine
+# anomalies in the upstream data (malformed JSON) so an operator notices
+# without having to go dig through the upstream step's output.
 emit_whole_tree() {
-  log_info "Rollback scope: whole-tree ($1)"
+  local reason="$1" severity="${2:-info}"
+  if [[ "$severity" == "warn" ]]; then
+    log_warning "Rollback scope: whole-tree ($reason)"
+  else
+    log_info "Rollback scope: whole-tree ($reason)"
+  fi
   set_github_output "rollback_scope" "whole-tree"
   exit 0
+}
+
+# is_string_array <json>: true iff <json> is a JSON array whose every element
+# is a non-empty string. Shared by both input guards below so tightening the
+# predicate can't be done to one and forgotten on the other.
+is_string_array() {
+  jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' <<<"$1" >/dev/null 2>&1
 }
 
 # Malformed JSON from an upstream step must not crash the deploy; fall back.
@@ -56,19 +93,25 @@ emit_whole_tree() {
 # `set -euo pipefail`, killing the script before any output is written — and
 # an empty-string element would vacuously satisfy the "no paths outside a
 # stack dir" check further down, silently landing on the unsafe per-stack
-# side. Both must be caught here, before they reach the pipeline.
-if ! jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' <<<"$CHANGED_FILES" >/dev/null 2>&1; then
-  emit_whole_tree "changed-files was not an array of non-empty strings"
+# side. Both must be caught here, before they reach the pipeline. These are
+# genuine anomalies (not a normal empty-list degradation), hence "warn".
+if ! is_string_array "$CHANGED_FILES"; then
+  emit_whole_tree "changed-files was not an array of non-empty strings: ${CHANGED_FILES:0:200}" warn
 fi
-if ! jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' <<<"$STACK_DIRS" >/dev/null 2>&1; then
-  emit_whole_tree "stack-dirs was not an array of non-empty strings"
+if ! is_string_array "$STACK_DIRS"; then
+  emit_whole_tree "stack-dirs was not an array of non-empty strings: ${STACK_DIRS:0:200}" warn
 fi
 
+# An empty changed-file list must NOT be read as "nothing outside a stack dir":
+# the jq filter below is vacuously true over [], which yields per-stack. This
+# guard is load-bearing — deleting it inverts the safe default. Do not remove.
 changed_count=$(jq 'length' <<<"$CHANGED_FILES")
 if [[ "$changed_count" -eq 0 ]]; then
   emit_whole_tree "no changed-file list available"
 fi
 
+# Empty stack-dirs would already fall out as whole-tree (index() over [] is null
+# for every path). This guard exists only for the clearer reason string.
 dirs_count=$(jq 'length' <<<"$STACK_DIRS")
 if [[ "$dirs_count" -eq 0 ]]; then
   emit_whole_tree "no known stack directories"

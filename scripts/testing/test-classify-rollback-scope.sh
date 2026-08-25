@@ -14,24 +14,34 @@ PASS=0
 FAIL=0
 FAILURES=()
 
-# expect_scope <name> <expected> <changed_files_json> <stack_dirs_json>
-expect_scope() {
-  local name="$1" expected="$2" changed="$3" dirs="$4"
-  local out actual
+# expect_case <name> <expected_scope|"<none>"> <expected_rc> -- <argv...>
+# Runs the classifier with an arbitrary argv and asserts BOTH the emitted
+# rollback_scope output AND the exit code. Asserting rc matters: a case that
+# only checks output would miss a regression that writes the right value and
+# then exits nonzero.
+expect_case() {
+  local name="$1" expected="$2" expected_rc="$3"
+  shift 4  # drop name, expected, expected_rc, and the "--" separator
+  local out actual rc=0
   out=$(mktemp -p "$TMPROOT")
-  GITHUB_OUTPUT="$out" "$CLASSIFY" \
-    --changed-files "$changed" \
-    --stack-dirs "$dirs" \
-    >/dev/null 2>&1 || true
+  GITHUB_OUTPUT="$out" "$CLASSIFY" "$@" >/dev/null 2>&1 || rc=$?
   actual=$(grep '^rollback_scope=' "$out" 2>/dev/null | cut -d= -f2- || echo "<none>")
-  if [[ "$actual" == "$expected" ]]; then
+  if [[ "$actual" == "$expected" && "$rc" == "$expected_rc" ]]; then
     PASS=$((PASS + 1))
     echo "  ✅ $name"
   else
     FAIL=$((FAIL + 1))
-    FAILURES+=("$name: expected '$expected', got '$actual'")
-    echo "  ❌ $name: expected '$expected', got '$actual'"
+    FAILURES+=("$name: expected scope='$expected' rc=$expected_rc, got scope='$actual' rc=$rc")
+    echo "  ❌ $name: expected scope='$expected' rc=$expected_rc, got scope='$actual' rc=$rc"
   fi
+}
+
+# expect_scope <name> <expected> <changed_files_json> <stack_dirs_json>
+# Thin two-flag wrapper over expect_case, always asserting rc=0. All existing
+# call sites below stay textually unchanged and now also assert exit code.
+expect_scope() {
+  local name="$1" expected="$2" changed="$3" dirs="$4"
+  expect_case "$name" "$expected" 0 -- --changed-files "$changed" --stack-dirs "$dirs"
 }
 
 STACKS='["termix","monitoring","swag"]'
@@ -81,24 +91,20 @@ expect_scope "nested-array element" \
 expect_scope "non-string stack dir" \
   "whole-tree" '["termix/compose.yaml"]' '[1]'
 
-# A trailing flag with no value must not crash the script (defeats the
-# shift-2 default-value bug) — it must fall through to whole-tree, rc=0.
-trailing_flag_case() {
-  local name="trailing flag with no value" out actual rc
-  out=$(mktemp -p "$TMPROOT")
-  rc=0
-  GITHUB_OUTPUT="$out" "$CLASSIFY" --changed-files >/dev/null 2>&1 || rc=$?
-  actual=$(grep '^rollback_scope=' "$out" 2>/dev/null | cut -d= -f2- || echo "<none>")
-  if [[ "$actual" == "whole-tree" && "$rc" -eq 0 ]]; then
-    PASS=$((PASS + 1))
-    echo "  ✅ $name"
-  else
-    FAIL=$((FAIL + 1))
-    FAILURES+=("$name: expected 'whole-tree' rc=0, got '$actual' rc=$rc")
-    echo "  ❌ $name: expected 'whole-tree' rc=0, got '$actual' rc=$rc"
-  fi
-}
-trailing_flag_case
+# Missing-value invocation shapes must not crash the script — they normalise
+# to [] and fall through to whole-tree, rc=0.
+expect_case "trailing flag with no value" \
+  "whole-tree" 0 -- --changed-files
+expect_case "missing value before next flag" \
+  "whole-tree" 0 -- --changed-files --stack-dirs "$STACKS"
+
+# Invocation errors (unknown flag) are deliberately NOT degraded to
+# whole-tree: they mean the caller is wired up wrong, and should fail loudly
+# (rc=1, no output) rather than silently deploy with a scope decision nobody
+# intended. This is the most opinionated behavior in the script — cover it so
+# a well-meaning "make everything fail-safe" edit can't remove it unnoticed.
+expect_case "unknown flag fails loudly" \
+  "<none>" 1 -- --bogus
 
 echo
 echo "Passed: $PASS  Failed: $FAIL"
