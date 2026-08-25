@@ -1022,7 +1022,7 @@ jobs:
             timeout "$SERVICE_STARTUP_TIMEOUT" \
               op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
               docker compose up -d --quiet-pull --wait --remove-orphans \
-              || echo "::warning::rollback up failed for $stack; recover manually with: cd $LIVE_REPO_PATH/$stack && op run --no-masking --env-file=$LIVE_REPO_PATH/compose.env -- docker compose up -d --wait"
+              || echo "::warning::rollback up failed for $stack; recover manually with: cd \"$LIVE_REPO_PATH/$stack\" && op run --no-masking --env-file=\"$LIVE_REPO_PATH/compose.env\" -- docker compose up -d --wait"
           done
 
   notify:
