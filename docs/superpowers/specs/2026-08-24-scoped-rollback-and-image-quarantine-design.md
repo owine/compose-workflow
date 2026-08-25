@@ -101,12 +101,68 @@ registry being reachable mid-incident. Healthy stacks are never touched.
 **Whole-tree** — every other case. Today's exact behavior, unchanged: tear down new stacks,
 `git reset --hard "$PREVIOUS_SHA"`, re-up existing + removed.
 
-### A4. Partial checkout leaves the live tree dirty — and that is safe
+### A4. Partial checkout leaves the live tree dirty — safe, but only because of two other things
 
-`git checkout $PREVIOUS_SHA -- <stack>/` leaves the live tree with `HEAD` at the target SHA but one
-directory's content staged at the previous SHA. No cleanup step is required: every deploy begins with
-`git -C "$LIVE_REPO_PATH" reset --hard "$TARGET_REF"` (`deploy.yml:283`), which restores a clean tree
-before anything else runs. No drift accumulates across runs.
+`git checkout $PREVIOUS_SHA -- <stack>/` moves the index and the worktree but **not `HEAD`**. The live
+tree is left with `HEAD` at `TARGET_REF` and one directory's content at `PREVIOUS_SHA` — a dirty tree
+that persists after the job ends:
+
+```
+$ git checkout $T0 -- termix/
+$ git rev-parse HEAD        # 7db462a…  — still T1, unchanged
+$ git status --porcelain    # M  termix/compose.yaml
+```
+
+That dirt is deliberate. It is the on-disk record of which stack was rolled back, and it must survive
+for an operator to inspect, so there is no cleanup step in the `rollback` job. It is cleared by the
+*next* deploy's `git reset --hard "$TARGET_REF"`.
+
+The original version of this section claimed that reset alone made the state safe, and that "no drift
+accumulates across runs". That was wrong on both counts. Two separate mechanisms are actually required,
+and each is load-bearing.
+
+**1. The skip-gate must treat a dirty tree as a reason to deploy.**
+
+The `deploy` job's skip-gate compares `git rev-parse HEAD` against `TARGET_REF` and skips the whole
+deploy phase when they match. After a per-stack rollback they *do* match — `HEAD` never moved. So a
+re-run at the same `target-ref` (the on-call's first instinct: "Re-run failed jobs") short-circuited
+before the reset, reported a green *"Repository already at target commit"*, and left the stack pinned at
+the previous SHA indefinitely. The reset that this section relied on never ran.
+
+The skip-gate therefore tests `git status --porcelain` first and forces `skipped=false` when the tree is
+dirty, ahead of the SHA comparison. Removing that branch reopens the hole.
+
+**2. The next deploy must re-`up` the rolled-back stack, not merely restore its files.**
+
+`reset --hard "$TARGET_REF"` puts the bad line back on disk. If nothing then runs `docker compose up`
+for that stack, the containers keep serving the *previous* SHA's images while the tree claims the new
+one — silent drift, invisible until that stack changes again.
+
+Nothing does re-`up` it explicitly. It works because of an incidental property of
+`detect-stack-changes.sh`: `existing_stacks` is computed as *(all discovered stacks − new stacks)*, not
+as the `PREVIOUS_SHA..TARGET_REF` diff. It therefore names the entire fleet on every run, and
+`Deploy existing stacks` brings every stack up on every deploy. A previously rolled-back stack is
+re-`up`ed along with everything else, fails again on the still-bad image, and is rolled back again —
+which is exactly the fallback described under "What Change A explicitly does not fix".
+
+This is a real guarantee but a fragile one, because it rests on a definition that reads like a bug. **If
+`existing_stacks` is ever narrowed to the actual change set, this section's guarantee breaks and a
+rolled-back stack will drift.** The fix at that point is to record the rolled-back stack names
+(an untracked marker file in the live tree, unioned into `existing_stacks` by `prepare`) so they are
+re-deployed explicitly rather than incidentally. Note that no code in this repository runs `git clean`
+on the live tree, so an untracked marker would survive `reset --hard` — verified by
+`grep -rn "git clean" .github/ scripts/`, which matches nothing.
+
+**Scope of the culprit list.** Related, and fixed alongside: `health-check` iterates the *critical*
+stacks, which are detected from labels across all discovered stacks, not from this deploy's change set.
+Its `failed_stacks` output could therefore name a stack that is byte-identical at `PREVIOUS_SHA` and
+`TARGET_REF`, making `git checkout $PREVIOUS_SHA -- <stack>/` a no-op while the stack that *did* change
+was never reverted. `prepare` now also emits `changed_stacks` — the first path segment of every changed
+file that names a known stack directory — and `Resolve rollback plan` requires every culprit to be a
+member of it. A culprit outside that set means the failure cannot be attributed to a stack this deploy
+touched, so the rollback degrades to whole-tree. `changed_stacks` is used rather than `existing_stacks`
+precisely because, per the above, `existing_stacks` names the whole fleet and would make the check
+vacuous.
 
 ### A5. `notify` reports which path ran
 
