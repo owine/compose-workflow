@@ -727,66 +727,50 @@ The skill file lives outside this repo and is not committed here. Nothing to com
 
 ---
 
-## Task 7: End-to-end validation on a real host
+## Task 7: Live-host validation — NOT PERFORMED (decision, 2026-08-25)
 
-**Files:** none — this is a live exercise of the deployed workflow.
+The user declined a live test. Deliberately breaking a stack on `docker-piwine`
+to exercise both rollback paths was offered and turned down, and the per-stack
+path was shipped **enabled** rather than behind an opt-in flag.
 
-Everything before this is unit-tested or lint-clean, but the per-stack path has never actually run. It touches a live Docker host during an incident, which is not a state to first exercise during a real incident.
+**Decision:** ship active; the first real stack failure exercises the new path.
 
-**Caveat on where to test.** The spec suggested `docker-piwine-office`, but that repo runs only `dozzle` and `portainer` — with `auto-detect-critical` both are likely critical, so there is no safe stack to break there. Prefer a genuinely non-critical stack on `docker-piwine`. Confirm which stacks are critical first:
+### What this leaves unverified
+
+Everything logic-level is covered: 19 classifier unit tests, the 8 existing
+transition tests, and stubbed dry runs of the rollback loop against real
+throwaway git repos. Four things are not, and unit tests structurally cannot
+reach them:
+
+1. `op run` + `docker compose up` against a rolled-back tree — no 1Password or
+   Docker daemon in the dev environment.
+2. `git checkout $PREVIOUS_SHA -- <stack>/` against the runner's *persistent*
+   clone (tested only against throwaway repos).
+3. GitHub Actions expression evaluation of the new outputs — specifically the
+   skipped-job empty-string cases and the `|| '[]'` defaults.
+4. The classifier receiving a real `all_changed_files` value post-`escape_json`
+   fix (verified against the action's source, not a live run).
+
+### Known accepted risk
+
+The per-stack step swallows `up` failures as warnings:
 
 ```bash
-cd ~/Git/Compose/compose-workflow
-./scripts/deployment/detect-critical-stacks.sh --stacks "$(ls -d ../docker-piwine/*/ | xargs -n1 basename | tr '\n' ' ')" --repo-dir ../docker-piwine
+op run ... docker compose up ... || echo "::warning::per-stack rollback up failed for $stack"
 ```
 
-Pick a stack that is **not** in the resulting list. Confirm the choice with the user before breaking anything.
+This matches the pre-existing whole-tree step's behavior, so it is consistent —
+but it means a per-stack rollback that fails to bring the stack back up still
+reports the job **green**, and the Discord line shows a success icon. Without a
+live test, the first occurrence will be during a real incident.
 
-- [ ] **Step 1: Merge this branch so the runner picks up the new workflow**
+Mitigating factor: every malformed-input path in `Resolve rollback plan`
+degrades to `whole-tree`, so the *scope* decision fails safe. The residual risk
+is concentrated in the docker/`op`/Actions layer, not in the classification
+logic.
 
-Callers pin `owine/compose-workflow/.github/workflows/deploy.yml@main`, so the change must be on `main` to take effect. Open a PR, let `workflow-lint` pass, merge.
-
-- [ ] **Step 2: Exercise the per-stack path**
-
-In `docker-piwine`, on a branch, point the chosen non-critical stack's `image:` at a tag that cannot start (a nonexistent tag is the cleanest — it fails fast at pull). Change **nothing else** — the commit must touch only that stack's directory, or the classifier will correctly choose whole-tree and you will not be testing the new path.
-
-Merge it and watch the deploy run.
-
-Expected:
-- `prepare` logs `Rollback scope: per-stack`.
-- `rollback` logs `Rollback mode: per-stack` with the broken stack as the sole culprit.
-- The three whole-tree steps show as **skipped**.
-- `git -C <live-repo> status` on the runner shows only that stack's directory modified.
-- Every other stack is still running at the new SHA — verify at least two by hand.
-- Discord shows `❌ Rollback (per-stack: <stack>)`.
-
-- [ ] **Step 3: Exercise the whole-tree fallback**
-
-Repeat, but include a trivial `compose.env` edit (add a comment line) in the same commit alongside the broken image.
-
-Expected:
-- `prepare` logs `Rollback scope: whole-tree` and names `compose.env` as the path outside stack directories.
-- `rollback` logs `Rollback mode: whole-tree`; the per-stack step is **skipped**; the reset runs.
-- Behavior is identical to today.
-- Discord shows `❌ Rollback (whole-tree)`.
-
-- [ ] **Step 4: Restore**
-
-Revert both test commits in `docker-piwine` and confirm a clean green deploy before walking away.
-
-- [ ] **Step 5: Exercise the skill for real**
-
-With a broken version still on `main` from Step 2 (or by re-landing it), run:
-
-```
-/quarantine-image <stack> <bad-version> "e2e validation of quarantine-image"
-```
-
-Expected: one commit touching exactly two files; the compose line back at the previous tag **and** digest; a negated-regex `allowedVersions` rule in `docker-piwine/.github/renovate.json`; the config validator passing. Then confirm on the Dependency Dashboard that the blocked version no longer appears as an available update.
-
-Finish with `/quarantine-image --unblock <stack>` and confirm the rule is gone.
-
----
+If this proves noisy in practice, the fix is to collect failed stacks in the
+loop and `exit 1` at the end, so the job result reflects reality.
 
 ## Out of scope
 
