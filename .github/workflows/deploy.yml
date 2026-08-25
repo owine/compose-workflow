@@ -612,6 +612,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       status: ${{ steps.h.outputs.status }}
+      failed_stacks: ${{ steps.h.outputs.failed_stacks }}
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       CRITICAL_STACKS: ${{ inputs.auto-detect-critical && needs.prepare.outputs.critical_stacks || inputs.critical-services }}
@@ -671,9 +672,15 @@ jobs:
             fi
           done
           if [[ ${#failed[@]} -gt 0 ]]; then
+            # Emit the culprit list BEFORE `exit 1` — a step that exits
+            # non-zero still has its already-written $GITHUB_OUTPUT honoured,
+            # but nothing written after the exit would be.
+            json=$(printf '"%s",' "${failed[@]}" | sed 's/,$//')
+            echo "failed_stacks=[$json]" >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          echo "failed_stacks=[]" >> "$GITHUB_OUTPUT"
           echo "status=healthy" >> "$GITHUB_OUTPUT"
 
   docker-prune:
