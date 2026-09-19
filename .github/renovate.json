@@ -51,16 +51,6 @@
         "docker-compose"
       ],
       "pinDigests": false
-    },
-    {
-      "description": "HOLD - do NOT migrate this repo's GitHub-hosted runners off ubuntu-24.04, and do not delete this rule to 'unblock' a Renovate PR. WHY: ubuntu-26.04 ships Docker Compose 5.1.3; ubuntu-24.04 ships 2.38.2. This repo's lint scripts PARSE the output of `docker compose config` rather than merely checking its exit code - scripts/linting/validate-stack.sh, scripts/linting/lint-summary.sh (which captures and matches on stderr error text), and scripts/linting/validate-image-platforms.sh (which relies on `config --images` emitting exactly one resolved image per line). Compose 5.x is free to reword errors and reshape that output. The lint jobs run on GitHub-hosted runners via `${{ inputs.runner }}`; the deploy jobs run on self-hosted runners with Compose 2.x. Today the two engines match. Bumping only the hosted side would validate stacks with a different Compose engine than the one that actually deploys them - a split that stays GREEN until a stack that lints clean fails to deploy. EXIT CONDITION: remove this rule only once the SELF-HOSTED runners have been upgraded to a Compose 5.x image, then move both sides in one change. Upgrading the hosted side alone is the failure mode this rule exists to prevent. SCOPE: matched on the datasource, not the manager, so it covers both the literal `runs-on:` values (github-actions manager) and the `workflow_call` `runner` input defaults (github-runners customManager) - the two places this repo names a runner label.",
-      "matchDatasources": [
-        "github-runners"
-      ],
-      "matchPackageNames": [
-        "ubuntu"
-      ],
-      "enabled": false
     }
   ],
   "customManagers": [
