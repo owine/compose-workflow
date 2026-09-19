@@ -71,12 +71,21 @@ create_temp_env "./$STACK/compose.yaml" "$TEMP_ENV"
 (set -o pipefail; docker compose --env-file "$TEMP_ENV" -f "./$STACK/compose.yaml" config 2>&1 | tee "$DOCKER_OUTPUT") &
 DOCKER_PID=$!
 
-# Wait for both processes and capture exit codes
-wait "$YAML_PID"
-YAML_EXIT=$?
+# Wait for both processes and capture exit codes.
+#
+# `|| VAR=$?` is required, not stylistic: this script runs under `set -e`
+# (line 14), so a bare `wait` on a failing child aborts the script right there
+# - before the assignment, and before every formatted report below. That made
+# the entire summary block unreachable for exactly the case it exists to
+# serve: a stack that fails validation printed its raw tee'd output and then
+# died silently, with no "Issues found", no fix hint and no overall status.
+# The job still failed (non-zero exit), so CI verdicts were always correct -
+# only the diagnostics were lost, which is why this went unnoticed.
+YAML_EXIT=0
+wait "$YAML_PID" || YAML_EXIT=$?
 
-wait "$DOCKER_PID"
-DOCKER_EXIT=$?
+DOCKER_EXIT=0
+wait "$DOCKER_PID" || DOCKER_EXIT=$?
 
 # Filter Docker Compose output to remove environment variable warnings but keep real errors
 if [ "$DOCKER_EXIT" -eq 0 ]; then
@@ -84,9 +93,13 @@ if [ "$DOCKER_EXIT" -eq 0 ]; then
   cp "$DOCKER_OUTPUT" "$DOCKER_FILTERED"
 else
   # If Docker Compose failed, filter out common environment variable warnings but keep errors
-  grep -v "WARNING.*interpolat" "$DOCKER_OUTPUT" | \
-  grep -v "WARNING.*environment variable" | \
-  grep -v "WARNING.*not set" > "$DOCKER_FILTERED" || cp "$DOCKER_OUTPUT" "$DOCKER_FILTERED"
+  # Compose 2.x prefixes these `WARNING: ...`; Compose 5.x emits
+  # `time="..." level=warning msg="..."` instead. Match case-insensitively on
+  # the bare token `warning`, which is a substring of both spellings, so the
+  # filter keeps working across the engine versions in use. The `|| cp` retains
+  # the original behaviour: if filtering removed every line, show the raw output.
+  grep -viE 'warning.*(interpolat|environment variable|not set)' \
+    "$DOCKER_OUTPUT" > "$DOCKER_FILTERED" || cp "$DOCKER_OUTPUT" "$DOCKER_FILTERED"
 fi
 
 # Cleanup temporary env file

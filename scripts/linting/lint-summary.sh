@@ -136,9 +136,8 @@ echo "$STACKS_JSON" | jq -r '.[]' | while read -r stack; do
     echo ""
     # Show filtered errors (remove environment variable warnings)
     DOCKER_ERRORS=$(docker compose --env-file "$TEMP_ENV" -f "./$stack/compose.yaml" config 2>&1 | \
-      grep -v "WARNING.*interpolat" | \
-      grep -v "WARNING.*environment variable" | \
-      grep -v "WARNING.*not set" || echo "Configuration errors detected")
+      grep -viE 'warning.*(interpolat|environment variable|not set)' \
+      || echo "Configuration errors detected")
 
     if [[ -n "$DOCKER_ERRORS" && "$DOCKER_ERRORS" != "Configuration errors detected" ]]; then
       # shellcheck disable=SC2001  # sed is appropriate for multi-line prefix addition
