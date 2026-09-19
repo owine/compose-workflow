@@ -37,10 +37,10 @@ on:
         type: string
         default: ''
       runner:
-        description: "Runner label(s) for jobs (e.g., 'ubuntu-24.04' or 'self-hosted')"
+        description: "Runner label(s) for jobs (e.g., 'ubuntu-26.04' or 'self-hosted')"
         required: false
         type: string
-        default: 'ubuntu-24.04'
+        default: 'ubuntu-26.04'
       platforms:
         description: "Comma-separated target platforms to verify digest-pinned images publish (e.g. 'linux/arm64/v8' or 'linux/amd64'). Guards against Docker Hub publish-race bugs where an index manifest is pushed before its per-platform children."
         required: false

@@ -14,7 +14,7 @@ jobs:
   # work. Each step uses continue-on-error so all three always run (no
   # fail-fast), then a final gate fails the job if any did.
   lint:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout repository
