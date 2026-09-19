@@ -83,17 +83,45 @@ echo "   Target platforms: ${REQ_PLATFORMS[*]}"
 print_separator
 
 TEMP_ENV=$(mktemp)
-trap 'rm -f "$TEMP_ENV"' EXIT
+IMAGES_OUT=$(mktemp)
+IMAGES_ERR=$(mktemp)
+trap 'rm -f "$TEMP_ENV" "$IMAGES_OUT" "$IMAGES_ERR"' EXIT
 create_temp_env "$COMPOSE_FILE" "$TEMP_ENV"
 
-# `docker compose config --images` emits one fully-resolved image ref per line.
+# `docker compose config --images` emits one fully-resolved image ref per line
+# on stdout; warnings go to stderr. Capture the two separately and check the
+# exit status.
+#
+# This previously piped straight into the read loop with `2>/dev/null`, which
+# discarded the diagnostics AND the exit status: any failure to resolve the
+# file yielded an empty list, and the zero-images branch below then reported
+# PASS. A check that verified nothing must never report success - that is the
+# one way a Compose output change could break this silently rather than loudly.
+if ! docker compose --env-file "$TEMP_ENV" -f "$COMPOSE_FILE" config --images \
+     >"$IMAGES_OUT" 2>"$IMAGES_ERR"; then
+  log_error "✗ 'docker compose config --images' failed for $COMPOSE_FILE"
+  echo "   Compose could not resolve the file, so no platform check was possible:"
+  sed 's/^/     /' "$IMAGES_ERR"
+  exit 1
+fi
+
 IMAGES=()
 while IFS= read -r line; do
   [[ -n "$line" ]] && IMAGES+=("$line")
-done < <(docker compose --env-file "$TEMP_ENV" -f "$COMPOSE_FILE" config --images 2>/dev/null | sort -u)
+done < <(sort -u "$IMAGES_OUT")
 
 if [[ ${#IMAGES[@]} -eq 0 ]]; then
-  echo "ℹ️  No images resolved from $COMPOSE_FILE — nothing to check."
+  # Zero images is legitimate only if the file declares no services at all, or
+  # only `build:` ones. If it declares services yet resolved no image refs, the
+  # output is not the shape this script expects - fail loudly instead of
+  # claiming a pass over an empty set.
+  if docker compose --env-file "$TEMP_ENV" -f "$COMPOSE_FILE" config --services 2>/dev/null | grep -q .; then
+    log_error "✗ $COMPOSE_FILE declares services but resolved 0 image refs."
+    log_error "  'config --images' returned nothing parseable - check whether the"
+    log_error "  Compose output format changed. Refusing to pass an unverified stack."
+    exit 1
+  fi
+  echo "ℹ️  No images resolved from $COMPOSE_FILE — no services declared, nothing to check."
   exit 0
 fi
 
