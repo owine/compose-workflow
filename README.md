@@ -80,7 +80,7 @@ jobs:
       force-deploy: ${{ inputs.force-deploy || false }}
 ```
 
-Optional inputs: `live-dockge-path` (when `has-dockge: true`), `auto-detect-critical` (default `true`), `critical-services` (manual override), `image-pull-timeout`, `service-startup-timeout`, `failed-container-log-lines`.
+Optional inputs: `live-dockge-path` (when `has-dockge: true`), `auto-detect-critical` (default `true`), `critical-services` (manual override), `image-pull-timeout`, `image-pull-attempts`, `service-startup-timeout`, `failed-container-log-lines`.
 
 ## Required Configuration
 
