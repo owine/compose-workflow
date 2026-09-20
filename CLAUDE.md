@@ -52,6 +52,9 @@ Three reusable workflows live in `.github/workflows/`:
   - `image-pull-attempts` — retries for a stack's image pull (default: 3);
     absorbs transient registry throttles like ghcr.io's `toomanyrequests`
   - `failed-container-log-lines` — diagnostic log tail size on failure (default: 50)
+  - every `up --wait` also carries `--wait-timeout` at 90% of
+    `service-startup-timeout`, so Compose exits on its own terms before the
+    external `timeout` SIGKILLs it mid-recreate
 
 #### 3. Workflow Lint (`workflow-lint.yml`)
 - **Purpose**: yamllint + actionlint for the workflow files themselves
