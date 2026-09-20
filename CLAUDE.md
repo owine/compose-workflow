@@ -49,6 +49,8 @@ Three reusable workflows live in `.github/workflows/`:
   - `auto-detect-critical` — read `com.compose.tier: infrastructure` labels (default: true)
   - `critical-services` — manual JSON array (when auto-detect is false)
   - `image-pull-timeout`, `service-startup-timeout` — bound long pulls/waits
+  - `image-pull-attempts` — retries for a stack's image pull (default: 3);
+    absorbs transient registry throttles like ghcr.io's `toomanyrequests`
   - `failed-container-log-lines` — diagnostic log tail size on failure (default: 50)
 
 #### 3. Workflow Lint (`workflow-lint.yml`)

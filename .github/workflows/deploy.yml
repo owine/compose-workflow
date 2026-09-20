@@ -51,6 +51,10 @@ on:
       image-pull-timeout:
         type: number
         default: 600
+      image-pull-attempts:
+        description: "Attempts at a stack's image pull before the stack is failed (transient registry throttles)"
+        type: number
+        default: 3
       service-startup-timeout:
         type: number
         default: 300
@@ -268,6 +272,8 @@ jobs:
       TARGET_REF: ${{ inputs.target-ref }}
       FORCE_DEPLOY: ${{ inputs.force-deploy }}
       SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
+      IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
+      IMAGE_PULL_ATTEMPTS: ${{ inputs.image-pull-attempts }}
       FAILED_LOG_LINES: ${{ inputs.failed-container-log-lines }}
       HAS_DOCKGE: ${{ inputs.has-dockge }}
       HAS_REMOVED: ${{ needs.prepare.outputs.has_removed_stacks }}
@@ -411,15 +417,69 @@ jobs:
           password: ${{ steps.creds.outputs.ZGITLAB_TOKEN }}
           logout: false
 
+      # Pulling used to ride along inside `up --pull always`, which made one
+      # shed registry request fatal for a whole stack: the `toomanyrequests`
+      # aborts `up`, the stack is marked failed, the cleanup step `down`s it,
+      # and the rollback job redeploys the previous SHA.
+      #
+      # ghcr.io sheds with `toomanyrequests: retry-after: <microseconds>,
+      # allowed: 44000/minute` — a bucket shared across all of GitHub, not a
+      # per-account quota. A retry-after measured in microseconds means "you
+      # were caught in a burst, come back", and an unchanged retry normally
+      # succeeds.
+      #
+      # Pulling in its own retried step keeps `up` fail-fast: retrying
+      # `up --wait` would multiply a genuinely unhealthy container by
+      # attempts x SERVICE_STARTUP_TIMEOUT before the stack is reported failed.
+      #
+      # A file rather than inline because each `run:` block is a fresh shell
+      # and three deploy sites need it; a sourceable function rather than an
+      # executable so it returns into the caller's control flow (the stack
+      # loops run it inside a subshell under `set +e` and want `|| exit 1`,
+      # not a subprocess exit code to re-check). It sets no shell options on
+      # purpose — callers differ (`set -euo pipefail` here, `set +e` in the
+      # stack loops).
+      - name: Install pull-with-retry helper
+        if: steps.skip-gate.outputs.skipped == 'false'
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/compose-pull.sh" <<'SCRIPT'
+          # usage: compose_pull_retry <env-file>   (call from the stack directory)
+          compose_pull_retry() {
+            local env_file="$1"
+            local attempts="${IMAGE_PULL_ATTEMPTS:-3}"
+            local pull_timeout="${IMAGE_PULL_TIMEOUT:-600}"
+            local attempt delay
+
+            for (( attempt = 1; attempt <= attempts; attempt++ )); do
+              if timeout "$pull_timeout" op run --no-masking --env-file="$env_file" -- \
+                  docker compose pull --quiet --policy always --ignore-buildable; then
+                return 0
+              fi
+              if (( attempt < attempts )); then
+                delay=$(( attempt * 5 ))
+                echo "::warning::image pull failed (attempt $attempt/$attempts), retrying in ${delay}s"
+                sleep "$delay"
+              fi
+            done
+
+            echo "::error::image pull failed after $attempts attempts"
+            return 1
+          }
+          SCRIPT
+
       - name: Deploy dockge
         if: |
           steps.skip-gate.outputs.skipped == 'false'
           && env.HAS_DOCKGE == 'true'
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-pull.sh"
           cd "$DOCKGE_PATH"
+          compose_pull_retry "$LIVE_REPO_PATH/compose.env"
           timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-            docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans
+            docker compose up -d --build --quiet-pull --quiet-build --wait --remove-orphans
 
       - name: Deploy existing stacks
         id: deploy-existing
@@ -431,6 +491,8 @@ jobs:
           # (matches the prior matrix's fail-fast: false). Per-stack timeout
           # via the `timeout` command preserves the matrix's per-entry budget.
           set +e
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-pull.sh"
 
           # shellcheck disable=SC2317  # invoked from subshells below
           dump_failed_stack() {
@@ -469,8 +531,11 @@ jobs:
             echo "::group::Deploy existing: $stack"
             (
               cd "$LIVE_REPO_PATH/$stack"
+              # A pull failure is a registry problem, not a stack health
+              # problem: fail the stack without dumping container diagnostics.
+              compose_pull_retry "$LIVE_REPO_PATH/compose.env" || exit 1
               if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-                  docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans; then
+                  docker compose up -d --build --quiet-pull --quiet-build --wait --remove-orphans; then
                 dump_failed_stack "$stack"
                 exit 1
               fi
@@ -533,6 +598,8 @@ jobs:
           && (steps.deploy-existing.outcome == 'success' || steps.deploy-existing.outcome == 'skipped')
         run: |
           set +e
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-pull.sh"
 
           # shellcheck disable=SC2317
           dump_failed_stack() {
@@ -571,8 +638,11 @@ jobs:
             echo "::group::Deploy new: $stack"
             (
               cd "$LIVE_REPO_PATH/$stack"
+              # A pull failure is a registry problem, not a stack health
+              # problem: fail the stack without dumping container diagnostics.
+              compose_pull_retry "$LIVE_REPO_PATH/compose.env" || exit 1
               if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-                  docker compose up -d --build --pull always --quiet-pull --quiet-build --wait --remove-orphans; then
+                  docker compose up -d --build --quiet-pull --quiet-build --wait --remove-orphans; then
                 dump_failed_stack "$stack"
                 exit 1
               fi
