@@ -284,6 +284,32 @@ jobs:
       NEW_STACKS: ${{ needs.prepare.outputs.new_stacks }}
       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
+      # `--wait` is otherwise bounded only by the external `timeout` command,
+      # which SIGKILLs Compose wherever it happens to be. Killed between the
+      # rename and the removal of a recreate, that strands a
+      # `<shortid>_<service>` container still holding the service's fixed
+      # `container_name` — see "Cleanup failed existing stacks on failure",
+      # which exists to mop it up.
+      #
+      # Giving Compose its own shorter deadline makes it exit on its own terms
+      # in the common case, naming the services that never became healthy
+      # instead of dying silently, and demotes the external `timeout` to a
+      # backstop for a genuinely wedged Compose.
+      #
+      # It is NOT a complete fix, and the cleanup step stays: --wait-timeout
+      # bounds the final `--wait` phase, not the `depends_on:
+      # service_healthy` waits Compose performs mid-sequence, so a stack that
+      # stalls on a dependency can still burn the whole budget and take the
+      # SIGKILL with later services half-recreated.
+      #
+      # 90% leaves ~10% of the budget at any configured value (300s -> 270s)
+      # without a second input to keep in sync. Computed in shell because
+      # GitHub expressions have no arithmetic operators.
+      - name: Compute Compose wait budget
+        run: |
+          set -euo pipefail
+          echo "COMPOSE_WAIT_TIMEOUT=$(( SERVICE_STARTUP_TIMEOUT * 9 / 10 ))" >> "$GITHUB_ENV"
+
       - name: Skip gate (already at target SHA?)
         id: skip-gate
         run: |
@@ -479,7 +505,8 @@ jobs:
           cd "$DOCKGE_PATH"
           compose_pull_retry "$LIVE_REPO_PATH/compose.env"
           timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-            docker compose up -d --build --quiet-pull --quiet-build --wait --remove-orphans
+            docker compose up -d --build --quiet-pull --quiet-build \
+              --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans
 
       - name: Deploy existing stacks
         id: deploy-existing
@@ -535,7 +562,8 @@ jobs:
               # problem: fail the stack without dumping container diagnostics.
               compose_pull_retry "$LIVE_REPO_PATH/compose.env" || exit 1
               if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-                  docker compose up -d --build --quiet-pull --quiet-build --wait --remove-orphans; then
+                  docker compose up -d --build --quiet-pull --quiet-build \
+                    --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans; then
                 dump_failed_stack "$stack"
                 exit 1
               fi
@@ -642,7 +670,8 @@ jobs:
               # problem: fail the stack without dumping container diagnostics.
               compose_pull_retry "$LIVE_REPO_PATH/compose.env" || exit 1
               if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-                  docker compose up -d --build --quiet-pull --quiet-build --wait --remove-orphans; then
+                  docker compose up -d --build --quiet-pull --quiet-build \
+                    --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans; then
                 dump_failed_stack "$stack"
                 exit 1
               fi
@@ -844,6 +873,32 @@ jobs:
       CHANGED_STACKS: ${{ needs.prepare.outputs.changed_stacks || '[]' }}
       SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
     steps:
+      # `--wait` is otherwise bounded only by the external `timeout` command,
+      # which SIGKILLs Compose wherever it happens to be. Killed between the
+      # rename and the removal of a recreate, that strands a
+      # `<shortid>_<service>` container still holding the service's fixed
+      # `container_name` — see "Cleanup failed existing stacks on failure",
+      # which exists to mop it up.
+      #
+      # Giving Compose its own shorter deadline makes it exit on its own terms
+      # in the common case, naming the services that never became healthy
+      # instead of dying silently, and demotes the external `timeout` to a
+      # backstop for a genuinely wedged Compose.
+      #
+      # It is NOT a complete fix, and the cleanup step stays: --wait-timeout
+      # bounds the final `--wait` phase, not the `depends_on:
+      # service_healthy` waits Compose performs mid-sequence, so a stack that
+      # stalls on a dependency can still burn the whole budget and take the
+      # SIGKILL with later services half-recreated.
+      #
+      # 90% leaves ~10% of the budget at any configured value (300s -> 270s)
+      # without a second input to keep in sync. Computed in shell because
+      # GitHub expressions have no arithmetic operators.
+      - name: Compute Compose wait budget
+        run: |
+          set -euo pipefail
+          echo "COMPOSE_WAIT_TIMEOUT=$(( SERVICE_STARTUP_TIMEOUT * 9 / 10 ))" >> "$GITHUB_ENV"
+
       - name: Resolve rollback plan
         id: plan
         run: |
@@ -1013,15 +1068,17 @@ jobs:
             # compose file resolves to empty and the stack comes up
             # misconfigured while reporting success.
             #
-            # `timeout` matches every deploy-path `up`. Without it a container
-            # stuck in `starting` — exactly what a bad image produces — hangs
-            # `--wait` until the job's timeout-minutes cancels it, stranding
-            # every remaining culprit un-rolled-back with no whole-tree fallback
-            # (a cancelled job takes no fallback path at all).
+            # Bounded twice, matching every deploy-path `up`: Compose's own
+            # `--wait-timeout` first, the external `timeout` as backstop.
+            # Unbounded, a container stuck in `starting` — exactly what a bad
+            # image produces — hangs `--wait` until the job's timeout-minutes
+            # cancels it, stranding every remaining culprit un-rolled-back with
+            # no whole-tree fallback (a cancelled job takes no fallback path).
             (cd "$LIVE_REPO_PATH/$stack" && \
               timeout "$SERVICE_STARTUP_TIMEOUT" \
                 op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-                  docker compose up -d --quiet-pull --wait --remove-orphans) \
+                  docker compose up -d --quiet-pull \
+                    --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans) \
               || echo "::warning::per-stack rollback up failed for $stack; recover manually with: cd \"$LIVE_REPO_PATH/$stack\" && op run --no-masking --env-file=\"$LIVE_REPO_PATH/compose.env\" -- docker compose up -d --wait"
           done
 
@@ -1084,14 +1141,16 @@ jobs:
             stack_dir="$LIVE_REPO_PATH/$stack"
             [[ -f "$stack_dir/compose.yaml" || -f "$stack_dir/compose.yml" ]] || continue
             cd "$stack_dir"
-            # `timeout` matches every other `up` in this workflow. Without it a
-            # container stuck in `starting` makes `--wait` block until the job's
-            # timeout-minutes cancels the whole job, stranding every stack after
-            # this one with no further fallback — the exact state a bad image
-            # tends to produce.
+            # Bounded twice, matching every other `up` in this workflow:
+            # Compose's own `--wait-timeout` first, the external `timeout` as
+            # backstop. Unbounded, a container stuck in `starting` makes
+            # `--wait` block until the job's timeout-minutes cancels the whole
+            # job, stranding every stack after this one with no further
+            # fallback — the exact state a bad image tends to produce.
             timeout "$SERVICE_STARTUP_TIMEOUT" \
               op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-              docker compose up -d --quiet-pull --wait --remove-orphans \
+              docker compose up -d --quiet-pull \
+                --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans \
               || echo "::warning::rollback up failed for $stack; recover manually with: cd \"$LIVE_REPO_PATH/$stack\" && op run --no-masking --env-file=\"$LIVE_REPO_PATH/compose.env\" -- docker compose up -d --wait"
           done
 
