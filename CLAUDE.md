@@ -174,7 +174,7 @@ Examples of stacks typically marked critical:
 - **Reverse proxies** (`swag`, `traefik`) — all external access depends on them
 - **Container management** (`portainer`, `dockge`) — needed for manual intervention if other stacks fail
 - **Authentication** (`authelia`) — SSO gateway
-- **Monitoring** (`dozzle`, `beszel`, `uptime-kuma`) — operational visibility
+- **Monitoring** (`dozzle`, `beszel`) — operational visibility
 
 ### Disabling stacks and services
 
