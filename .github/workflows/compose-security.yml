@@ -113,7 +113,7 @@ jobs:
         id: gitguardian
         if: inputs.event-name == 'push'
         continue-on-error: true
-        uses: GitGuardian/ggshield-action@7059aef1ffb7d2374ce27201144f5613beecefe0 # v1.54.0
+        uses: GitGuardian/ggshield-action@7f66d3be9c59a821dcf4f45ee5d929203a1a0b90 # v1.55.0
         env:
           GITHUB_PUSH_BEFORE_SHA: ${{ inputs.github-event-before }}
           GITHUB_PUSH_BASE_SHA: ${{ inputs.github-event-base }}
