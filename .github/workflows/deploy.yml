@@ -42,6 +42,10 @@ on:
       force-deploy:
         type: boolean
         default: false
+      force-recreate:
+        description: "Pass --force-recreate to every stack's compose up (implies force-deploy). Rollback never force-recreates."
+        type: boolean
+        default: false
       auto-detect-critical:
         type: boolean
         default: true
@@ -270,7 +274,10 @@ jobs:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
       DOCKGE_PATH: ${{ inputs.live-dockge-path }}
       TARGET_REF: ${{ inputs.target-ref }}
-      FORCE_DEPLOY: ${{ inputs.force-deploy }}
+      FORCE_DEPLOY: ${{ inputs.force-deploy || inputs.force-recreate }}
+      # Expanded as ${RECREATE_FLAG:+"$RECREATE_FLAG"} so an empty value adds
+      # no argument at all (a bare "" would reach compose as a service name).
+      RECREATE_FLAG: ${{ inputs.force-recreate && '--force-recreate' || '' }}
       SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
       IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
       IMAGE_PULL_ATTEMPTS: ${{ inputs.image-pull-attempts }}
@@ -506,7 +513,8 @@ jobs:
           compose_pull_retry "$LIVE_REPO_PATH/compose.env"
           timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
             docker compose up -d --build --quiet-pull --quiet-build \
-              --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans
+              --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans \
+              ${RECREATE_FLAG:+"$RECREATE_FLAG"}
 
       - name: Deploy existing stacks
         id: deploy-existing
@@ -563,7 +571,8 @@ jobs:
               compose_pull_retry "$LIVE_REPO_PATH/compose.env" || exit 1
               if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
                   docker compose up -d --build --quiet-pull --quiet-build \
-                    --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans; then
+                    --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans \
+                    ${RECREATE_FLAG:+"$RECREATE_FLAG"}; then
                 dump_failed_stack "$stack"
                 exit 1
               fi
@@ -671,7 +680,8 @@ jobs:
               compose_pull_retry "$LIVE_REPO_PATH/compose.env" || exit 1
               if ! timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
                   docker compose up -d --build --quiet-pull --quiet-build \
-                    --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans; then
+                    --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans \
+                    ${RECREATE_FLAG:+"$RECREATE_FLAG"}; then
                 dump_failed_stack "$stack"
                 exit 1
               fi
@@ -1169,7 +1179,7 @@ jobs:
     steps:
       - name: Checkout compose-workflow scripts
         if: >-
-          inputs.force-deploy != true &&
+          inputs.force-deploy != true && inputs.force-recreate != true &&
           needs.prepare.result == 'success' &&
           (needs.prepare.outputs.has_removed_stacks == 'true' ||
            needs.prepare.outputs.has_existing_stacks == 'true' ||
@@ -1215,7 +1225,8 @@ jobs:
           REMOVED_STACKS: ${{ needs.prepare.outputs.removed_stacks }}
           HAS_DISABLED: ${{ needs.prepare.outputs.has_disabled_stacks }}
           DISABLED_STACKS: ${{ needs.prepare.outputs.disabled_stacks }}
-          FORCE_DEPLOY: ${{ inputs.force-deploy }}
+          FORCE_DEPLOY: ${{ inputs.force-deploy || inputs.force-recreate }}
+          FORCE_RECREATE: ${{ inputs.force-recreate }}
           ROLLBACK_MODE: ${{ needs.rollback.outputs.mode }}
           ROLLBACK_CULPRITS: ${{ needs.rollback.outputs.culprits }}
         run: |
@@ -1263,7 +1274,9 @@ jobs:
             color="7105644"   # 0x6c757d gray
           elif [[ "$deploy_status" == "success" && "$health_status" == "success" ]]; then
             overall="success"
-            if [[ "$FORCE_DEPLOY" == "true" ]]; then
+            if [[ "$FORCE_RECREATE" == "true" ]]; then
+              description="🔄 **Force recreate completed successfully**"
+            elif [[ "$FORCE_DEPLOY" == "true" ]]; then
               description="🔄 **Force deployment completed successfully**"
             else
               description="✅ **Deployment completed successfully**"
@@ -1388,7 +1401,7 @@ jobs:
       - name: Resolve PR for deploy
         id: pr
         if: >-
-          inputs.force-deploy != true &&
+          inputs.force-deploy != true && inputs.force-recreate != true &&
           needs.prepare.result == 'success' &&
           steps.status.outputs.deployment_needed == 'true'
         env:
