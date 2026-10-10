@@ -292,7 +292,7 @@ docker compose -f stack/compose.yaml config
 ### Adding a new self-hosted host
 
 Follow `docs/superpowers/runbooks/adding-a-new-host.md` (the generic step-by-step procedure). Highlights:
-- Pick a runner label no other host uses (e.g. `<node>` for a new `docker-<node>` repo; reusing an existing label such as `piwine` routes deploys to that host's runner)
+- Pick a unique runner label (e.g. `<node>` for a new `docker-<node>` repo). Runners register per repo, so the new repo needs its own runner whatever the label; a reused label wouldn't reach another repo's host, the job would just queue
 - Add the label to **both** `compose-workflow/.github/actionlint.yaml` and the caller repo's `.github/actionlint.yaml`
 - Run host prep (deploy user, path ownership pattern, `safe.directory`, umask 002 in admin's rcs)
 - Register the runner as a systemd service running as `deploy`
