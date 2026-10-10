@@ -20,7 +20,6 @@ Pick these before starting and substitute throughout:
 | `<label>` | runner label (unique per host) |
 | `<admin>` | human admin / SSH user on the host |
 | `<arch>` | `linux/amd64` or `linux/arm64/v8` (lint) + `x64`/`arm64` (runner tarball) |
-| `<has-dockge>` | `false` (dockge was retired on every host in 2026-10; `true` only for a host that still runs a dockge tree) |
 | `<webhook>` | Discord webhook 1P ref |
 
 ---
@@ -34,7 +33,7 @@ datacenter/cloud). The repo needs:
 .github/actionlint.yaml          # declares the <label> runner label
 .github/renovate.json            # extends github>owine/compose-workflow
 .github/workflows/lint.yml       # calls compose-lint.yml; platforms: "<arch>"
-.github/workflows/deploy.yml     # calls deploy.yml; runner-label/has-dockge/webhook
+.github/workflows/deploy.yml     # calls deploy.yml; runner-label/webhook
 .gitignore                       # MUST include `!compose.env` after `*.env`
 .yamllint
 compose.env                      # op:// references — MUST be tracked (force-add)
@@ -46,9 +45,8 @@ Gotchas:
   `!compose.env` negation so the file (op:// references only, no secret values)
   stays in the repo. The deploy reads `$LIVE_REPO_PATH/compose.env` and the live
   tree is reset to repo HEAD — an untracked env file would never reach the host.
-- `deploy.yml`: set `runner-label: <label>`, `has-dockge: <has-dockge>`,
-  `concurrency.group: deploy-<label>`, `live-repo-path: /opt/compose` (omit
-  `live-dockge-path` when `has-dockge: false`). If stacks must talk across
+- `deploy.yml`: set `runner-label: <label>`,
+  `concurrency.group: deploy-<label>`, `live-repo-path: /opt/compose`. If stacks must talk across
   Compose projects (e.g. a reverse proxy), list those networks in
   `shared-networks` and declare them `external: true` in each stack.
 - `lint.yml`: set `platforms: "<arch>"` and `repo-name`/`target-repository`.

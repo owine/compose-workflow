@@ -35,16 +35,15 @@ Three reusable workflows live in `.github/workflows/`:
 - **Runs on**: `[self-hosted, <runner-label>]` (e.g. `[self-hosted, piwine]`)
 - **5 jobs** (consolidated 2026-04-30 from a prior 11-job structure — single-runner concurrency=1 means matrices serialize anyway):
   1. **`prepare`** — discover stacks, capture previous SHA, classify removed/existing/new, detect critical stacks
-  2. **`deploy`** — skip-gate, teardown removed, update tree from workspace (no `git fetch` from origin needed; runner has no GitHub creds), 1P configure, multi-registry login (ghcr/dockerhub/gitlab/gitlab-zenterprise), dockge (optional), ensure shared networks (optional), existing stacks, new stacks, cleanup-on-failure, summary outputs
+  2. **`deploy`** — skip-gate, teardown removed, update tree from workspace (no `git fetch` from origin needed; runner has no GitHub creds), 1P configure, multi-registry login (ghcr/dockerhub/gitlab/gitlab-zenterprise), ensure shared networks (optional), existing stacks, new stacks, cleanup-on-failure, summary outputs
   3. **`health-check`** — validate critical stacks via inline `docker compose ps -a` parsing (no separate script). Skips one-shot exit-0 containers (e.g. migration sidecars gated via `service_completed_successfully`)
   4. **`rollback`** — `git reset --hard <previous_sha>` + redeploy if `deploy` or `health-check` failed
   5. **`notify`** — Discord webhook with status, pipeline icon line, and PR comment posting (when invoked from a PR-triggering chain)
 - **Key inputs**:
   - `runner-label` — e.g. `piwine`, `piwine-office`, `zendc`. Combined with implicit `self-hosted`
   - `live-repo-path` — absolute path on the runner host (typically `/opt/compose`)
-  - `live-dockge-path` — absolute path to dockge tree (when `has-dockge: true`)
   - `repo-name`, `webhook-url`, `discord-user-id`, `target-ref`
-  - `has-dockge` — boolean (`false` everywhere since dockge was retired on piwine/piwine-office, 2026-10)
+  - (`has-dockge` / `live-dockge-path` were removed after dockge was retired on every host, 2026-10; callers must not pass them)
   - `shared-networks` — space-separated cross-stack networks (e.g. `"proxy backup"` on piwine), created by `ensure-shared-networks.sh` in both `deploy` and `rollback` before any `up`; labelled `com.compose-workflow.shared=true` so `docker-prune` skips them
   - `force-deploy` — skip the "already at target SHA" gate
   - `auto-detect-critical` — read `com.compose.tier: infrastructure` labels (default: true)
