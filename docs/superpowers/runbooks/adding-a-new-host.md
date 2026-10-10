@@ -20,15 +20,15 @@ Pick these before starting and substitute throughout:
 | `<label>` | runner label (unique per host) |
 | `<admin>` | human admin / SSH user on the host |
 | `<arch>` | `linux/amd64` or `linux/arm64/v8` (lint) + `x64`/`arm64` (runner tarball) |
-| `<has-dockge>` | `true` for Pi-style, `false` for datacenter/cloud |
+| `<has-dockge>` | `false` (dockge was retired on every host in 2026-10; `true` only for a host that still runs a dockge tree) |
 | `<webhook>` | Discord webhook 1P ref |
 
 ---
 
 ## Phase A — Caller repo scaffolding
 
-Mirror an existing same-shaped repo (zendc for `has-dockge: false`, piwine-office
-for `has-dockge: true`). The repo needs:
+Mirror an existing same-shaped repo (piwine-office for a Pi, zendc for
+datacenter/cloud). The repo needs:
 
 ```
 .github/actionlint.yaml          # declares the <label> runner label
@@ -48,7 +48,9 @@ Gotchas:
   tree is reset to repo HEAD — an untracked env file would never reach the host.
 - `deploy.yml`: set `runner-label: <label>`, `has-dockge: <has-dockge>`,
   `concurrency.group: deploy-<label>`, `live-repo-path: /opt/compose` (omit
-  `live-dockge-path` when `has-dockge: false`).
+  `live-dockge-path` when `has-dockge: false`). If stacks must talk across
+  Compose projects (e.g. a reverse proxy), list those networks in
+  `shared-networks` and declare them `external: true` in each stack.
 - `lint.yml`: set `platforms: "<arch>"` and `repo-name`/`target-repository`.
 - Pin the reusable-workflow `uses:` to the current 40-char compose-workflow SHA.
 
