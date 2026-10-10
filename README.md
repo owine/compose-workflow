@@ -76,12 +76,11 @@ jobs:
       webhook-url: "op://Docker/discord-github-notifications/piwine_webhook_url"
       discord-user-id: "op://Docker/discord-github-notifications/user_id"
       target-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      has-dockge: false                     # true only if the host runs a dockge tree
       shared-networks: "proxy backup"       # optional; omit when no stack needs one
       force-deploy: ${{ inputs.force-deploy || false }}
 ```
 
-Optional inputs: `live-dockge-path` (when `has-dockge: true`), `shared-networks` (see below), `auto-detect-critical` (default `true`), `critical-services` (manual override), `image-pull-timeout`, `image-pull-attempts`, `service-startup-timeout`, `failed-container-log-lines`.
+Optional inputs: `shared-networks` (see below), `auto-detect-critical` (default `true`), `critical-services` (manual override), `image-pull-timeout`, `image-pull-attempts`, `service-startup-timeout`, `failed-container-log-lines`.
 
 ### Shared networks
 

@@ -3,7 +3,7 @@ name: Deploy
 
 # Job structure (consolidated 2026-04-30; see runbook for rationale):
 #   prepare      → discover stacks, capture previous SHA, classify removed/existing/new
-#   deploy       → skip-gate, teardown, tree update, registry login, dockge, all stacks
+#   deploy       → skip-gate, teardown, tree update, registry login, all stacks
 #   health-check → validate critical stacks (separate job for distinct timeout profile)
 #   rollback     → git reset to previous SHA + redeploy on deploy/health failure
 #   notify       → Discord notification (always)
@@ -19,11 +19,6 @@ on:
         description: "Absolute path to the live compose tree on the runner host"
         required: true
         type: string
-      live-dockge-path:
-        description: "Absolute path to dockge's compose tree (when has-dockge=true)"
-        required: false
-        type: string
-        default: /opt/dockge
       repo-name:
         required: true
         type: string
@@ -36,9 +31,6 @@ on:
       target-ref:
         required: true
         type: string
-      has-dockge:
-        type: boolean
-        default: false
       shared-networks:
         description: "Space-separated bridge networks to create (if missing) before any stack starts, for stacks that join them as `external: true`. Created outside any Compose project, so no stack's `down` can remove them."
         type: string
@@ -261,7 +253,7 @@ jobs:
 
   deploy:
     # Consolidated deploy phase. Replaces 7 prior jobs:
-    # teardown-removed, update-tree, registry-login, deploy-dockge,
+    # teardown-removed, update-tree, registry-login, deploy-dockge (dockge since removed),
     # deploy-existing (matrix), deploy-new (matrix), cleanup-failed-new.
     # Single self-hosted runner serializes matrix entries anyway, so the
     # collapse just removes job cold-start overhead with no parallelism loss.
@@ -276,7 +268,6 @@ jobs:
       new_failed_stacks: ${{ steps.summary.outputs.new_failed_stacks }}
     env:
       LIVE_REPO_PATH: ${{ inputs.live-repo-path }}
-      DOCKGE_PATH: ${{ inputs.live-dockge-path }}
       TARGET_REF: ${{ inputs.target-ref }}
       FORCE_DEPLOY: ${{ inputs.force-deploy || inputs.force-recreate }}
       # Expanded as ${RECREATE_FLAG:+"$RECREATE_FLAG"} so an empty value adds
@@ -286,7 +277,6 @@ jobs:
       IMAGE_PULL_TIMEOUT: ${{ inputs.image-pull-timeout }}
       IMAGE_PULL_ATTEMPTS: ${{ inputs.image-pull-attempts }}
       FAILED_LOG_LINES: ${{ inputs.failed-container-log-lines }}
-      HAS_DOCKGE: ${{ inputs.has-dockge }}
       SHARED_NETWORKS: ${{ inputs.shared-networks }}
       HAS_REMOVED: ${{ needs.prepare.outputs.has_removed_stacks }}
       HAS_EXISTING: ${{ needs.prepare.outputs.has_existing_stacks }}
@@ -551,21 +541,6 @@ jobs:
           set -euo pipefail
           read -ra nets <<< "$SHARED_NETWORKS"
           ./.compose-workflow/scripts/deployment/ensure-shared-networks.sh "${nets[@]}"
-
-      - name: Deploy dockge
-        if: |
-          steps.skip-gate.outputs.skipped == 'false'
-          && env.HAS_DOCKGE == 'true'
-        run: |
-          set -euo pipefail
-          # shellcheck source=/dev/null
-          source "$RUNNER_TEMP/compose-pull.sh"
-          cd "$DOCKGE_PATH"
-          compose_pull_retry "$LIVE_REPO_PATH/compose.env"
-          timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
-            docker compose up -d --build --quiet-pull --quiet-build \
-              --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT" --remove-orphans \
-              ${RECREATE_FLAG:+"$RECREATE_FLAG"}
 
       - name: Deploy existing stacks
         id: deploy-existing
