@@ -342,6 +342,52 @@ jobs:
             echo "skipped=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Shared by every compose ps/logs/down below that runs without `op run`.
+      # Keep in sync with the copies in the deploy, health-check and rollback jobs.
+      - name: Install compose project helper
+        if: steps.skip-gate.outputs.skipped == 'false'
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/compose-project.sh" <<'SCRIPT'
+          # usage: compose_projects <stack>  -> the stack's Compose project name(s), one per line
+          # Read from the containers' working_dir label, so a top-level `name:` or
+          # a dir name Compose normalises (dots, uppercase, leading _/-) still
+          # resolves. Every distinct match is returned (e.g. leftovers from a renamed
+          # project). With no containers in the dir it falls back to the stack name,
+          # unless a project of that name runs from another dir (e.g. dockge's own
+          # /opt/dockge): then it returns nothing, so down is a no-op and the health
+          # check sees "no containers" rather than acting on a foreign project.
+          compose_projects() {
+            local dir="${LIVE_REPO_PATH%/}/$1" p others
+            p=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
+                  --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
+                  | sort -u) || p=""
+            if [[ -z "$p" ]]; then
+              # Captured first: piping docker into `grep -q` can SIGPIPE under pipefail.
+              others=$(docker ps -a --filter "label=com.docker.compose.project=$1" \
+                  --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null) || others=""
+              if [[ -n "$others" ]] && grep -qvxF -- "$dir" <<<"$others"; then
+                return 0
+              fi
+              p="$1"
+            fi
+            printf '%s\n' "$p"
+          }
+          # usage: compose_p <stack> <compose args...>
+          # Runs compose against each of the stack's projects by name from / (no
+          # compose file there), so the stack's compose file is never parsed: these
+          # calls run without `op run`, and a file whose syntax needs ${VARS} would
+          # fail to parse. Non-zero if the command failed for any project.
+          compose_p() {
+            local stack="$1" proj rc=0; shift
+            while IFS= read -r proj; do
+              [[ -n "$proj" ]] || continue
+              (cd / && docker compose -p "$proj" "$@" </dev/null) || rc=$?
+            done < <(compose_projects "$stack")
+            return "$rc"
+          }
+          SCRIPT
+
       - name: Teardown removed stacks (uses pre-reset compose files)
         if: |
           steps.skip-gate.outputs.skipped == 'false'
@@ -352,13 +398,15 @@ jobs:
         #     if that still references a since-archived 1P item (e.g. a stack
         #     removal that also drops its now-orphaned vars), `op run` aborts on
         #     the dead ref and the teardown never runs, stranding the containers.
-        #  2. `down`/`ps`/`logs` address the project by name (`-p <stack>`, run
-        #     from / where no compose file exists), so the compose file is never
-        #     parsed — files whose syntax needs ${VARS} (e.g. extra_hosts) would
-        #     otherwise fail. Assumes project name == stack dir name (no top-level
-        #     `name:`, dir names already in compose's [a-z0-9_-] form).
+        #  2. `down`/`ps`/`logs` go through `compose_p` (see "Install compose
+        #     project helper"): the project is resolved from the containers'
+        #     working_dir label and addressed by name from /, so the compose file
+        #     is never parsed — files whose syntax needs ${VARS} (e.g.
+        #     extra_hosts) would otherwise fail.
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-project.sh"
           for stack in $(echo "$REMOVED_STACKS" | jq -r '.[]'); do
             [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $stack"; exit 1; }
             compose_file=""
@@ -368,12 +416,11 @@ jobs:
                 break
               fi
             done
-            if [[ -n "$compose_file" ]]; then
-              echo "🛑 Stopping $stack"
-              (cd / && docker compose -p "$stack" down) || echo "::warning::down failed for $stack"
-            else
-              echo "::warning::compose file missing for removed stack $stack"
-            fi
+            # down targets the project label, so it no longer needs the file.
+            [[ -n "$compose_file" ]] \
+              || echo "::notice::compose file missing for removed stack $stack; tearing down by project label"
+            echo "🛑 Stopping $stack"
+            compose_p "$stack" down || echo "::warning::down failed for $stack"
           done
 
       # actions/checkout authenticates via GITHUB_TOKEN; the deploy user has no
@@ -562,6 +609,8 @@ jobs:
           set +e
           # shellcheck source=/dev/null
           source "$RUNNER_TEMP/compose-pull.sh"
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-project.sh"
 
           # shellcheck disable=SC2317  # invoked from subshells below
           dump_failed_stack() {
@@ -569,7 +618,7 @@ jobs:
             local lines="${FAILED_LOG_LINES:-50}"
             # By project name from / (no compose file there): never parses the
             # stack's compose file, which can need ${VARS} we don't load here.
-            dc() { (cd / && docker compose -p "$stack" "$@"); }
+            dc() { compose_p "$stack" "$@"; }
             echo "::group::🔍 Diagnostics: $stack"
             echo "── docker compose ps -a ──"
             dc ps -a 2>&1 || true
@@ -590,7 +639,6 @@ jobs:
             fi
             echo "::endgroup::"
           }
-          export -f dump_failed_stack
 
           failed=()
           succeeded=0
@@ -654,10 +702,12 @@ jobs:
           FAILED_EXISTING_STACKS: ${{ steps.deploy-existing.outputs.failed_stacks }}
         run: |
           set +e
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-project.sh"
           for stack in $(echo "$FAILED_EXISTING_STACKS" | jq -r '.[]'); do
             [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::warning::skipping invalid stack: $stack"; continue; }
             echo "🧹 Tearing down failed existing stack $stack to clear recreate orphans"
-            (cd / && docker compose -p "$stack" down) || true
+            compose_p "$stack" down || true
           done
 
       - name: Deploy new stacks
@@ -673,6 +723,8 @@ jobs:
           set +e
           # shellcheck source=/dev/null
           source "$RUNNER_TEMP/compose-pull.sh"
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-project.sh"
 
           # shellcheck disable=SC2317
           dump_failed_stack() {
@@ -680,7 +732,7 @@ jobs:
             local lines="${FAILED_LOG_LINES:-50}"
             # By project name from / (no compose file there): never parses the
             # stack's compose file, which can need ${VARS} we don't load here.
-            dc() { (cd / && docker compose -p "$stack" "$@"); }
+            dc() { compose_p "$stack" "$@"; }
             echo "::group::🔍 Diagnostics: $stack"
             echo "── docker compose ps -a ──"
             dc ps -a 2>&1 || true
@@ -701,7 +753,6 @@ jobs:
             fi
             echo "::endgroup::"
           }
-          export -f dump_failed_stack
 
           failed=()
           succeeded=0
@@ -756,9 +807,11 @@ jobs:
           && steps.deploy-new.outcome == 'failure'
         run: |
           set +e
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-project.sh"
           for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
             [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::warning::skipping invalid stack: $stack"; continue; }
-            (cd / && docker compose -p "$stack" down) || true
+            compose_p "$stack" down || true
           done
 
       - name: Compute deploy summary outputs
@@ -802,10 +855,57 @@ jobs:
       FAILED_LOG_LINES: ${{ inputs.failed-container-log-lines }}
       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
+      # Shared by every compose ps/logs/down below that runs without `op run`.
+      # Keep in sync with the copies in the deploy, health-check and rollback jobs.
+      - name: Install compose project helper
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/compose-project.sh" <<'SCRIPT'
+          # usage: compose_projects <stack>  -> the stack's Compose project name(s), one per line
+          # Read from the containers' working_dir label, so a top-level `name:` or
+          # a dir name Compose normalises (dots, uppercase, leading _/-) still
+          # resolves. Every distinct match is returned (e.g. leftovers from a renamed
+          # project). With no containers in the dir it falls back to the stack name,
+          # unless a project of that name runs from another dir (e.g. dockge's own
+          # /opt/dockge): then it returns nothing, so down is a no-op and the health
+          # check sees "no containers" rather than acting on a foreign project.
+          compose_projects() {
+            local dir="${LIVE_REPO_PATH%/}/$1" p others
+            p=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
+                  --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
+                  | sort -u) || p=""
+            if [[ -z "$p" ]]; then
+              # Captured first: piping docker into `grep -q` can SIGPIPE under pipefail.
+              others=$(docker ps -a --filter "label=com.docker.compose.project=$1" \
+                  --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null) || others=""
+              if [[ -n "$others" ]] && grep -qvxF -- "$dir" <<<"$others"; then
+                return 0
+              fi
+              p="$1"
+            fi
+            printf '%s\n' "$p"
+          }
+          # usage: compose_p <stack> <compose args...>
+          # Runs compose against each of the stack's projects by name from / (no
+          # compose file there), so the stack's compose file is never parsed: these
+          # calls run without `op run`, and a file whose syntax needs ${VARS} would
+          # fail to parse. Non-zero if the command failed for any project.
+          compose_p() {
+            local stack="$1" proj rc=0; shift
+            while IFS= read -r proj; do
+              [[ -n "$proj" ]] || continue
+              (cd / && docker compose -p "$proj" "$@" </dev/null) || rc=$?
+            done < <(compose_projects "$stack")
+            return "$rc"
+          }
+          SCRIPT
+
       - name: Health check critical stacks
         id: h
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-project.sh"
           CRITICAL_STACKS="${CRITICAL_STACKS:-[]}"
 
           # Mirror of dump_failed_stack used in the deploy job — kept inline
@@ -816,7 +916,7 @@ jobs:
             local lines="${FAILED_LOG_LINES:-50}"
             # By project name from / (no compose file there): never parses the
             # stack's compose file, which can need ${VARS} we don't load here.
-            dc() { (cd / && docker compose -p "$stack" "$@"); }
+            dc() { compose_p "$stack" "$@"; }
             echo "::group::🔍 Diagnostics: $stack"
             echo "── docker compose ps -a ──"
             dc ps -a 2>&1 || true
@@ -840,9 +940,13 @@ jobs:
 
           failed=()
           for stack in $(echo "$CRITICAL_STACKS" | jq -r '.[]'); do
-            # By project name from / so the compose file isn't parsed (no `op run` here;
-            # a file whose syntax needs ${VARS}, e.g. extra_hosts, would fail to parse).
-            if ! services=$(cd / && docker compose -p "$stack" ps -a --format json | jq -s '.'); then
+            if [[ ! "$stack" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+              failed+=("$stack")
+              echo "::error::invalid critical stack name: $stack"
+              continue
+            fi
+            # compose_p: by project name from /, so the compose file isn't parsed.
+            if ! services=$(compose_p "$stack" ps -a --format json | jq -s '.'); then
               failed+=("$stack")
               echo "::error::Critical stack $stack: docker compose ps failed"
               continue
@@ -873,8 +977,7 @@ jobs:
             # Emit the culprit list BEFORE `exit 1` — a step that exits
             # non-zero still has its already-written $GITHUB_OUTPUT honoured,
             # but nothing written after the exit would be.
-            json=$(printf '"%s",' "${failed[@]}" | sed 's/,$//')
-            echo "failed_stacks=[$json]" >> "$GITHUB_OUTPUT"
+            echo "failed_stacks=$(jq -cn '$ARGS.positional' --args "${failed[@]}")" >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -990,6 +1093,51 @@ jobs:
           read -ra nets <<< "$SHARED_NETWORKS"
           ./.compose-workflow/scripts/deployment/ensure-shared-networks.sh "${nets[@]}"
 
+      # Shared by every compose ps/logs/down below that runs without `op run`.
+      # Keep in sync with the copies in the deploy, health-check and rollback jobs.
+      - name: Install compose project helper
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/compose-project.sh" <<'SCRIPT'
+          # usage: compose_projects <stack>  -> the stack's Compose project name(s), one per line
+          # Read from the containers' working_dir label, so a top-level `name:` or
+          # a dir name Compose normalises (dots, uppercase, leading _/-) still
+          # resolves. Every distinct match is returned (e.g. leftovers from a renamed
+          # project). With no containers in the dir it falls back to the stack name,
+          # unless a project of that name runs from another dir (e.g. dockge's own
+          # /opt/dockge): then it returns nothing, so down is a no-op and the health
+          # check sees "no containers" rather than acting on a foreign project.
+          compose_projects() {
+            local dir="${LIVE_REPO_PATH%/}/$1" p others
+            p=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
+                  --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
+                  | sort -u) || p=""
+            if [[ -z "$p" ]]; then
+              # Captured first: piping docker into `grep -q` can SIGPIPE under pipefail.
+              others=$(docker ps -a --filter "label=com.docker.compose.project=$1" \
+                  --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null) || others=""
+              if [[ -n "$others" ]] && grep -qvxF -- "$dir" <<<"$others"; then
+                return 0
+              fi
+              p="$1"
+            fi
+            printf '%s\n' "$p"
+          }
+          # usage: compose_p <stack> <compose args...>
+          # Runs compose against each of the stack's projects by name from / (no
+          # compose file there), so the stack's compose file is never parsed: these
+          # calls run without `op run`, and a file whose syntax needs ${VARS} would
+          # fail to parse. Non-zero if the command failed for any project.
+          compose_p() {
+            local stack="$1" proj rc=0; shift
+            while IFS= read -r proj; do
+              [[ -n "$proj" ]] || continue
+              (cd / && docker compose -p "$proj" "$@" </dev/null) || rc=$?
+            done < <(compose_projects "$stack")
+            return "$rc"
+          }
+          SCRIPT
+
       - name: Resolve rollback plan
         id: plan
         run: |
@@ -1098,6 +1246,8 @@ jobs:
           CULPRITS: ${{ steps.plan.outputs.culprits }}
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-project.sh"
           for stack in $(jq -r '.[]' <<<"$CULPRITS"); do
             # Unreachable by construction: this step only runs when mode is
             # per-stack, and `Resolve rollback plan` forces whole-tree if any
@@ -1112,16 +1262,11 @@ jobs:
             # same disposition the whole-tree path gives new stacks.
             if jq -e --arg s "$stack" 'index($s) != null' <<<"$NEW_STACKS" >/dev/null; then
               echo "🛑 Tearing down failed new stack $stack"
-              if [[ -f "$LIVE_REPO_PATH/$stack/compose.yaml" || -f "$LIVE_REPO_PATH/$stack/compose.yml" ]]; then
-                (cd / && docker compose -p "$stack" down) \
-                  || echo "::warning::down failed for $stack"
-              else
-                # Parity with the whole-tree teardown step's annotation: a
-                # missing compose file means containers may still be running
-                # with nothing left to address them by, which an operator needs
-                # to see rather than have silently skipped.
-                echo "::warning::compose file missing for failed new stack $stack"
+              # down targets the project label, so it no longer needs the file.
+              if [[ ! -f "$LIVE_REPO_PATH/$stack/compose.yaml" && ! -f "$LIVE_REPO_PATH/$stack/compose.yml" ]]; then
+                echo "::notice::compose file missing for failed new stack $stack; tearing down by project label"
               fi
+              compose_p "$stack" down || echo "::warning::down failed for $stack"
               continue
             fi
 
@@ -1179,6 +1324,8 @@ jobs:
           NEW_STACKS: ${{ needs.prepare.outputs.new_stacks }}
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "$RUNNER_TEMP/compose-project.sh"
           for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
             [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::error::invalid stack name: $stack"; exit 1; }
             compose_file=""
@@ -1188,10 +1335,10 @@ jobs:
                 break
               fi
             done
-            if [[ -n "$compose_file" ]]; then
-              echo "🛑 Tearing down new stack $stack before rollback"
-              (cd / && docker compose -p "$stack" down) || echo "::warning::down failed for $stack"
-            fi
+            [[ -n "$compose_file" ]] \
+              || echo "::notice::compose file missing for new stack $stack; tearing down by project label"
+            echo "🛑 Tearing down new stack $stack before rollback"
+            compose_p "$stack" down || echo "::warning::down failed for $stack"
           done
 
       - name: Reset live tree to previous SHA

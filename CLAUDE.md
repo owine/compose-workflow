@@ -254,6 +254,7 @@ docker compose -f stack/compose.yaml config
 - **Native health verification** — `docker compose up --wait` for atomic readiness
 - **Multi-registry auth** — single `1password/load-secrets-action` step pulls all four registry credential pairs, four `docker/login-action` steps with `logout: false` and `continue-on-error: true` so a single misconfigured registry doesn't block deploys that may not pull from it
 - **Sequential existing-then-new** — new stacks only deploy if existing stacks succeeded
+- **No-env compose calls** — `ps`/`logs`/`down` run without `op run`, so they go through the `compose_p` helper (installed per job into `$RUNNER_TEMP/compose-project.sh`): it resolves the stack's Compose project(s) from the containers' `com.docker.compose.project.working_dir` label (all distinct matches; falls back to the stack name) and runs `docker compose -p <project>` from `/` for each, so the stack's compose file — whose syntax may need `${VARS}` — is never parsed. Keep the three copies (deploy, health-check, rollback) in sync
 - **Failure diagnostics** — on stack failure or health failure, dumps `docker compose ps -a`, `docker inspect` of `.State.Health.Log` (probe history with exit codes + stdout), and `docker compose logs --tail N` scoped to the failing service
 - **Automatic rollback** — `git reset --hard <previous_sha>` + redeploy if deploy or health-check failed
 - **Discord notifications** — pipeline-status icon line, removed-stacks list, commit link, user mention on failure
