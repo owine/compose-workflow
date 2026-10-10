@@ -968,8 +968,15 @@ jobs:
       # Same as the deploy job's step: both rollback modes run `up`, which
       # fails on a missing external network. Scripts pinned to this workflow's
       # commit, as in the other jobs.
+      #
+      # continue-on-error on both: a failure here must not skip the plan and
+      # restore steps below. Stacks that need a missing network then fail
+      # their own `up` (with the usual recover-manually warning); every other
+      # stack still rolls back. The deploy job, by contrast, fails fast here,
+      # before any stack is touched, which itself triggers this rollback.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         if: env.SHARED_NETWORKS != ''
+        continue-on-error: true
         with:
           repository: owine/compose-workflow
           ref: ${{ job.workflow_sha }}
@@ -977,6 +984,7 @@ jobs:
 
       - name: Ensure shared networks
         if: env.SHARED_NETWORKS != ''
+        continue-on-error: true
         run: |
           set -euo pipefail
           read -ra nets <<< "$SHARED_NETWORKS"

@@ -10,12 +10,15 @@
 # owner is up — and the owner's `down` tries to remove a network every other
 # stack is attached to. Networks created here belong to no project.
 #
-# Idempotent: an existing network is reused untouched. A pre-existing one that
-# a Compose project owns is reused with a warning rather than recreated, since
-# recreating would detach every container on it.
+# Idempotent: an existing network is reused untouched, never recreated —
+# recreating would detach every container on it, and Docker network labels
+# are immutable, so a missing label cannot be added in place.
 #
 # The `com.compose-workflow.shared` label exempts these networks from the
-# docker-prune job's `docker network prune`.
+# docker-prune job's `docker network prune`. A pre-existing network without
+# it (made by hand, or owned by a Compose project) is reused with a warning:
+# prune removes it whenever no container is attached. The next deploy or
+# rollback recreates it labelled, but anything started in between fails.
 
 set -euo pipefail
 
@@ -31,10 +34,16 @@ for net in "$@"; do
     exit 1
   fi
 
-  if project=$(docker network inspect "$net" \
-      --format '{{ index .Labels "com.docker.compose.project" }}' 2>/dev/null); then
+  if labels=$(docker network inspect "$net" --format \
+      '{{ index .Labels "com.compose-workflow.shared" }}|{{ index .Labels "com.docker.compose.project" }}' \
+      2>/dev/null); then
+    shared="${labels%%|*}"
+    project="${labels#*|}"
     if [[ -n "$project" ]]; then
       echo "::warning::shared network $net is owned by Compose project '$project'; its 'down' will try to remove it"
+    fi
+    if [[ "$shared" != "true" ]]; then
+      echo "::warning::shared network $net predates this script (no ${SHARED_LABEL%%=*} label), so docker network prune removes it when nothing is attached; recreate it once it is idle: docker network rm $net"
     fi
     log_success "$net exists"
   else
