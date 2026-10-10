@@ -39,6 +39,10 @@ on:
       has-dockge:
         type: boolean
         default: false
+      shared-networks:
+        description: "Space-separated bridge networks to create (if missing) before any stack starts, for stacks that join them as `external: true`. Created outside any Compose project, so no stack's `down` can remove them."
+        type: string
+        default: ""
       force-deploy:
         type: boolean
         default: false
@@ -283,6 +287,7 @@ jobs:
       IMAGE_PULL_ATTEMPTS: ${{ inputs.image-pull-attempts }}
       FAILED_LOG_LINES: ${{ inputs.failed-container-log-lines }}
       HAS_DOCKGE: ${{ inputs.has-dockge }}
+      SHARED_NETWORKS: ${{ inputs.shared-networks }}
       HAS_REMOVED: ${{ needs.prepare.outputs.has_removed_stacks }}
       HAS_EXISTING: ${{ needs.prepare.outputs.has_existing_stacks }}
       HAS_NEW: ${{ needs.prepare.outputs.has_new_stacks }}
@@ -387,6 +392,17 @@ jobs:
           git -C "$LIVE_REPO_PATH" fetch "$GITHUB_WORKSPACE" "$TARGET_REF"
           git -C "$LIVE_REPO_PATH" reset --hard "$TARGET_REF"
           echo "✅ live tree now at $TARGET_REF"
+
+      # The checkout above cleans the workspace; re-fetch the scripts, pinned
+      # to this workflow's commit as in the prepare job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: |
+          steps.skip-gate.outputs.skipped == 'false'
+          && env.SHARED_NETWORKS != ''
+        with:
+          repository: owine/compose-workflow
+          ref: ${{ job.workflow_sha }}
+          path: .compose-workflow
 
       - name: Configure 1Password Service Account
         if: steps.skip-gate.outputs.skipped == 'false'
@@ -503,6 +519,21 @@ jobs:
             return 1
           }
           SCRIPT
+
+      # Cross-stack networks (e.g. Traefik's `proxy`) must exist before any
+      # stack that declares them `external: true` starts, and must not belong
+      # to a Compose project: a project-owned network makes deploy order
+      # load-bearing on a fresh host, and that project's `down` tries to
+      # remove a network every other stack is attached to. The label exempts
+      # them from the docker-prune job's network prune.
+      - name: Ensure shared networks
+        if: |
+          steps.skip-gate.outputs.skipped == 'false'
+          && env.SHARED_NETWORKS != ''
+        run: |
+          set -euo pipefail
+          read -ra nets <<< "$SHARED_NETWORKS"
+          ./.compose-workflow/scripts/deployment/ensure-shared-networks.sh "${nets[@]}"
 
       - name: Deploy dockge
         if: |
@@ -864,6 +895,8 @@ jobs:
     #   - Network prune: networks not referenced by any container. Compose
     #     recreates per-stack networks on next up. Safe here because the
     #     runner is single-concurrency, so no other deploy is mid-flight.
+    #     Shared networks (labelled by "Ensure shared networks") are exempt:
+    #     nothing but a deploy would recreate one.
     needs: [deploy, health-check, rollback]
     if: |
       always()
@@ -880,7 +913,7 @@ jobs:
         run: docker builder prune -f --filter "until=168h"
 
       - name: Prune unused networks
-        run: docker network prune -f
+        run: docker network prune -f --filter "label!=com.compose-workflow.shared"
 
   rollback:
     needs: [prepare, deploy, health-check]
@@ -904,6 +937,7 @@ jobs:
       NEW_STACKS: ${{ needs.prepare.outputs.new_stacks || '[]' }}
       CHANGED_STACKS: ${{ needs.prepare.outputs.changed_stacks || '[]' }}
       SERVICE_STARTUP_TIMEOUT: ${{ inputs.service-startup-timeout }}
+      SHARED_NETWORKS: ${{ inputs.shared-networks }}
     steps:
       # `--wait` is otherwise bounded only by the external `timeout` command,
       # which SIGKILLs Compose wherever it happens to be. Killed between the
@@ -930,6 +964,23 @@ jobs:
         run: |
           set -euo pipefail
           echo "COMPOSE_WAIT_TIMEOUT=$(( SERVICE_STARTUP_TIMEOUT * 9 / 10 ))" >> "$GITHUB_ENV"
+
+      # Same as the deploy job's step: both rollback modes run `up`, which
+      # fails on a missing external network. Scripts pinned to this workflow's
+      # commit, as in the other jobs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: env.SHARED_NETWORKS != ''
+        with:
+          repository: owine/compose-workflow
+          ref: ${{ job.workflow_sha }}
+          path: .compose-workflow
+
+      - name: Ensure shared networks
+        if: env.SHARED_NETWORKS != ''
+        run: |
+          set -euo pipefail
+          read -ra nets <<< "$SHARED_NETWORKS"
+          ./.compose-workflow/scripts/deployment/ensure-shared-networks.sh "${nets[@]}"
 
       - name: Resolve rollback plan
         id: plan
