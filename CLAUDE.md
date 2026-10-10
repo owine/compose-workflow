@@ -35,7 +35,7 @@ Three reusable workflows live in `.github/workflows/`:
 - **Runs on**: `[self-hosted, <runner-label>]` (e.g. `[self-hosted, piwine]`)
 - **5 jobs** (consolidated 2026-04-30 from a prior 11-job structure — single-runner concurrency=1 means matrices serialize anyway):
   1. **`prepare`** — discover stacks, capture previous SHA, classify removed/existing/new, detect critical stacks
-  2. **`deploy`** — skip-gate, teardown removed, update tree from workspace (no `git fetch` from origin needed; runner has no GitHub creds), 1P configure, multi-registry login (ghcr/dockerhub/gitlab/gitlab-zenterprise), dockge (optional), existing stacks, new stacks, cleanup-on-failure, summary outputs
+  2. **`deploy`** — skip-gate, teardown removed, update tree from workspace (no `git fetch` from origin needed; runner has no GitHub creds), 1P configure, multi-registry login (ghcr/dockerhub/gitlab/gitlab-zenterprise), dockge (optional), ensure shared networks (optional), existing stacks, new stacks, cleanup-on-failure, summary outputs
   3. **`health-check`** — validate critical stacks via inline `docker compose ps -a` parsing (no separate script). Skips one-shot exit-0 containers (e.g. migration sidecars gated via `service_completed_successfully`)
   4. **`rollback`** — `git reset --hard <previous_sha>` + redeploy if `deploy` or `health-check` failed
   5. **`notify`** — Discord webhook with status, pipeline icon line, and PR comment posting (when invoked from a PR-triggering chain)
@@ -44,7 +44,8 @@ Three reusable workflows live in `.github/workflows/`:
   - `live-repo-path` — absolute path on the runner host (typically `/opt/compose`)
   - `live-dockge-path` — absolute path to dockge tree (when `has-dockge: true`)
   - `repo-name`, `webhook-url`, `discord-user-id`, `target-ref`
-  - `has-dockge` — boolean (`true` for piwine/piwine-office, `false` for zendc)
+  - `has-dockge` — boolean (`false` everywhere since dockge was retired on piwine/piwine-office, 2026-10)
+  - `shared-networks` — space-separated cross-stack networks (e.g. `"proxy backup"` on piwine), created by `ensure-shared-networks.sh` in both `deploy` and `rollback` before any `up`; labelled `com.compose-workflow.shared=true` so `docker-prune` skips them
   - `force-deploy` — skip the "already at target SHA" gate
   - `auto-detect-critical` — read `com.compose.tier: infrastructure` labels (default: true)
   - `critical-services` — manual JSON array (when auto-detect is false)
@@ -174,7 +175,7 @@ with:
 
 Examples of stacks typically marked critical:
 - **Reverse proxies** (`swag`, `traefik`) — all external access depends on them
-- **Container management** (`portainer`, `dockge`) — needed for manual intervention if other stacks fail
+- **Container management** (`portainer`) — needed for manual intervention if other stacks fail
 - **Authentication** (`authelia`) — SSO gateway
 - **Monitoring** (`dozzle`, `beszel`) — operational visibility
 
@@ -206,6 +207,7 @@ Used by `deploy.yml`. The deploy/health/rollback logic is **inlined as workflow 
 - **`detect-stack-changes.sh`** — three-method detection (git diff, tree comparison, discovery analysis) for removed/existing/new stacks. Runs locally on the runner against the workspace checkout (which has full history + GitHub creds), then the workflow uses the classifications to drive teardown / sequential deploy. Cleanup of removed stacks happens in the workflow's `Teardown removed stacks` step, not in this script.
 - **`detect-critical-stacks.sh`** — scans for `com.compose.tier: infrastructure` labels, emits JSON array
 - **`build-pr-comment.sh`** — builds the deploy-status PR comment body (used by the notify job's PR-comment step)
+- **`ensure-shared-networks.sh`** — idempotently creates the `shared-networks` bridge networks outside any Compose project. The `deploy` and `rollback` jobs check out compose-workflow (at `job.workflow_sha`) only when that input is set; `deploy`'s own target checkout runs `git clean -ffdx`, so `prepare`'s copy never survives into it
 
 The previously-existing `deploy-stacks.sh`, `health-check.sh`, `rollback-stacks.sh`, `cleanup-stack.sh`, and `lib/ssh-helpers.sh` were removed when the SSH-based reusable workflow was retired in favor of the inline-step approach now in `deploy.yml` — their logic lives directly in the workflow file.
 
@@ -321,6 +323,7 @@ Follow `docs/superpowers/runbooks/adding-a-new-host.md` (the generic step-by-ste
 │   │   │   └── common.sh         # logging + validation
 │   │   ├── detect-stack-changes.sh
 │   │   ├── detect-critical-stacks.sh
+│   │   ├── ensure-shared-networks.sh
 │   │   └── build-pr-comment.sh
 │   └── testing/
 │       ├── test-detect-critical-stacks.sh

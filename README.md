@@ -76,11 +76,24 @@ jobs:
       webhook-url: "op://Docker/discord-github-notifications/piwine_webhook_url"
       discord-user-id: "op://Docker/discord-github-notifications/user_id"
       target-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      has-dockge: true                      # false for zendc
+      has-dockge: false                     # true only if the host runs a dockge tree
+      shared-networks: "proxy backup"       # optional; omit when no stack needs one
       force-deploy: ${{ inputs.force-deploy || false }}
 ```
 
-Optional inputs: `live-dockge-path` (when `has-dockge: true`), `auto-detect-critical` (default `true`), `critical-services` (manual override), `image-pull-timeout`, `image-pull-attempts`, `service-startup-timeout`, `failed-container-log-lines`.
+Optional inputs: `live-dockge-path` (when `has-dockge: true`), `shared-networks` (see below), `auto-detect-critical` (default `true`), `critical-services` (manual override), `image-pull-timeout`, `image-pull-attempts`, `service-startup-timeout`, `failed-container-log-lines`.
+
+### Shared networks
+
+Stacks that must talk across Compose projects (e.g. every Traefik-routed service and Traefik itself) join a network declared `external: true`:
+
+```yaml
+networks:
+  proxy:
+    external: true
+```
+
+List those networks in `shared-networks` (space-separated). Before any stack starts, both the deploy and rollback jobs run `scripts/deployment/ensure-shared-networks.sh`, which creates each missing one as a plain bridge network labelled `com.compose-workflow.shared=true`. Because no Compose project owns them, deploy order never matters on a fresh host and no stack's `down` can remove them. The label exempts them from the post-deploy `docker network prune`.
 
 ## Required Configuration
 
