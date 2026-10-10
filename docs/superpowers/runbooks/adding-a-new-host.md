@@ -26,8 +26,9 @@ Pick these before starting and substitute throughout:
 
 ## Phase A — Caller repo scaffolding
 
-Mirror an existing same-shaped repo (piwine-office for a Pi, zendc for
-datacenter/cloud). The repo needs:
+Mirror an existing same-shaped repo (piwine-office for a Pi; the archived
+docker-zendc is still readable as an amd64 datacenter/cloud example). The repo
+needs:
 
 ```
 .github/actionlint.yaml          # declares the <label> runner label

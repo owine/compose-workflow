@@ -3,7 +3,6 @@ self-hosted-runner:
   labels:
     - piwine
     - piwine-office
-    - zendc
     # ubuntu-26.04 is a GitHub-HOSTED label, not a self-hosted one. It is listed
     # here because actionlint's bundled known-label list is generated per release
     # and v1.7.12 (2026-03-30, the latest) predates the Ubuntu 26.04 runner images
