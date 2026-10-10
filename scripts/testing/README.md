@@ -89,7 +89,7 @@ pip install yamllint
 ./validate-compose.sh --stack dozzle --verbose ../docker-piwine
 
 # Quick validation without YAML linting
-./validate-compose.sh --config-only ../docker-zendc
+./validate-compose.sh --config-only ../docker-piwine-office
 ```
 
 ### Security Checks

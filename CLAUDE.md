@@ -8,7 +8,7 @@ This repository contains **reusable GitHub Actions workflows** that provide cent
 
 ### Repository Purpose
 
-**compose-workflow** serves as a centralized workflow hub providing reusable CI/CD workflows for Docker Compose deployments across multiple repositories. All caller repos (`docker-piwine`, `docker-piwine-office`, `docker-zendc`) deploy via **self-hosted GitHub Actions runners** that live on the deployment hosts themselves — there is no longer any SSH-from-CI deploy path. (Migrated to self-hosted runners 2026-05-02; to add another host see [`docs/superpowers/runbooks/adding-a-new-host.md`](docs/superpowers/runbooks/adding-a-new-host.md).)
+**compose-workflow** serves as a centralized workflow hub providing reusable CI/CD workflows for Docker Compose deployments across multiple repositories. All caller repos (`docker-piwine`, `docker-piwine-office`; `docker-zendc` was decommissioned and archived, 2026-10) deploy via **self-hosted GitHub Actions runners** that live on the deployment hosts themselves — there is no longer any SSH-from-CI deploy path. (Migrated to self-hosted runners 2026-05-02; to add another host see [`docs/superpowers/runbooks/adding-a-new-host.md`](docs/superpowers/runbooks/adding-a-new-host.md).)
 
 ### Workflow Architecture
 
@@ -40,7 +40,7 @@ Three reusable workflows live in `.github/workflows/`:
   4. **`rollback`** — `git reset --hard <previous_sha>` + redeploy if `deploy` or `health-check` failed
   5. **`notify`** — Discord webhook with status, pipeline icon line, and PR comment posting (when invoked from a PR-triggering chain)
 - **Key inputs**:
-  - `runner-label` — e.g. `piwine`, `piwine-office`, `zendc`. Combined with implicit `self-hosted`
+  - `runner-label` — e.g. `piwine`, `piwine-office`. Combined with implicit `self-hosted`
   - `live-repo-path` — absolute path on the runner host (typically `/opt/compose`)
   - `repo-name`, `webhook-url`, `discord-user-id`, `target-ref`
   - (`has-dockge` / `live-dockge-path` were removed after dockge was retired on every host, 2026-10; callers must not pass them)
@@ -292,7 +292,7 @@ docker compose -f stack/compose.yaml config
 ### Adding a new self-hosted host
 
 Follow `docs/superpowers/runbooks/adding-a-new-host.md` (the generic step-by-step procedure). Highlights:
-- Pick a unique runner label (e.g. `zendc`)
+- Pick a unique runner label (e.g. `piwine-office`)
 - Add the label to **both** `compose-workflow/.github/actionlint.yaml` and the caller repo's `.github/actionlint.yaml`
 - Run host prep (deploy user, path ownership pattern, `safe.directory`, umask 002 in admin's rcs)
 - Register the runner as a systemd service running as `deploy`
