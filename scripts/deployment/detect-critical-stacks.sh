@@ -39,6 +39,29 @@ require_var REPO_DIR || exit 1
 log_info "Detecting critical stacks from compose file labels..."
 log_info "Scanning stacks: $STACKS"
 
+# has_label <compose_file> <key_regex> <value_regex>
+# Returns 0 if the file declares the label <key>=<value> on any service.
+# Accepts every way the label can legitimately be written:
+#   map form:   com.compose.tier: infrastructure
+#               com.compose.tier: "infrastructure"   (house style, quoted)
+#               com.compose.tier: 'infrastructure'
+#   list form:  - com.compose.tier=infrastructure
+#               - "com.compose.tier=infrastructure"
+# with arbitrary leading/trailing whitespace and an optional trailing
+# ` # comment` (YAML needs whitespace before `#`). Quotes must pair. The
+# whole line is anchored, so commented-out labels
+# (`# com.compose.tier: infrastructure`) and other values
+# (`infrastructure-extra`, `infrastructure#x`, `application`) do NOT match.
+# Line-based: flow-style maps (`labels: {com.compose.tier: …}`) are not
+# recognised — use block style, as both consumer repos do.
+has_label() {
+  local file="$1" key="$2" value="$3"
+  local map="(${key}|\"${key}\"|'${key}')[[:space:]]*:[[:space:]]+(${value}|\"${value}\"|'${value}')"
+  local list="-[[:space:]]*(${key}=${value}|\"${key}=${value}\"|'${key}=${value}')"
+  grep -qE "^[[:space:]]*(${map}|${list})([[:space:]]+#.*)?[[:space:]]*$" \
+    "$file" 2>/dev/null
+}
+
 # Critical stack detection logic
 CRITICAL_STACKS=()
 
@@ -54,20 +77,20 @@ for stack in $STACKS; do
   fi
 
   # Check for critical tier labels
-  # Supported labels:
-  #   - com.compose.tier: infrastructure
-  #   - com.compose.critical: true
+  # Supported labels (value may be unquoted, "double-" or 'single-quoted';
+  # map form or list form `- key=value`, see has_label above):
+  #   - com.compose.tier: "infrastructure"
   #   - com.compose.critical: "true"
 
   IS_CRITICAL=false
 
   # Method 1: Check for tier=infrastructure label
-  if grep -q "com.compose.tier: infrastructure" "$COMPOSE_FILE" 2>/dev/null; then
+  if has_label "$COMPOSE_FILE" 'com\.compose\.tier' 'infrastructure'; then
     IS_CRITICAL=true
   fi
 
   # Method 2: Check for critical=true label
-  if grep -qE "com.compose.critical: (true|\"true\")" "$COMPOSE_FILE" 2>/dev/null; then
+  if has_label "$COMPOSE_FILE" 'com\.compose\.critical' 'true'; then
     IS_CRITICAL=true
   fi
 

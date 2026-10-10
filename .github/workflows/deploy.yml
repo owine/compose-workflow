@@ -347,8 +347,11 @@ jobs:
         #     if that still references a since-archived 1P item (e.g. a stack
         #     removal that also drops its now-orphaned vars), `op run` aborts on
         #     the dead ref and the teardown never runs, stranding the containers.
-        #  2. `down` targets by compose project label (default: the stack dir
-        #     name, same as `up`); callers set no COMPOSE_* vars, so no secrets.
+        #  2. `down`/`ps`/`logs` address the project by name (`-p <stack>`, run
+        #     from / where no compose file exists), so the compose file is never
+        #     parsed — files whose syntax needs ${VARS} (e.g. extra_hosts) would
+        #     otherwise fail. Assumes project name == stack dir name (no top-level
+        #     `name:`, dir names already in compose's [a-z0-9_-] form).
         run: |
           set -euo pipefail
           for stack in $(echo "$REMOVED_STACKS" | jq -r '.[]'); do
@@ -362,7 +365,7 @@ jobs:
             done
             if [[ -n "$compose_file" ]]; then
               echo "🛑 Stopping $stack"
-              docker compose -f "$compose_file" down || echo "::warning::down failed for $stack"
+              (cd / && docker compose -p "$stack" down) || echo "::warning::down failed for $stack"
             else
               echo "::warning::compose file missing for removed stack $stack"
             fi
@@ -533,22 +536,25 @@ jobs:
           dump_failed_stack() {
             local stack="$1"
             local lines="${FAILED_LOG_LINES:-50}"
+            # By project name from / (no compose file there): never parses the
+            # stack's compose file, which can need ${VARS} we don't load here.
+            dc() { (cd / && docker compose -p "$stack" "$@"); }
             echo "::group::🔍 Diagnostics: $stack"
             echo "── docker compose ps -a ──"
-            docker compose ps -a 2>&1 || true
+            dc ps -a 2>&1 || true
             local rows
-            rows=$(docker compose ps -a --format json 2>/dev/null \
+            rows=$(dc ps -a --format json 2>/dev/null \
               | jq -rs '.[] | select(.Health=="unhealthy" or (.State=="exited" and (.ExitCode//0)!=0) or (.Health=="" and .State!="running" and .State!="exited")) | [.Service,.Name,.State,(.Health//""),((.ExitCode//0)|tostring)] | @tsv' 2>/dev/null || true)
             if [[ -z "$rows" ]]; then
               echo "── (no specific failing container identified; tailing all services) ──"
-              docker compose logs --tail "$lines" --no-color 2>&1 || true
+              dc logs --tail "$lines" --no-color 2>&1 || true
             else
               while IFS=$'\t' read -r service name state health exit_code; do
                 [[ -z "$service" ]] && continue
                 echo "── ❌ $service (container=$name state=$state health=${health:-none} exit=$exit_code) ──"
                 docker inspect --format '{{if .State.Health}}healthcheck history:{{"\n"}}{{range $i,$h := .State.Health.Log}}  [#{{$i}}] exit={{$h.ExitCode}} start={{$h.Start}}{{"\n"}}    {{$h.Output}}{{"\n"}}{{end}}{{else}}(no healthcheck defined){{end}}' "$name" 2>/dev/null || true
                 echo "── container logs: $service (last $lines lines) ──"
-                docker compose logs --tail "$lines" --no-color "$service" 2>&1 || true
+                dc logs --tail "$lines" --no-color "$service" 2>&1 || true
               done <<< "$rows"
             fi
             echo "::endgroup::"
@@ -619,9 +625,8 @@ jobs:
           set +e
           for stack in $(echo "$FAILED_EXISTING_STACKS" | jq -r '.[]'); do
             [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::warning::skipping invalid stack: $stack"; continue; }
-            cd "$LIVE_REPO_PATH/$stack" 2>/dev/null || continue
             echo "🧹 Tearing down failed existing stack $stack to clear recreate orphans"
-            docker compose down || true
+            (cd / && docker compose -p "$stack" down) || true
           done
 
       - name: Deploy new stacks
@@ -642,22 +647,25 @@ jobs:
           dump_failed_stack() {
             local stack="$1"
             local lines="${FAILED_LOG_LINES:-50}"
+            # By project name from / (no compose file there): never parses the
+            # stack's compose file, which can need ${VARS} we don't load here.
+            dc() { (cd / && docker compose -p "$stack" "$@"); }
             echo "::group::🔍 Diagnostics: $stack"
             echo "── docker compose ps -a ──"
-            docker compose ps -a 2>&1 || true
+            dc ps -a 2>&1 || true
             local rows
-            rows=$(docker compose ps -a --format json 2>/dev/null \
+            rows=$(dc ps -a --format json 2>/dev/null \
               | jq -rs '.[] | select(.Health=="unhealthy" or (.State=="exited" and (.ExitCode//0)!=0) or (.Health=="" and .State!="running" and .State!="exited")) | [.Service,.Name,.State,(.Health//""),((.ExitCode//0)|tostring)] | @tsv' 2>/dev/null || true)
             if [[ -z "$rows" ]]; then
               echo "── (no specific failing container identified; tailing all services) ──"
-              docker compose logs --tail "$lines" --no-color 2>&1 || true
+              dc logs --tail "$lines" --no-color 2>&1 || true
             else
               while IFS=$'\t' read -r service name state health exit_code; do
                 [[ -z "$service" ]] && continue
                 echo "── ❌ $service (container=$name state=$state health=${health:-none} exit=$exit_code) ──"
                 docker inspect --format '{{if .State.Health}}healthcheck history:{{"\n"}}{{range $i,$h := .State.Health.Log}}  [#{{$i}}] exit={{$h.ExitCode}} start={{$h.Start}}{{"\n"}}    {{$h.Output}}{{"\n"}}{{end}}{{else}}(no healthcheck defined){{end}}' "$name" 2>/dev/null || true
                 echo "── container logs: $service (last $lines lines) ──"
-                docker compose logs --tail "$lines" --no-color "$service" 2>&1 || true
+                dc logs --tail "$lines" --no-color "$service" 2>&1 || true
               done <<< "$rows"
             fi
             echo "::endgroup::"
@@ -719,8 +727,7 @@ jobs:
           set +e
           for stack in $(echo "$NEW_STACKS" | jq -r '.[]'); do
             [[ "$stack" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "::warning::skipping invalid stack: $stack"; continue; }
-            cd "$LIVE_REPO_PATH/$stack" 2>/dev/null || continue
-            docker compose down || true
+            (cd / && docker compose -p "$stack" down) || true
           done
 
       - name: Compute deploy summary outputs
@@ -776,22 +783,25 @@ jobs:
           dump_failed_stack() {
             local stack="$1"
             local lines="${FAILED_LOG_LINES:-50}"
+            # By project name from / (no compose file there): never parses the
+            # stack's compose file, which can need ${VARS} we don't load here.
+            dc() { (cd / && docker compose -p "$stack" "$@"); }
             echo "::group::🔍 Diagnostics: $stack"
             echo "── docker compose ps -a ──"
-            docker compose ps -a 2>&1 || true
+            dc ps -a 2>&1 || true
             local rows
-            rows=$(docker compose ps -a --format json 2>/dev/null \
+            rows=$(dc ps -a --format json 2>/dev/null \
               | jq -rs '.[] | select(.Health=="unhealthy" or (.State=="exited" and (.ExitCode//0)!=0) or (.Health=="" and .State!="running" and .State!="exited")) | [.Service,.Name,.State,(.Health//""),((.ExitCode//0)|tostring)] | @tsv' 2>/dev/null || true)
             if [[ -z "$rows" ]]; then
               echo "── (no specific failing container identified; tailing all services) ──"
-              docker compose logs --tail "$lines" --no-color 2>&1 || true
+              dc logs --tail "$lines" --no-color 2>&1 || true
             else
               while IFS=$'\t' read -r service name state health exit_code; do
                 [[ -z "$service" ]] && continue
                 echo "── ❌ $service (container=$name state=$state health=${health:-none} exit=$exit_code) ──"
                 docker inspect --format '{{if .State.Health}}healthcheck history:{{"\n"}}{{range $i,$h := .State.Health.Log}}  [#{{$i}}] exit={{$h.ExitCode}} start={{$h.Start}}{{"\n"}}    {{$h.Output}}{{"\n"}}{{end}}{{else}}(no healthcheck defined){{end}}' "$name" 2>/dev/null || true
                 echo "── container logs: $service (last $lines lines) ──"
-                docker compose logs --tail "$lines" --no-color "$service" 2>&1 || true
+                dc logs --tail "$lines" --no-color "$service" 2>&1 || true
               done <<< "$rows"
             fi
             echo "::endgroup::"
@@ -799,8 +809,20 @@ jobs:
 
           failed=()
           for stack in $(echo "$CRITICAL_STACKS" | jq -r '.[]'); do
-            cd "$LIVE_REPO_PATH/$stack"
-            services=$(docker compose ps -a --format json | jq -s '.')
+            # By project name from / so the compose file isn't parsed (no `op run` here;
+            # a file whose syntax needs ${VARS}, e.g. extra_hosts, would fail to parse).
+            if ! services=$(cd / && docker compose -p "$stack" ps -a --format json | jq -s '.'); then
+              failed+=("$stack")
+              echo "::error::Critical stack $stack: docker compose ps failed"
+              continue
+            fi
+            # `ps -p <name>` exits 0 with no output for an unknown project; an empty
+            # critical stack must fail, not pass vacuously.
+            if [[ "$(jq 'length' <<<"$services")" -eq 0 ]]; then
+              failed+=("$stack")
+              echo "::error::Critical stack $stack has no containers"
+              continue
+            fi
             # Unhealthy if: explicit "unhealthy", non-running with no healthcheck (and not a clean one-shot exit),
             # or exited with non-zero code. Exited+0 is a one-shot success (e.g. alembic migrations gated via
             # service_completed_successfully) and must not fail the gate.
@@ -1032,7 +1054,7 @@ jobs:
             if jq -e --arg s "$stack" 'index($s) != null' <<<"$NEW_STACKS" >/dev/null; then
               echo "🛑 Tearing down failed new stack $stack"
               if [[ -f "$LIVE_REPO_PATH/$stack/compose.yaml" || -f "$LIVE_REPO_PATH/$stack/compose.yml" ]]; then
-                (cd "$LIVE_REPO_PATH/$stack" && docker compose down) \
+                (cd / && docker compose -p "$stack" down) \
                   || echo "::warning::down failed for $stack"
               else
                 # Parity with the whole-tree teardown step's annotation: a
@@ -1109,7 +1131,7 @@ jobs:
             done
             if [[ -n "$compose_file" ]]; then
               echo "🛑 Tearing down new stack $stack before rollback"
-              docker compose -f "$compose_file" down || echo "::warning::down failed for $stack"
+              (cd / && docker compose -p "$stack" down) || echo "::warning::down failed for $stack"
             fi
           done
 
