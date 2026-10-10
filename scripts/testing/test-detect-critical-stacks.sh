@@ -67,6 +67,11 @@ make_stack tier-list-cmt      '      # - com.compose.tier=infrastructure'
 make_stack tier-other         '      com.compose.tier: "application"'
 make_stack tier-prefix        '      com.compose.tier: "infrastructure-lite"'
 make_stack tier-other-key     '      com.compose.tierx: "infrastructure"'
+make_stack tier-hash-suffix   '      com.compose.tier: infrastructure#suffix'
+make_stack tier-unpaired-q    "      com.compose.tier: infrastructure'"
+make_stack tier-mixed-q       "      com.compose.tier: \"infrastructure'"
+make_stack tier-no-space      '      com.compose.tier:infrastructure'
+make_stack tier-list-mixed-q  "      - \"com.compose.tier=infrastructure'"
 # shellcheck disable=SC2016  # literal backticks, not an expansion
 make_stack tier-value-in-key  '      traefik.http.routers.infrastructure.rule: "Host(`x`)"'
 make_stack plain              '      traefik.enable: "true"'
@@ -95,6 +100,11 @@ expect_critical "commented list form does NOT match" '[]'                tier-li
 expect_critical "other tier value does NOT match" '[]'                   tier-other
 expect_critical "value prefix does NOT match"    '[]'                    tier-prefix
 expect_critical "longer key does NOT match"      '[]'                    tier-other-key
+expect_critical "'#' without space is part of value, NOT a comment" '[]' tier-hash-suffix
+expect_critical "unpaired quote does NOT match"  '[]'                    tier-unpaired-q
+expect_critical "mismatched quotes do NOT match" '[]'                    tier-mixed-q
+expect_critical "no space after colon (plain scalar) does NOT match" '[]' tier-no-space
+expect_critical "list form mismatched quotes do NOT match" '[]'          tier-list-mixed-q
 expect_critical "value word in other key does NOT match" '[]'            tier-value-in-key
 expect_critical "no tier label"                  '[]'                    plain
 

@@ -48,13 +48,17 @@ log_info "Scanning stacks: $STACKS"
 #   list form:  - com.compose.tier=infrastructure
 #               - "com.compose.tier=infrastructure"
 # with arbitrary leading/trailing whitespace and an optional trailing
-# `# comment`. The whole line is anchored, so commented-out labels
+# ` # comment` (YAML needs whitespace before `#`). Quotes must pair. The
+# whole line is anchored, so commented-out labels
 # (`# com.compose.tier: infrastructure`) and other values
-# (`infrastructure-extra`, `application`) do NOT match.
+# (`infrastructure-extra`, `infrastructure#x`, `application`) do NOT match.
+# Line-based: flow-style maps (`labels: {com.compose.tier: …}`) are not
+# recognised — use block style, as both consumer repos do.
 has_label() {
   local file="$1" key="$2" value="$3"
-  local q="[\"']?"
-  grep -qE "^[[:space:]]*(-[[:space:]]*)?${q}${key}${q}[[:space:]]*[:=][[:space:]]*${q}${value}${q}[[:space:]]*(#.*)?$" \
+  local map="(${key}|\"${key}\"|'${key}')[[:space:]]*:[[:space:]]+(${value}|\"${value}\"|'${value}')"
+  local list="-[[:space:]]*(${key}=${value}|\"${key}=${value}\"|'${key}=${value}')"
+  grep -qE "^[[:space:]]*(${map}|${list})([[:space:]]+#.*)?[[:space:]]*$" \
     "$file" 2>/dev/null
 }
 

@@ -162,7 +162,7 @@ services:
       com.compose.critical: "true"
 ```
 
-Values may be unquoted, double- or single-quoted, in map form or list form (`- com.compose.tier=infrastructure`); commented-out lines and other values never match. Covered by `scripts/testing/test-detect-critical-stacks.sh` — re-run it after touching the matcher.
+Values may be unquoted, double- or single-quoted, in block map form or list form (`- com.compose.tier=infrastructure`); commented-out lines, unpaired quotes and other values never match (flow-style `{…}` label maps are not recognised). Covered by `scripts/testing/test-detect-critical-stacks.sh` — re-run it after touching the matcher.
 
 The `prepare` job's `detect-critical-stacks.sh` builds a JSON array of stacks containing such labels; `health-check` uses it to decide which stacks gate the rollback. To override:
 
