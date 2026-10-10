@@ -353,14 +353,25 @@ jobs:
           # Read from the containers' working_dir label, so a top-level `name:` or
           # a dir name Compose normalises (dots, uppercase, leading _/-) still
           # resolves. Every distinct match is returned (e.g. leftovers from a renamed
-          # project); falls back to the stack name when it has no containers.
+          # project). With no containers in the dir it falls back to the stack name,
+          # unless a project of that name runs from another dir (e.g. dockge's own
+          # /opt/dockge): then it returns nothing, so down is a no-op and the health
+          # check sees "no containers" rather than acting on a foreign project.
           compose_projects() {
-            local p
-            p=$(docker ps -a \
-                  --filter "label=com.docker.compose.project.working_dir=${LIVE_REPO_PATH%/}/$1" \
+            local dir="${LIVE_REPO_PATH%/}/$1" p others
+            p=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
                   --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
                   | sort -u) || p=""
-            printf '%s\n' "${p:-$1}"
+            if [[ -z "$p" ]]; then
+              # Captured first: piping docker into `grep -q` can SIGPIPE under pipefail.
+              others=$(docker ps -a --filter "label=com.docker.compose.project=$1" \
+                  --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null) || others=""
+              if [[ -n "$others" ]] && grep -qvxF -- "$dir" <<<"$others"; then
+                return 0
+              fi
+              p="$1"
+            fi
+            printf '%s\n' "$p"
           }
           # usage: compose_p <stack> <compose args...>
           # Runs compose against each of the stack's projects by name from / (no
@@ -387,11 +398,11 @@ jobs:
         #     if that still references a since-archived 1P item (e.g. a stack
         #     removal that also drops its now-orphaned vars), `op run` aborts on
         #     the dead ref and the teardown never runs, stranding the containers.
-        #  2. `down`/`ps`/`logs` address the project by name (`-p <stack>`, run
-        #     from / where no compose file exists), so the compose file is never
-        #     parsed — files whose syntax needs ${VARS} (e.g. extra_hosts) would
-        #     otherwise fail. Assumes project name == stack dir name (no top-level
-        #     `name:`, dir names already in compose's [a-z0-9_-] form).
+        #  2. `down`/`ps`/`logs` go through `compose_p` (see "Install compose
+        #     project helper"): the project is resolved from the containers'
+        #     working_dir label and addressed by name from /, so the compose file
+        #     is never parsed — files whose syntax needs ${VARS} (e.g.
+        #     extra_hosts) would otherwise fail.
         run: |
           set -euo pipefail
           # shellcheck source=/dev/null
@@ -579,8 +590,6 @@ jobs:
           set -euo pipefail
           # shellcheck source=/dev/null
           source "$RUNNER_TEMP/compose-pull.sh"
-          # shellcheck source=/dev/null
-          source "$RUNNER_TEMP/compose-project.sh"
           cd "$DOCKGE_PATH"
           compose_pull_retry "$LIVE_REPO_PATH/compose.env"
           timeout "$SERVICE_STARTUP_TIMEOUT" op run --no-masking --env-file="$LIVE_REPO_PATH/compose.env" -- \
@@ -856,14 +865,25 @@ jobs:
           # Read from the containers' working_dir label, so a top-level `name:` or
           # a dir name Compose normalises (dots, uppercase, leading _/-) still
           # resolves. Every distinct match is returned (e.g. leftovers from a renamed
-          # project); falls back to the stack name when it has no containers.
+          # project). With no containers in the dir it falls back to the stack name,
+          # unless a project of that name runs from another dir (e.g. dockge's own
+          # /opt/dockge): then it returns nothing, so down is a no-op and the health
+          # check sees "no containers" rather than acting on a foreign project.
           compose_projects() {
-            local p
-            p=$(docker ps -a \
-                  --filter "label=com.docker.compose.project.working_dir=${LIVE_REPO_PATH%/}/$1" \
+            local dir="${LIVE_REPO_PATH%/}/$1" p others
+            p=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
                   --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
                   | sort -u) || p=""
-            printf '%s\n' "${p:-$1}"
+            if [[ -z "$p" ]]; then
+              # Captured first: piping docker into `grep -q` can SIGPIPE under pipefail.
+              others=$(docker ps -a --filter "label=com.docker.compose.project=$1" \
+                  --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null) || others=""
+              if [[ -n "$others" ]] && grep -qvxF -- "$dir" <<<"$others"; then
+                return 0
+              fi
+              p="$1"
+            fi
+            printf '%s\n' "$p"
           }
           # usage: compose_p <stack> <compose args...>
           # Runs compose against each of the stack's projects by name from / (no
@@ -957,8 +977,7 @@ jobs:
             # Emit the culprit list BEFORE `exit 1` — a step that exits
             # non-zero still has its already-written $GITHUB_OUTPUT honoured,
             # but nothing written after the exit would be.
-            json=$(printf '"%s",' "${failed[@]}" | sed 's/,$//')
-            echo "failed_stacks=[$json]" >> "$GITHUB_OUTPUT"
+            echo "failed_stacks=$(jq -cn '$ARGS.positional' --args "${failed[@]}")" >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -1084,14 +1103,25 @@ jobs:
           # Read from the containers' working_dir label, so a top-level `name:` or
           # a dir name Compose normalises (dots, uppercase, leading _/-) still
           # resolves. Every distinct match is returned (e.g. leftovers from a renamed
-          # project); falls back to the stack name when it has no containers.
+          # project). With no containers in the dir it falls back to the stack name,
+          # unless a project of that name runs from another dir (e.g. dockge's own
+          # /opt/dockge): then it returns nothing, so down is a no-op and the health
+          # check sees "no containers" rather than acting on a foreign project.
           compose_projects() {
-            local p
-            p=$(docker ps -a \
-                  --filter "label=com.docker.compose.project.working_dir=${LIVE_REPO_PATH%/}/$1" \
+            local dir="${LIVE_REPO_PATH%/}/$1" p others
+            p=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
                   --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
                   | sort -u) || p=""
-            printf '%s\n' "${p:-$1}"
+            if [[ -z "$p" ]]; then
+              # Captured first: piping docker into `grep -q` can SIGPIPE under pipefail.
+              others=$(docker ps -a --filter "label=com.docker.compose.project=$1" \
+                  --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null) || others=""
+              if [[ -n "$others" ]] && grep -qvxF -- "$dir" <<<"$others"; then
+                return 0
+              fi
+              p="$1"
+            fi
+            printf '%s\n' "$p"
           }
           # usage: compose_p <stack> <compose args...>
           # Runs compose against each of the stack's projects by name from / (no
