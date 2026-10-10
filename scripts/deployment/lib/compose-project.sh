@@ -30,13 +30,21 @@ compose_normalize_name() {
 #    warning, because `-p <name> down` would act on it.
 # 3. No containers at all: nothing is returned (down is a no-op, ps is empty).
 #
+# Returns 1 (with a warning) if a `docker ps` lookup fails, so a broken docker
+# can't pass for "no containers" and turn a teardown into a silent no-op.
+#
 # Diagnostics go to stderr (stdout is the result); GitHub parses ::warning::
 # from either stream.
 compose_projects() {
-  local stack="$1" dir="${LIVE_REPO_PATH%/}/$1" p name others d stale=true
-  p=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
-        --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
-        | sort -u) || p=""
+  local stack="$1" dir="${LIVE_REPO_PATH%/}/$1" out p name others d stale=true
+  # Captured before sort so docker's exit status is checked without relying on
+  # the caller's pipefail.
+  if ! out=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
+        --format '{{.Label "com.docker.compose.project"}}'); then
+    echo "::warning::$stack: docker ps failed; cannot resolve its Compose project" >&2
+    return 1
+  fi
+  p=$(sort -u <<<"$out")
   if [[ -n "$p" ]]; then
     printf '%s\n' "$p"
     return 0
@@ -44,9 +52,12 @@ compose_projects() {
 
   name=$(compose_normalize_name "$stack")
   [[ -n "$name" ]] || return 0
-  others=$(docker ps -a --filter "label=com.docker.compose.project=$name" \
-        --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
-        | sort -u) || others=""
+  if ! out=$(docker ps -a --filter "label=com.docker.compose.project=$name" \
+        --format '{{.Label "com.docker.compose.project.working_dir"}}'); then
+    echo "::warning::$stack: docker ps failed; cannot resolve its Compose project" >&2
+    return 1
+  fi
+  others=$(sort -u <<<"$out")
   [[ -n "$others" ]] || return 0
 
   while IFS= read -r d; do
@@ -63,14 +74,17 @@ compose_projects() {
 # usage: compose_p <stack> <compose args...>
 # Runs compose against each of the stack's projects by name from / (no compose
 # file there), so the stack's compose file is never parsed. stdin is /dev/null
-# so compose can't eat the loop input. Non-zero if the command failed for any
-# project; zero (and no output) if the stack has no project.
+# so compose can't eat the loop input. Non-zero if the project lookup failed or
+# the command failed for any project; zero (and no output) if the stack has no
+# project.
 compose_p() {
-  local stack="$1" proj rc=0
+  local stack="$1" projs proj rc=0
   shift
+  # Not `done < <(compose_projects …)`: a process substitution's exit status is lost.
+  projs=$(compose_projects "$stack") || return 1
   while IFS= read -r proj; do
     [[ -n "$proj" ]] || continue
     (cd / && docker compose -p "$proj" "$@" </dev/null) || rc=$?
-  done < <(compose_projects "$stack")
+  done <<<"$projs"
   return "$rc"
 }

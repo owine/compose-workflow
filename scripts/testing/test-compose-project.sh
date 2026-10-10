@@ -14,6 +14,7 @@ trap 'rm -rf "$TMPROOT"' EXIT
 # Containers, one per line: <project>|<working_dir>
 export FAKE_CONTAINERS="$TMPROOT/containers"
 export FAKE_COMPOSE_LOG="$TMPROOT/compose.log"
+export FAKE_PS_COUNT="$TMPROOT/ps.count"
 mkdir -p "$TMPROOT/bin"
 cat > "$TMPROOT/bin/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -24,6 +25,12 @@ if [[ "$1" == "compose" ]]; then
   exit "${FAKE_COMPOSE_RC:-0}"
 fi
 [[ "$1 $2" == "ps -a" ]] || { echo "fake docker: unexpected $*" >&2; exit 2; }
+# FAKE_PS_FAIL=<n>: the n-th `ps` call (1-based, counted in FAKE_PS_COUNT) fails.
+if [[ -n "${FAKE_PS_FAIL:-}" ]]; then
+  n=$(( $(cat "$FAKE_PS_COUNT" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "$FAKE_PS_COUNT"
+  [[ "$n" != "$FAKE_PS_FAIL" ]] || { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+fi
 filter="" format=""
 shift 2
 while [[ $# -gt 0 ]]; do
@@ -122,6 +129,20 @@ expect_projects "dir match wins; others ignored" app "app" none
 containers "x|/opt/compose/x"
 expect_projects "all-invalid stack name -> nothing" ... "" none
 
+# expect_ps_failure <name> <stack> <fail-on-nth-ps>
+expect_ps_failure() {
+  local name="$1" stack="$2" nth="$3" out rc=0 warned=no err="$TMPROOT/err"
+  rm -f "$FAKE_PS_COUNT"
+  out=$(FAKE_PS_FAIL="$nth" compose_projects "$stack" 2>"$err") || rc=$?
+  grep -q '::warning::.*docker ps failed' "$err" && warned=yes
+  check "$name" "|1|yes" "$out|$rc|$warned"
+}
+
+containers "app|/opt/compose/app"
+expect_ps_failure "working_dir lookup fails -> rc 1, warned" app 1
+containers "app|/home/admin/compose/app"
+expect_ps_failure "project-name lookup fails -> rc 1, warned" app 2
+
 echo "compose_p"
 containers "app|/opt/compose/app" "app-old|/opt/compose/app"
 : > "$FAKE_COMPOSE_LOG"
@@ -137,6 +158,11 @@ check "no project -> no call, rc 0" "|0" "$(cat "$FAKE_COMPOSE_LOG")|$rc"
 containers "app|/opt/compose/app"
 rc=0; FAKE_COMPOSE_RC=3 compose_p app down 2>/dev/null || rc=$?
 check "propagates compose failure" "3" "$rc"
+
+containers "app|/opt/compose/app"
+: > "$FAKE_COMPOSE_LOG"; rm -f "$FAKE_PS_COUNT"
+rc=0; FAKE_PS_FAIL=1 compose_p app down 2>/dev/null || rc=$?
+check "lookup failure -> no compose call, non-zero" "|1" "$(cat "$FAKE_COMPOSE_LOG")|$rc"
 
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
