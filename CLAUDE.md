@@ -157,10 +157,12 @@ The deploy workflow auto-detects critical stacks by scanning each stack's `compo
 services:
   traefik:
     labels:
-      com.compose.tier: infrastructure   # marks the *stack* as critical
+      com.compose.tier: "infrastructure"   # marks the *stack* as critical
       # OR
-      com.compose.critical: true
+      com.compose.critical: "true"
 ```
+
+Values may be unquoted, double- or single-quoted, in map form or list form (`- com.compose.tier=infrastructure`); commented-out lines and other values never match. Covered by `scripts/testing/test-detect-critical-stacks.sh` — re-run it after touching the matcher.
 
 The `prepare` job's `detect-critical-stacks.sh` builds a JSON array of stacks containing such labels; `health-check` uses it to decide which stacks gate the rollback. To override:
 
@@ -321,6 +323,7 @@ Follow `docs/superpowers/runbooks/adding-a-new-host.md` (the generic step-by-ste
 │   │   ├── detect-critical-stacks.sh
 │   │   └── build-pr-comment.sh
 │   └── testing/
+│       ├── test-detect-critical-stacks.sh
 │       ├── test-workflow.sh
 │       ├── validate-compose.sh
 │       └── README.md
