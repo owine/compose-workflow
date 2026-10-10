@@ -349,26 +349,31 @@ jobs:
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/compose-project.sh" <<'SCRIPT'
-          # usage: compose_project <stack>   -> the stack's Compose project name
+          # usage: compose_projects <stack>  -> the stack's Compose project name(s), one per line
           # Read from the containers' working_dir label, so a top-level `name:` or
           # a dir name Compose normalises (dots, uppercase, leading _/-) still
-          # resolves. Falls back to the stack name when it has no containers (then
-          # there is nothing to act on). awk, not head: no SIGPIPE under pipefail.
-          compose_project() {
+          # resolves. Every distinct match is returned (e.g. leftovers from a renamed
+          # project); falls back to the stack name when it has no containers.
+          compose_projects() {
             local p
             p=$(docker ps -a \
                   --filter "label=com.docker.compose.project.working_dir=${LIVE_REPO_PATH%/}/$1" \
                   --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
-                  | sort -u | awk 'NR == 1') || p=""
+                  | sort -u) || p=""
             printf '%s\n' "${p:-$1}"
           }
           # usage: compose_p <stack> <compose args...>
-          # Runs compose against the project by name from / (no compose file there),
-          # so the stack's compose file is never parsed: these calls run without
-          # `op run`, and a file whose syntax needs ${VARS} would fail to parse.
+          # Runs compose against each of the stack's projects by name from / (no
+          # compose file there), so the stack's compose file is never parsed: these
+          # calls run without `op run`, and a file whose syntax needs ${VARS} would
+          # fail to parse. Non-zero if the command failed for any project.
           compose_p() {
-            local stack="$1"; shift
-            (cd / && docker compose -p "$(compose_project "$stack")" "$@")
+            local stack="$1" proj rc=0; shift
+            while IFS= read -r proj; do
+              [[ -n "$proj" ]] || continue
+              (cd / && docker compose -p "$proj" "$@" </dev/null) || rc=$?
+            done < <(compose_projects "$stack")
+            return "$rc"
           }
           SCRIPT
 
@@ -847,26 +852,31 @@ jobs:
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/compose-project.sh" <<'SCRIPT'
-          # usage: compose_project <stack>   -> the stack's Compose project name
+          # usage: compose_projects <stack>  -> the stack's Compose project name(s), one per line
           # Read from the containers' working_dir label, so a top-level `name:` or
           # a dir name Compose normalises (dots, uppercase, leading _/-) still
-          # resolves. Falls back to the stack name when it has no containers (then
-          # there is nothing to act on). awk, not head: no SIGPIPE under pipefail.
-          compose_project() {
+          # resolves. Every distinct match is returned (e.g. leftovers from a renamed
+          # project); falls back to the stack name when it has no containers.
+          compose_projects() {
             local p
             p=$(docker ps -a \
                   --filter "label=com.docker.compose.project.working_dir=${LIVE_REPO_PATH%/}/$1" \
                   --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
-                  | sort -u | awk 'NR == 1') || p=""
+                  | sort -u) || p=""
             printf '%s\n' "${p:-$1}"
           }
           # usage: compose_p <stack> <compose args...>
-          # Runs compose against the project by name from / (no compose file there),
-          # so the stack's compose file is never parsed: these calls run without
-          # `op run`, and a file whose syntax needs ${VARS} would fail to parse.
+          # Runs compose against each of the stack's projects by name from / (no
+          # compose file there), so the stack's compose file is never parsed: these
+          # calls run without `op run`, and a file whose syntax needs ${VARS} would
+          # fail to parse. Non-zero if the command failed for any project.
           compose_p() {
-            local stack="$1"; shift
-            (cd / && docker compose -p "$(compose_project "$stack")" "$@")
+            local stack="$1" proj rc=0; shift
+            while IFS= read -r proj; do
+              [[ -n "$proj" ]] || continue
+              (cd / && docker compose -p "$proj" "$@" </dev/null) || rc=$?
+            done < <(compose_projects "$stack")
+            return "$rc"
           }
           SCRIPT
 
@@ -1070,26 +1080,31 @@ jobs:
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/compose-project.sh" <<'SCRIPT'
-          # usage: compose_project <stack>   -> the stack's Compose project name
+          # usage: compose_projects <stack>  -> the stack's Compose project name(s), one per line
           # Read from the containers' working_dir label, so a top-level `name:` or
           # a dir name Compose normalises (dots, uppercase, leading _/-) still
-          # resolves. Falls back to the stack name when it has no containers (then
-          # there is nothing to act on). awk, not head: no SIGPIPE under pipefail.
-          compose_project() {
+          # resolves. Every distinct match is returned (e.g. leftovers from a renamed
+          # project); falls back to the stack name when it has no containers.
+          compose_projects() {
             local p
             p=$(docker ps -a \
                   --filter "label=com.docker.compose.project.working_dir=${LIVE_REPO_PATH%/}/$1" \
                   --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
-                  | sort -u | awk 'NR == 1') || p=""
+                  | sort -u) || p=""
             printf '%s\n' "${p:-$1}"
           }
           # usage: compose_p <stack> <compose args...>
-          # Runs compose against the project by name from / (no compose file there),
-          # so the stack's compose file is never parsed: these calls run without
-          # `op run`, and a file whose syntax needs ${VARS} would fail to parse.
+          # Runs compose against each of the stack's projects by name from / (no
+          # compose file there), so the stack's compose file is never parsed: these
+          # calls run without `op run`, and a file whose syntax needs ${VARS} would
+          # fail to parse. Non-zero if the command failed for any project.
           compose_p() {
-            local stack="$1"; shift
-            (cd / && docker compose -p "$(compose_project "$stack")" "$@")
+            local stack="$1" proj rc=0; shift
+            while IFS= read -r proj; do
+              [[ -n "$proj" ]] || continue
+              (cd / && docker compose -p "$proj" "$@" </dev/null) || rc=$?
+            done < <(compose_projects "$stack")
+            return "$rc"
           }
           SCRIPT
 
