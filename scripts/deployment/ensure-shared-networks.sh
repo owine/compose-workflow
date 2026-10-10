@@ -40,6 +40,10 @@ for net in "$@"; do
     shared="${labels%%|*}"
     project="${labels#*|}"
     if [[ -n "$project" ]]; then
+      # deploy.yml tears stacks down by project label (`docker compose -p <project> down`),
+      # which removes a project-labelled network even after that project's compose file
+      # switches it to `external: true` (it is only skipped while something is attached).
+      # Recreate a migrated network without the project label once it is idle.
       echo "::warning::shared network $net is owned by Compose project '$project'; its 'down' will try to remove it"
     fi
     if [[ "$shared" != "true" ]]; then
