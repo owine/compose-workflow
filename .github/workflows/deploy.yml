@@ -342,51 +342,21 @@ jobs:
             echo "skipped=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Shared by every compose ps/logs/down below that runs without `op run`.
-      # Keep in sync with the copies in the deploy, health-check and rollback jobs.
+      # Scripts pinned to this workflow's commit, as in the prepare job. The
+      # target checkout below cleans the workspace, so the helper is copied out
+      # to $RUNNER_TEMP first (the shared-networks checkout re-fetches later).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: steps.skip-gate.outputs.skipped == 'false'
+        with:
+          repository: owine/compose-workflow
+          ref: ${{ job.workflow_sha }}
+          path: .compose-workflow
+
+      # compose_p for every compose ps/logs/down below that runs without `op run`
+      # (scripts/deployment/lib/compose-project.sh).
       - name: Install compose project helper
         if: steps.skip-gate.outputs.skipped == 'false'
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/compose-project.sh" <<'SCRIPT'
-          # usage: compose_projects <stack>  -> the stack's Compose project name(s), one per line
-          # Read from the containers' working_dir label, so a top-level `name:` or
-          # a dir name Compose normalises (dots, uppercase, leading _/-) still
-          # resolves. Every distinct match is returned (e.g. leftovers from a renamed
-          # project). With no containers in the dir it falls back to the stack name,
-          # unless a project of that name runs from another dir (e.g. dockge's own
-          # /opt/dockge): then it returns nothing, so down is a no-op and the health
-          # check sees "no containers" rather than acting on a foreign project.
-          compose_projects() {
-            local dir="${LIVE_REPO_PATH%/}/$1" p others
-            p=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
-                  --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
-                  | sort -u) || p=""
-            if [[ -z "$p" ]]; then
-              # Captured first: piping docker into `grep -q` can SIGPIPE under pipefail.
-              others=$(docker ps -a --filter "label=com.docker.compose.project=$1" \
-                  --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null) || others=""
-              if [[ -n "$others" ]] && grep -qvxF -- "$dir" <<<"$others"; then
-                return 0
-              fi
-              p="$1"
-            fi
-            printf '%s\n' "$p"
-          }
-          # usage: compose_p <stack> <compose args...>
-          # Runs compose against each of the stack's projects by name from / (no
-          # compose file there), so the stack's compose file is never parsed: these
-          # calls run without `op run`, and a file whose syntax needs ${VARS} would
-          # fail to parse. Non-zero if the command failed for any project.
-          compose_p() {
-            local stack="$1" proj rc=0; shift
-            while IFS= read -r proj; do
-              [[ -n "$proj" ]] || continue
-              (cd / && docker compose -p "$proj" "$@" </dev/null) || rc=$?
-            done < <(compose_projects "$stack")
-            return "$rc"
-          }
-          SCRIPT
+        run: install -m 0644 .compose-workflow/scripts/deployment/lib/compose-project.sh "$RUNNER_TEMP/compose-project.sh"
 
       - name: Teardown removed stacks (uses pre-reset compose files)
         if: |
@@ -855,50 +825,17 @@ jobs:
       FAILED_LOG_LINES: ${{ inputs.failed-container-log-lines }}
       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
-      # Shared by every compose ps/logs/down below that runs without `op run`.
-      # Keep in sync with the copies in the deploy, health-check and rollback jobs.
+      # Scripts pinned to this workflow's commit, as in the other jobs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: owine/compose-workflow
+          ref: ${{ job.workflow_sha }}
+          path: .compose-workflow
+
+      # compose_p for every compose ps/logs/down below that runs without `op run`
+      # (scripts/deployment/lib/compose-project.sh).
       - name: Install compose project helper
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/compose-project.sh" <<'SCRIPT'
-          # usage: compose_projects <stack>  -> the stack's Compose project name(s), one per line
-          # Read from the containers' working_dir label, so a top-level `name:` or
-          # a dir name Compose normalises (dots, uppercase, leading _/-) still
-          # resolves. Every distinct match is returned (e.g. leftovers from a renamed
-          # project). With no containers in the dir it falls back to the stack name,
-          # unless a project of that name runs from another dir (e.g. dockge's own
-          # /opt/dockge): then it returns nothing, so down is a no-op and the health
-          # check sees "no containers" rather than acting on a foreign project.
-          compose_projects() {
-            local dir="${LIVE_REPO_PATH%/}/$1" p others
-            p=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
-                  --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
-                  | sort -u) || p=""
-            if [[ -z "$p" ]]; then
-              # Captured first: piping docker into `grep -q` can SIGPIPE under pipefail.
-              others=$(docker ps -a --filter "label=com.docker.compose.project=$1" \
-                  --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null) || others=""
-              if [[ -n "$others" ]] && grep -qvxF -- "$dir" <<<"$others"; then
-                return 0
-              fi
-              p="$1"
-            fi
-            printf '%s\n' "$p"
-          }
-          # usage: compose_p <stack> <compose args...>
-          # Runs compose against each of the stack's projects by name from / (no
-          # compose file there), so the stack's compose file is never parsed: these
-          # calls run without `op run`, and a file whose syntax needs ${VARS} would
-          # fail to parse. Non-zero if the command failed for any project.
-          compose_p() {
-            local stack="$1" proj rc=0; shift
-            while IFS= read -r proj; do
-              [[ -n "$proj" ]] || continue
-              (cd / && docker compose -p "$proj" "$@" </dev/null) || rc=$?
-            done < <(compose_projects "$stack")
-            return "$rc"
-          }
-          SCRIPT
+        run: install -m 0644 .compose-workflow/scripts/deployment/lib/compose-project.sh "$RUNNER_TEMP/compose-project.sh"
 
       - name: Health check critical stacks
         id: h
@@ -951,8 +888,9 @@ jobs:
               echo "::error::Critical stack $stack: docker compose ps failed"
               continue
             fi
-            # `ps -p <name>` exits 0 with no output for an unknown project; an empty
-            # critical stack must fail, not pass vacuously.
+            # compose_p prints nothing for a stack with no project (and `ps -p` is
+            # empty for one with no containers); an empty critical stack must fail,
+            # not pass vacuously.
             if [[ "$(jq 'length' <<<"$services")" -eq 0 ]]; then
               failed+=("$stack")
               echo "::error::Critical stack $stack has no containers"
@@ -1072,14 +1010,16 @@ jobs:
       # fails on a missing external network. Scripts pinned to this workflow's
       # commit, as in the other jobs.
       #
-      # continue-on-error on both: a failure here must not skip the plan and
-      # restore steps below. Stacks that need a missing network then fail
-      # their own `up` (with the usual recover-manually warning); every other
-      # stack still rolls back. The deploy job, by contrast, fails fast here,
-      # before any stack is touched, which itself triggers this rollback.
+      # The checkout is unconditional and required: the compose project helper
+      # comes from it, and every teardown below sources that helper.
+      #
+      # continue-on-error on the network step: a failure there must not skip
+      # the plan and restore steps below. Stacks that need a missing network
+      # then fail their own `up` (with the usual recover-manually warning);
+      # every other stack still rolls back. The deploy job, by contrast, fails
+      # fast there, before any stack is touched, which itself triggers this
+      # rollback.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        if: env.SHARED_NETWORKS != ''
-        continue-on-error: true
         with:
           repository: owine/compose-workflow
           ref: ${{ job.workflow_sha }}
@@ -1093,50 +1033,10 @@ jobs:
           read -ra nets <<< "$SHARED_NETWORKS"
           ./.compose-workflow/scripts/deployment/ensure-shared-networks.sh "${nets[@]}"
 
-      # Shared by every compose ps/logs/down below that runs without `op run`.
-      # Keep in sync with the copies in the deploy, health-check and rollback jobs.
+      # compose_p for every compose ps/logs/down below that runs without `op run`
+      # (scripts/deployment/lib/compose-project.sh).
       - name: Install compose project helper
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/compose-project.sh" <<'SCRIPT'
-          # usage: compose_projects <stack>  -> the stack's Compose project name(s), one per line
-          # Read from the containers' working_dir label, so a top-level `name:` or
-          # a dir name Compose normalises (dots, uppercase, leading _/-) still
-          # resolves. Every distinct match is returned (e.g. leftovers from a renamed
-          # project). With no containers in the dir it falls back to the stack name,
-          # unless a project of that name runs from another dir (e.g. dockge's own
-          # /opt/dockge): then it returns nothing, so down is a no-op and the health
-          # check sees "no containers" rather than acting on a foreign project.
-          compose_projects() {
-            local dir="${LIVE_REPO_PATH%/}/$1" p others
-            p=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
-                  --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
-                  | sort -u) || p=""
-            if [[ -z "$p" ]]; then
-              # Captured first: piping docker into `grep -q` can SIGPIPE under pipefail.
-              others=$(docker ps -a --filter "label=com.docker.compose.project=$1" \
-                  --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null) || others=""
-              if [[ -n "$others" ]] && grep -qvxF -- "$dir" <<<"$others"; then
-                return 0
-              fi
-              p="$1"
-            fi
-            printf '%s\n' "$p"
-          }
-          # usage: compose_p <stack> <compose args...>
-          # Runs compose against each of the stack's projects by name from / (no
-          # compose file there), so the stack's compose file is never parsed: these
-          # calls run without `op run`, and a file whose syntax needs ${VARS} would
-          # fail to parse. Non-zero if the command failed for any project.
-          compose_p() {
-            local stack="$1" proj rc=0; shift
-            while IFS= read -r proj; do
-              [[ -n "$proj" ]] || continue
-              (cd / && docker compose -p "$proj" "$@" </dev/null) || rc=$?
-            done < <(compose_projects "$stack")
-            return "$rc"
-          }
-          SCRIPT
+        run: install -m 0644 .compose-workflow/scripts/deployment/lib/compose-project.sh "$RUNNER_TEMP/compose-project.sh"
 
       - name: Resolve rollback plan
         id: plan

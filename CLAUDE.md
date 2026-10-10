@@ -207,7 +207,7 @@ Used by `deploy.yml`. The deploy/health/rollback logic is **inlined as workflow 
 - **`detect-stack-changes.sh`** — three-method detection (git diff, tree comparison, discovery analysis) for removed/existing/new stacks. Runs locally on the runner against the workspace checkout (which has full history + GitHub creds), then the workflow uses the classifications to drive teardown / sequential deploy. Cleanup of removed stacks happens in the workflow's `Teardown removed stacks` step, not in this script.
 - **`detect-critical-stacks.sh`** — scans for `com.compose.tier: infrastructure` labels, emits JSON array
 - **`build-pr-comment.sh`** — builds the deploy-status PR comment body (used by the notify job's PR-comment step)
-- **`ensure-shared-networks.sh`** — idempotently creates the `shared-networks` bridge networks outside any Compose project. The `deploy` and `rollback` jobs check out compose-workflow (at `job.workflow_sha`) only when that input is set; `deploy`'s own target checkout runs `git clean -ffdx`, so `prepare`'s copy never survives into it
+- **`ensure-shared-networks.sh`** — idempotently creates the `shared-networks` bridge networks outside any Compose project. Run by `deploy` and `rollback` when that input is set, from their compose-workflow checkout (at `job.workflow_sha`); `deploy`'s own target checkout runs `git clean -ffdx`, so `deploy` checks compose-workflow out twice (once for the compose project helper, before the target checkout, and again for this script)
 
 The previously-existing `deploy-stacks.sh`, `health-check.sh`, `rollback-stacks.sh`, `cleanup-stack.sh`, and `lib/ssh-helpers.sh` were removed when the SSH-based reusable workflow was retired in favor of the inline-step approach now in `deploy.yml` — their logic lives directly in the workflow file.
 
@@ -254,7 +254,7 @@ docker compose -f stack/compose.yaml config
 - **Native health verification** — `docker compose up --wait` for atomic readiness
 - **Multi-registry auth** — single `1password/load-secrets-action` step pulls all four registry credential pairs, four `docker/login-action` steps with `logout: false` and `continue-on-error: true` so a single misconfigured registry doesn't block deploys that may not pull from it
 - **Sequential existing-then-new** — new stacks only deploy if existing stacks succeeded
-- **No-env compose calls** — `ps`/`logs`/`down` run without `op run`, so they go through the `compose_p` helper (installed per job into `$RUNNER_TEMP/compose-project.sh`): it resolves the stack's Compose project(s) from the containers' `com.docker.compose.project.working_dir` label (all distinct matches; falls back to the stack name) and runs `docker compose -p <project>` from `/` for each, so the stack's compose file — whose syntax may need `${VARS}` — is never parsed. Keep the three copies (deploy, health-check, rollback) in sync
+- **No-env compose calls** — `ps`/`logs`/`down` run without `op run`, so they go through `compose_p` from `scripts/deployment/lib/compose-project.sh` (each of `deploy`, `health-check`, `rollback` checks out compose-workflow at `job.workflow_sha` and copies it to `$RUNNER_TEMP/compose-project.sh`). It resolves the stack's Compose project(s) from the containers' `com.docker.compose.project.working_dir` label (all distinct matches) and runs `docker compose -p <project>` from `/` for each, so the stack's compose file — whose syntax may need `${VARS}` — is never parsed. With no containers under the stack dir it falls back to the normalised stack name only if every container of that project came from a dir also named `<stack>` (a stale label from an older checkout; `::warning::`); a same-named project from any other dir is left alone (`::warning::`). Covered by `scripts/testing/test-compose-project.sh`
 - **Failure diagnostics** — on stack failure or health failure, dumps `docker compose ps -a`, `docker inspect` of `.State.Health.Log` (probe history with exit codes + stdout), and `docker compose logs --tail N` scoped to the failing service
 - **Automatic rollback** — `git reset --hard <previous_sha>` + redeploy if deploy or health-check failed
 - **Discord notifications** — pipeline-status icon line, removed-stacks list, commit link, user mention on failure
@@ -321,13 +321,15 @@ Follow `docs/superpowers/runbooks/adding-a-new-host.md` (the generic step-by-ste
 │   │   └── lint-summary.sh
 │   ├── deployment/
 │   │   ├── lib/
-│   │   │   └── common.sh         # logging + validation
+│   │   │   ├── common.sh         # logging + validation
+│   │   │   └── compose-project.sh # compose_p: no-env ps/logs/down by project label
 │   │   ├── detect-stack-changes.sh
 │   │   ├── detect-critical-stacks.sh
 │   │   ├── ensure-shared-networks.sh
 │   │   └── build-pr-comment.sh
 │   └── testing/
 │       ├── test-detect-critical-stacks.sh
+│       ├── test-compose-project.sh
 │       ├── test-workflow.sh
 │       ├── validate-compose.sh
 │       └── README.md
