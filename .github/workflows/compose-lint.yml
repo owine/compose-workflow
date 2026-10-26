@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 15
     env:
       # renovate: datasource=node-version depName=node versioning=node
-      NODE_VERSION: "24.22.0"
+      NODE_VERSION: "24.22.1"
     outputs:
       actionlint-result: ${{ steps.results.outputs.actionlint-result }}
       lint-result: ${{ steps.results.outputs.lint-result }}
@@ -124,7 +124,7 @@ jobs:
       # Per-registry login stays non-fatal so a single misconfigured registry
       # doesn't block linting stacks that never pull from it.
       - name: Login to ghcr.io
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         continue-on-error: true
         with:
           registry: ghcr.io
@@ -133,7 +133,7 @@ jobs:
           logout: false
 
       - name: Login to docker.io
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         continue-on-error: true
         with:
           username: ${{ steps.creds.outputs.DOCKERHUB_USERNAME }}
@@ -141,7 +141,7 @@ jobs:
           logout: false
 
       - name: Login to registry.gitlab.com
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         continue-on-error: true
         with:
           registry: registry.gitlab.com
@@ -150,7 +150,7 @@ jobs:
           logout: false
 
       - name: Login to gitlab-container.zenterprise.org
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         continue-on-error: true
         with:
           registry: gitlab-container.zenterprise.org
