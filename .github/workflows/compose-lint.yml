@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 15
     env:
       # renovate: datasource=node-version depName=node versioning=node
-      NODE_VERSION: "24.22.1"
+      NODE_VERSION: "24.22.2"
     outputs:
       actionlint-result: ${{ steps.results.outputs.actionlint-result }}
       lint-result: ${{ steps.results.outputs.lint-result }}
