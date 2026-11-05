@@ -246,12 +246,13 @@ jobs:
             .renovaterc.json
             .renovaterc.json5
 
-      # Pin Node to the runtime renovate@latest declares in engines (^24.11.0) so
+      # Pin Node to a runtime inside the engines.node range renovate@latest declares so
       # the validator runs on a compatible runtime instead of the runner's
       # default Node — too-old Node warns (EBADENGINE) and can crash at runtime.
       # NODE_VERSION (job env, above) is exact-pinned and bumped by Renovate via
       # the customManagers:githubActionsVersions preset; node versioning keeps it
       # on the current LTS line and proposes the next LTS major as its own PR.
+      # Hold that PR until renovate@latest engines.node includes the new major (see #114).
       # Gated (with the validate step) on a Renovate-config change; workflow_dispatch
       # always validates since a manual lint implies wanting the full check.
       - name: Set up Node.js for Renovate validator
